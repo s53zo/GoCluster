@@ -1,0 +1,129 @@
+package spot
+
+import (
+	"fmt"
+	"strings"
+	"time"
+)
+
+// SourceType identifies where a spot came from
+type SourceType string
+
+const (
+	SourceManual   SourceType = "MANUAL"   // User-posted spot
+	SourceRBN      SourceType = "RBN"      // Reverse Beacon Network
+	SourceFT8      SourceType = "FT8"      // FT8 via MQTT
+	SourceFT4      SourceType = "FT4"      // FT4 via MQTT
+	SourceUpstream SourceType = "UPSTREAM" // From another cluster
+)
+
+// Spot represents a DX spot in canonical form
+type Spot struct {
+	ID         uint64     // Unique spot ID (monotonic counter)
+	DXCall     string     // Station being spotted (e.g., "LZ5VV")
+	DECall     string     // Station reporting the spot (e.g., "W1ABC")
+	DELocation string     // Location of reporting station (e.g., "FN42")
+	Frequency  float64    // Frequency in kHz (e.g., 14074.5)
+	Band       string     // Band (e.g., "20m")
+	Mode       string     // Mode (e.g., "CW", "SSB", "FT8")
+	Time       time.Time  // When the spot was created
+	Comment    string     // User comment or additional info
+	SourceType SourceType // Where this spot came from
+	SourceNode string     // Originating node/cluster
+	TTL        uint8      // Time-to-live for loop prevention
+	Tags       []string   // Additional metadata tags
+}
+
+// NewSpot creates a new spot with sensible defaults
+func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
+	return &Spot{
+		DXCall:     strings.ToUpper(dxCall),
+		DECall:     strings.ToUpper(deCall),
+		Frequency:  freq,
+		Mode:       strings.ToUpper(mode),
+		Band:       FreqToBand(freq),
+		Time:       time.Now().UTC(),
+		SourceType: SourceManual,
+		TTL:        5, // Default hop count
+		Tags:       make([]string, 0),
+	}
+}
+
+// FormatDXCluster formats the spot in standard DX cluster format
+// Format: DX de CALL:     FREQ DX-CALL   comment                      HHMM
+func (s *Spot) FormatDXCluster() string {
+	// Format time as HHMM UTC
+	timeStr := s.Time.UTC().Format("1504Z")
+
+	// Format: DX de W1ABC:     14074.5  LZ5VV        FT8 signal                   2359Z
+	return fmt.Sprintf("DX de %-9s %8.1f  %-13s %-25s %s",
+		s.DECall+":",
+		s.Frequency,
+		s.DXCall,
+		s.Comment,
+		timeStr)
+}
+
+// FreqToBand converts a frequency in kHz to a band string
+func FreqToBand(freq float64) string {
+	switch {
+	case freq >= 1800 && freq <= 2000:
+		return "160m"
+	case freq >= 3500 && freq <= 4000:
+		return "80m"
+	case freq >= 5330 && freq <= 5405:
+		return "60m"
+	case freq >= 7000 && freq <= 7300:
+		return "40m"
+	case freq >= 10100 && freq <= 10150:
+		return "30m"
+	case freq >= 14000 && freq <= 14350:
+		return "20m"
+	case freq >= 18068 && freq <= 18168:
+		return "17m"
+	case freq >= 21000 && freq <= 21450:
+		return "15m"
+	case freq >= 24890 && freq <= 24990:
+		return "12m"
+	case freq >= 28000 && freq <= 29700:
+		return "10m"
+	case freq >= 50000 && freq <= 54000:
+		return "6m"
+	case freq >= 144000 && freq <= 148000:
+		return "2m"
+	default:
+		return "???"
+	}
+}
+
+// IsValid performs basic validation on the spot
+func (s *Spot) IsValid() bool {
+	// Must have callsigns
+	if s.DXCall == "" || s.DECall == "" {
+		return false
+	}
+
+	// Frequency must be reasonable (1.8 MHz to 148 MHz)
+	if s.Frequency < 1800 || s.Frequency > 148000 {
+		return false
+	}
+
+	// Mode must be set
+	if s.Mode == "" {
+		return false
+	}
+
+	return true
+}
+
+// String returns a human-readable representation
+func (s *Spot) String() string {
+	return fmt.Sprintf("[%s] %s spotted %s on %.1f kHz (%s %s) - %s",
+		s.Time.Format("15:04:05"),
+		s.DECall,
+		s.DXCall,
+		s.Frequency,
+		s.Band,
+		s.Mode,
+		s.Comment)
+}

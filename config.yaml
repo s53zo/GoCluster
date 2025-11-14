@@ -1,0 +1,18 @@
+# DX Cluster Configuration
+server:
+  name: "My DX Cluster"
+  node_id: "N2WQ-33"
+  
+telnet:
+  port: 7300
+  tls_enabled: false
+  max_connections: 500
+  welcome_message: "Welcome to My DX Cluster\nPlease login with your callsign\n"
+
+admin:
+  http_port: 8080
+  bind_address: "127.0.0.1"
+  
+logging:
+  level: "info"
+  file: "cluster.log"
