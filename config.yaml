@@ -1,7 +1,7 @@
 # DX Cluster Configuration
 server:
   name: "My DX Cluster"
-  node_id: "N2WQ-33"
+  node_id: "W1ABC"
   
 telnet:
   port: 7300
@@ -13,7 +13,30 @@ rbn:
   enabled: true
   host: "telnet.reversebeacon.net"
   port: 7000
-  callsign: "N2WQ"  # Change this to your callsign!
+  callsign: "N0CALL"  # Change this to your callsign!
+
+# PSKReporter MQTT feed
+pskreporter:
+  enabled: true
+  broker: "mqtt.pskreporter.info"
+  port: 1883
+  # Topic to subscribe to - use wildcards to filter
+  # Examples:
+  #   "pskr/filter/v2/#" - all spots (high volume!)
+  #   "pskr/filter/v2/20m/#" - only 20m
+  #   "pskr/filter/v2/+/FT8/#" - only FT8 on all bands
+  #   "pskr/filter/v2/20m/FT8/#" - only 20m FT8
+  topic: "pskr/filter/v2/20m/FT8/#"  # Start with 20m FT8 only
+
+# Deduplication settings
+dedup:
+  # Cluster-level dedup window (prevents network loops and immediate duplicates)
+  # Default: 120 seconds
+  cluster_window_seconds: 120
+  
+  # User-level dedup window (per-user configurable preference)
+  # Default: 300 seconds (5 minutes)
+  user_window_seconds: 300
 
 admin:
   http_port: 8080

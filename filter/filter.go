@@ -8,7 +8,7 @@ import (
 
 // Filter represents a user's spot filtering preferences
 type Filter struct {
-	Bands     map[string]bool // Enabled bands (e.g., "20m" -> true)
+	Bands     map[string]bool // Enabled bands (e.g., "20M" -> true)
 	Modes     map[string]bool // Enabled modes (e.g., "CW" -> true)
 	Callsigns []string        // Callsign patterns (e.g., "W1*", "LZ5VV")
 	AllBands  bool            // If true, accept all bands
@@ -26,9 +26,19 @@ func NewFilter() *Filter {
 	}
 }
 
+// normalizeBand normalizes band names (20M, 20m, 20 -> 20m)
+func normalizeBand(band string) string {
+	band = strings.ToLower(strings.TrimSpace(band))
+	// If it doesn't end with 'm', add it
+	if !strings.HasSuffix(band, "m") {
+		band = band + "m"
+	}
+	return band
+}
+
 // SetBand enables or disables a specific band
 func (f *Filter) SetBand(band string, enabled bool) {
-	band = strings.ToUpper(band)
+	band = normalizeBand(band)
 	if enabled {
 		f.Bands[band] = true
 		f.AllBands = false // Once we set specific bands, we're not accepting all
@@ -82,7 +92,8 @@ func (f *Filter) Reset() {
 func (f *Filter) Matches(s *spot.Spot) bool {
 	// Check band filter
 	if !f.AllBands {
-		if !f.Bands[s.Band] {
+		spotBand := normalizeBand(s.Band)
+		if !f.Bands[spotBand] {
 			return false
 		}
 	}
@@ -151,6 +162,8 @@ func (f *Filter) String() string {
 		}
 		if len(bands) > 0 {
 			parts = append(parts, "Bands: "+strings.Join(bands, ", "))
+		} else {
+			parts = append(parts, "Bands: NONE (no spots will pass)")
 		}
 	}
 
@@ -163,6 +176,8 @@ func (f *Filter) String() string {
 		}
 		if len(modes) > 0 {
 			parts = append(parts, "Modes: "+strings.Join(modes, ", "))
+		} else {
+			parts = append(parts, "Modes: NONE (no spots will pass)")
 		}
 	}
 

@@ -112,6 +112,40 @@ func (c *Client) readLoop() {
 	}
 }
 
+// normalizeRBNCallsign removes numeric SSID from RBN callsigns
+// Example: N2WQ-1-# -> N2WQ-#, N2WQ-73-# -> N2WQ-#, K3LR-2-# -> K3LR-#
+func normalizeRBNCallsign(callsign string) string {
+	// Pattern: CALL-NUMBER-# where NUMBER can be 1-3 digits
+	// We want to keep CALL-# but remove the numeric SSID
+
+	// Check if it ends with -#
+	if !strings.HasSuffix(callsign, "-#") {
+		return callsign // Not an RBN skimmer callsign
+	}
+
+	// Remove the trailing -#
+	withoutHash := strings.TrimSuffix(callsign, "-#")
+
+	// Split by hyphen
+	parts := strings.Split(withoutHash, "-")
+
+	if len(parts) < 2 {
+		return callsign // No SSID to remove
+	}
+
+	// Check if the last part is numeric (the SSID we want to remove)
+	lastPart := parts[len(parts)-1]
+	if _, err := strconv.Atoi(lastPart); err == nil {
+		// Last part is numeric, remove it
+		// Rejoin everything except the last part, then add back -#
+		baseParts := parts[:len(parts)-1]
+		return strings.Join(baseParts, "-") + "-#"
+	}
+
+	// Last part is not numeric, keep as-is
+	return callsign
+}
+
 // parseSpot parses an RBN spot line into a Spot object
 func (c *Client) parseSpot(line string) {
 	// Normalize whitespace - replace multiple spaces with single space
@@ -129,6 +163,8 @@ func (c *Client) parseSpot(line string) {
 
 	// Extract fields
 	deCall := strings.TrimSuffix(parts[2], ":") // Remove trailing colon
+	deCall = normalizeRBNCallsign(deCall)       // Normalize RBN callsign
+
 	freqStr := parts[3]
 	dxCall := parts[4]
 	mode := parts[5]
