@@ -7,72 +7,92 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds all configuration for the cluster
+// Config represents the complete cluster configuration
 type Config struct {
-	Server struct {
-		Name   string `yaml:"name"`
-		NodeID string `yaml:"node_id"`
-	} `yaml:"server"`
-
-	Telnet struct {
-		Port           int    `yaml:"port"`
-		TLSEnabled     bool   `yaml:"tls_enabled"`
-		MaxConnections int    `yaml:"max_connections"`
-		WelcomeMessage string `yaml:"welcome_message"`
-	} `yaml:"telnet"`
-
-	RBN struct {
-		Enabled  bool   `yaml:"enabled"`
-		Host     string `yaml:"host"`
-		Port     int    `yaml:"port"`
-		Callsign string `yaml:"callsign"`
-	} `yaml:"rbn"`
-
-	Admin struct {
-		HTTPPort    int    `yaml:"http_port"`
-		BindAddress string `yaml:"bind_address"`
-	} `yaml:"admin"`
-
-	Logging struct {
-		Level string `yaml:"level"`
-		File  string `yaml:"file"`
-	} `yaml:"logging"`
+	Server      ServerConfig      `yaml:"server"`
+	Telnet      TelnetConfig      `yaml:"telnet"`
+	RBN         RBNConfig         `yaml:"rbn"`
+	PSKReporter PSKReporterConfig `yaml:"pskreporter"`
+	Dedup       DedupConfig       `yaml:"dedup"`
+	Admin       AdminConfig       `yaml:"admin"`
+	Logging     LoggingConfig     `yaml:"logging"`
 }
 
-// Load reads the configuration from a YAML file
+// ServerConfig contains general server settings
+type ServerConfig struct {
+	Name   string `yaml:"name"`
+	NodeID string `yaml:"node_id"`
+}
+
+// TelnetConfig contains telnet server settings
+type TelnetConfig struct {
+	Port           int    `yaml:"port"`
+	TLSEnabled     bool   `yaml:"tls_enabled"`
+	MaxConnections int    `yaml:"max_connections"`
+	WelcomeMessage string `yaml:"welcome_message"`
+}
+
+// RBNConfig contains Reverse Beacon Network settings
+type RBNConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Callsign string `yaml:"callsign"`
+}
+
+// PSKReporterConfig contains PSKReporter MQTT settings
+type PSKReporterConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Broker  string `yaml:"broker"`
+	Port    int    `yaml:"port"`
+	Topic   string `yaml:"topic"`
+}
+
+// DedupConfig contains deduplication settings
+type DedupConfig struct {
+	Enabled              bool `yaml:"enabled"`
+	ClusterWindowSeconds int  `yaml:"cluster_window_seconds"`
+	UserWindowSeconds    int  `yaml:"user_window_seconds"`
+}
+
+// AdminConfig contains admin interface settings
+type AdminConfig struct {
+	HTTPPort    int    `yaml:"http_port"`
+	BindAddress string `yaml:"bind_address"`
+}
+
+// LoggingConfig contains logging settings
+type LoggingConfig struct {
+	Level string `yaml:"level"`
+	File  string `yaml:"file"`
+}
+
+// Load loads configuration from a YAML file
 func Load(filename string) (*Config, error) {
-	// Read the file
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Parse the YAML
 	var cfg Config
-	err = yaml.Unmarshal(data, &cfg)
-	if err != nil {
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
 	return &cfg, nil
 }
 
-// Print displays the configuration (for debugging)
+// Print displays the configuration
 func (c *Config) Print() {
-	fmt.Println("=== DX Cluster Configuration ===")
-	fmt.Printf("Server Name: %s\n", c.Server.Name)
-	fmt.Printf("Node ID: %s\n", c.Server.NodeID)
-	fmt.Printf("Telnet Port: %d\n", c.Telnet.Port)
-	fmt.Printf("TLS Enabled: %v\n", c.Telnet.TLSEnabled)
-	fmt.Printf("Max Connections: %d\n", c.Telnet.MaxConnections)
-	fmt.Printf("RBN Enabled: %v\n", c.RBN.Enabled)
+	fmt.Printf("Server: %s (%s)\n", c.Server.Name, c.Server.NodeID)
+	fmt.Printf("Telnet: port %d\n", c.Telnet.Port)
 	if c.RBN.Enabled {
-		fmt.Printf("RBN Host: %s:%d\n", c.RBN.Host, c.RBN.Port)
-		fmt.Printf("RBN Callsign: %s\n", c.RBN.Callsign)
+		fmt.Printf("RBN: %s:%d (as %s)\n", c.RBN.Host, c.RBN.Port, c.RBN.Callsign)
 	}
-	fmt.Printf("Admin HTTP Port: %d\n", c.Admin.HTTPPort)
-	fmt.Printf("Admin Bind Address: %s\n", c.Admin.BindAddress)
-	fmt.Printf("Log Level: %s\n", c.Logging.Level)
-	fmt.Printf("Log File: %s\n", c.Logging.File)
-	fmt.Println("================================")
+	if c.PSKReporter.Enabled {
+		fmt.Printf("PSKReporter: %s:%d (topic: %s)\n", c.PSKReporter.Broker, c.PSKReporter.Port, c.PSKReporter.Topic)
+	}
+	if c.Dedup.Enabled {
+		fmt.Printf("Dedup: cluster=%ds, user=%ds\n", c.Dedup.ClusterWindowSeconds, c.Dedup.UserWindowSeconds)
+	}
 }

@@ -2,6 +2,7 @@ package spot
 
 import (
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"time"
 )
@@ -10,11 +11,12 @@ import (
 type SourceType string
 
 const (
-	SourceManual   SourceType = "MANUAL"   // User-posted spot
-	SourceRBN      SourceType = "RBN"      // Reverse Beacon Network
-	SourceFT8      SourceType = "FT8"      // FT8 via MQTT
-	SourceFT4      SourceType = "FT4"      // FT4 via MQTT
-	SourceUpstream SourceType = "UPSTREAM" // From another cluster
+	SourceManual      SourceType = "MANUAL"      // User-posted spot
+	SourceRBN         SourceType = "RBN"         // Reverse Beacon Network
+	SourceFT8         SourceType = "FT8"         // FT8 via MQTT
+	SourceFT4         SourceType = "FT4"         // FT4 via MQTT
+	SourcePSKReporter SourceType = "PSKREPORTER" // PSKReporter via MQTT
+	SourceUpstream    SourceType = "UPSTREAM"    // From another cluster
 )
 
 // Spot represents a DX spot in canonical form
@@ -47,6 +49,25 @@ func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
 		TTL:        5, // Default hop count
 		Tags:       make([]string, 0),
 	}
+}
+
+// Hash32 returns a 32-bit hash for deduplication
+// Hash includes: DXCall|DECall|FreqKHz|TimeMinute
+// This allows different spotters to report the same DX station
+func (s *Spot) Hash32() uint32 {
+	// Normalize components
+	dxCall := strings.ToUpper(strings.TrimSpace(s.DXCall))
+	deCall := strings.ToUpper(strings.TrimSpace(s.DECall))
+	freqKHz := int64(s.Frequency) // Truncate to 1 kHz resolution
+	timeMin := s.Time.Truncate(time.Minute).Unix()
+
+	// Create composite string WITH spotter
+	composite := fmt.Sprintf("%s|%s|%d|%d", dxCall, deCall, freqKHz, timeMin)
+
+	// Hash it
+	h := fnv.New32a()
+	h.Write([]byte(composite))
+	return h.Sum32()
 }
 
 // FormatDXCluster formats the spot in standard DX cluster format
