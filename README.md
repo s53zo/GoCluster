@@ -16,6 +16,45 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
 [Source: RBN/PSKReporter] → Parser → CTY Lookup → Dedup (if enabled) → Ring Buffer → Telnet Broadcast
 ```
 
+```
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                         DXCluster Spot Ingestion & Delivery                         ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+	┌────────────────────┐    ┌────────────────────┐    ┌─────────────────────────┐
+	│ RBN CW/RTTY client │    │ RBN FT4/FT8 client │    │ PSKReporter MQTT client │
+	└──────────┬─────────┘    └──────────┬─────────┘    └──────────┬──────────────┘
+		   │                         │                         │
+		   ▼                         ▼                         ▼
+	┌────────────────────┐    ┌────────────────────┐    ┌─────────────────────────┐
+	│ RBN line parsers   │    │ RBN digital parsers│    │ PSKReporter worker pool │
+	└──────────┬─────────┘    └──────────┬─────────┘    └──────────┬──────────────┘
+		   │                         │                         │
+		   ├─────────────────────────┴─────────────────────────┤
+		   ▼                                                   ▼
+	 ┌────────────────────────────────────────────────────────────────────┐
+	 │ Normalize callsigns → validate → CTY lookup → enrich metadata      │
+	 │ (shared logic in `spot` + `cty` packages)                           │
+	 └──────────────────────────────┬──────────────────────────────────────┘
+					│
+					▼
+			  ┌──────────────────────────────┐
+			  │ Dedup engine (cluster/user)  │
+			  └───────────────┬──────────────┘
+					  │
+					  ▼
+			  ┌──────────────────────────────┐
+			  │ Ring buffer (`buffer/`)      │
+			  └───────────────┬──────────────┘
+					  │
+					  ▼
+			  ┌──────────────────────────────┐
+			  │ Telnet server (`telnet/`)    │
+			  └───────────────┬──────────────┘
+					  │
+					  ▼
+			  Connected telnet clients + filters
+```
+
 Each `spot.Spot` stores:
 - **ID** – monotonic identifier
 - **DXCall / DECall** – uppercased callsigns
