@@ -9,7 +9,8 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
 3. **PSKReporter MQTT** (`pskreporter/client.go`) subscribes to `pskr/filter/v2/+/+/#` (or one or more `pskr/filter/v2/+/<MODE>/#` topics when `pskreporter.modes` is configured), converts JSON payloads into canonical spots, and applies locator-based metadata.
 4. **CTY Database** (`cty/parser.go` + `data/cty/cty.plist`) performs longest-prefix lookups so both spotters and spotted stations carry continent/country/CQ/ITU/grid metadata.
 5. **Dedup Engine** (`dedup/deduplicator.go`) optionally filters duplicate spots before they reach the ring buffer and telnet clients.
-6. **Frequency Averager** (`spot/frequency_averager.go`) merges CW/RTTY skimmer reports by averaging/rounding them to the nearest 100 Hz to smooth out one-off deviations.
+6. **Frequency Averager** (`spot/frequency_averager.go`) merges CW/RTTY skimmer reports by averaging corroborating reports within a tolerance and rounding to 0.1 kHz once the minimum corroborators is met.
+7. **Call/Harmonic Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections and suppress harmonics; the pipeline logs/dashboards both the correction and the suppressed harmonic frequency.
 
 ## Data Flow and Spot Record Format
 
@@ -99,14 +100,20 @@ Filter management commands are implemented directly in `telnet/server.go` and op
 
 Confidence indicator legend in telnet output:
 
-- `?` – 25% consensus or less
-- `S` – 25% or less but spotted callsign is in `MASTER.SCP`
-- `B` – consensus suggested a correction but CTY validation failed (busted call retained)
-- `P` – 25–75% consensus
-- `V` – more than 75% consensus
-- `C` – callsign was corrected by consensus
+- `?` - 25% consensus or less
+- `S` - 25% or less but spotted callsign is in `MASTER.SCP`
+- `B` - consensus suggested a correction but CTY validation failed (busted call retained)
+- `P` - 25-75% consensus
+- `V` - more than 75% consensus
+- `C` - callsign was corrected by consensus
 
 Errors during filter commands return a usage message (e.g., invalid bands or modes refer to the supported lists) and the `SHOW/FILTER` commands help confirm the active settings.
+
+## Runtime Logs and Corrections
+
+- **Call corrections**: `2025/11/19 18:50:45 Call corrected: VE3N -> VE3NE at 7011.1 kHz (8 corroborators, 88% confidence)`
+- **Frequency averaging**: `2025/11/19 18:50:45 Frequency corrected: VE3NE 7011.3 -> 7011.1 kHz (8 corroborators, 88% confidence)`
+- **Harmonic suppression**: `2025/11/19 18:50:45 Harmonic suppressed: VE3NE 14022.0 -> 7011.0 kHz` plus a paired frequency-corrected line indicating the fundamental retained.
 
 ### Sample Session
 

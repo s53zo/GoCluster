@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 )
 
 // KnownCallsigns holds a set of normalized callsigns used for confidence boosts.
 type KnownCallsigns struct {
 	entries map[string]struct{}
+	lookups atomic.Uint64
+	hits    atomic.Uint64
 }
 
 // LoadKnownCallsigns loads a newline-delimited file of callsigns.
@@ -45,7 +48,11 @@ func (k *KnownCallsigns) Contains(call string) bool {
 	if call == "" {
 		return false
 	}
+	k.lookups.Add(1)
 	_, ok := k.entries[call]
+	if ok {
+		k.hits.Add(1)
+	}
 	return ok
 }
 
@@ -55,4 +62,12 @@ func (k *KnownCallsigns) Count() int {
 		return 0
 	}
 	return len(k.entries)
+}
+
+// Stats returns lookup and hit counters for the known calls set.
+func (k *KnownCallsigns) Stats() (lookups uint64, hits uint64) {
+	if k == nil {
+		return 0, 0
+	}
+	return k.lookups.Load(), k.hits.Load()
 }

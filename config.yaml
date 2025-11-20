@@ -60,9 +60,10 @@ call_correction:
   enabled: true                # Master switch (set true to enable)
   min_consensus_reports: 5     # Minimum number of corroborating spotters
   min_advantage: 2             # Candidate must exceed the original by this many spotters
-  min_confidence_percent: 75   # Candidate supporters must represent at least this percent of unique spotters
+  min_confidence_percent: 76   # Candidate supporters must represent at least this percent of unique spotters
   recency_seconds: 120         # Supporting spots must be this recent
   max_edit_distance: 2         # Max allowed Levenshtein distance between original and replacement
+  frequency_tolerance_hz: 300  # Spots within this frequency window are considered the same signal
   invalid_action: "broadcast"  # "broadcast" original if correction fails CTY, or "suppress" to drop spot
 
 # Harmonic suppression for CW/SSB/RTTY signals

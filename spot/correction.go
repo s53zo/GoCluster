@@ -47,14 +47,22 @@ func IsCallCorrectionCandidate(mode string) bool {
 // the "same" signal. We only care about agreement on essentially identical frequencies,
 // so we allow a half-kilohertz wiggle room to absorb rounding differences between
 // data sources.
-const frequencyToleranceKHz = 0.5
+var frequencyToleranceKHz = 0.5
+
+// SetFrequencyToleranceHz updates the frequency similarity window in Hz.
+func SetFrequencyToleranceHz(hz float64) {
+	if hz <= 0 {
+		frequencyToleranceKHz = 0.5
+		return
+	}
+	frequencyToleranceKHz = hz / 1000.0
+}
 
 // SuggestCallCorrection analyzes recent spots on the same frequency and determines
 // whether there is overwhelming evidence that the subject spot's DX call should
 // be corrected. IMPORTANT: This function only suggests a correction. The caller
-// is responsible for deciding whether to apply it and for updating any caches or
-// deduplication structures. Nothing in the core pipeline calls this yet—it's a
-// building block for future work.
+// (e.g., the main pipeline when call correction is enabled) decides whether to
+// apply it and is responsible for updating any caches or deduplication structures.
 //
 // Parameters:
 //   - subject: the spot we are evaluating.

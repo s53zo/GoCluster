@@ -27,10 +27,14 @@ func NewFrequencyAverager() *FrequencyAverager {
 
 // Average updates the history for the given call and returns the average
 // frequency (in kHz) across all reports within the provided window that
-// sit within the supplied tolerance of the current report.
-func (fa *FrequencyAverager) Average(call string, freq float64, now time.Time, window time.Duration, tolerance float64) (float64, int) {
+// sit within the supplied tolerance of the current report. The returned
+// counts include the current report.
+//   - return #1: averaged frequency in kHz
+//   - return #2: number of corroborating reports within tolerance
+//   - return #3: total reports within the recency window
+func (fa *FrequencyAverager) Average(call string, freq float64, now time.Time, window time.Duration, tolerance float64) (float64, int, int) {
 	if call == "" {
-		return freq, 1
+		return freq, 1, 1
 	}
 
 	fa.mu.Lock()
@@ -39,7 +43,7 @@ func (fa *FrequencyAverager) Average(call string, freq float64, now time.Time, w
 	list := fa.entries[call]
 	pruned := list[:0]
 	sum := freq
-	count := 1
+	corroborators := 1
 	cutoff := now.Add(-window)
 
 	for _, sample := range list {
@@ -49,12 +53,13 @@ func (fa *FrequencyAverager) Average(call string, freq float64, now time.Time, w
 		pruned = append(pruned, sample)
 		if math.Abs(sample.freq-freq) <= tolerance {
 			sum += sample.freq
-			count++
+			corroborators++
 		}
 	}
 
 	pruned = append(pruned, freqSample{freq: freq, at: now})
 	fa.entries[call] = pruned
 
-	return sum / float64(count), count
+	total := len(pruned)
+	return sum / float64(corroborators), corroborators, total
 }

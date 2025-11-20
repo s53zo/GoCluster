@@ -131,6 +131,9 @@ type CallCorrectionConfig struct {
 	// MaxEditDistance bounds how different the alternate call can be from the
 	// original (Levenshtein distance). Prevents wildly different corrections.
 	MaxEditDistance int `yaml:"max_edit_distance"`
+	// FrequencyToleranceHz defines how close two frequencies must be to be considered
+	// the same signal when running consensus.
+	FrequencyToleranceHz float64 `yaml:"frequency_tolerance_hz"`
 	// InvalidAction controls what to do when consensus suggests a callsign that
 	// fails CTY validation. Supported values:
 	//   - "broadcast": keep the original spot (default)
@@ -206,6 +209,9 @@ func Load(filename string) (*Config, error) {
 	if cfg.CallCorrection.RecencySeconds <= 0 {
 		cfg.CallCorrection.RecencySeconds = 45
 	}
+	if cfg.CallCorrection.FrequencyToleranceHz <= 0 {
+		cfg.CallCorrection.FrequencyToleranceHz = 0.5
+	}
 	if cfg.CallCorrection.InvalidAction == "" {
 		cfg.CallCorrection.InvalidAction = "broadcast"
 	}
@@ -272,13 +278,14 @@ func (c *Config) Print() {
 	if c.CallCorrection.Enabled {
 		status = "enabled"
 	}
-	fmt.Printf("Call correction: %s (min_reports=%d advantage>%d confidence>=%d%% recency=%ds max_edit=%d invalid_action=%s)\n",
+	fmt.Printf("Call correction: %s (min_reports=%d advantage>%d confidence>=%d%% recency=%ds max_edit=%d tol=%.1fHz invalid_action=%s)\n",
 		status,
 		c.CallCorrection.MinConsensusReports,
 		c.CallCorrection.MinAdvantage,
 		c.CallCorrection.MinConfidencePercent,
 		c.CallCorrection.RecencySeconds,
 		c.CallCorrection.MaxEditDistance,
+		c.CallCorrection.FrequencyToleranceHz,
 		c.CallCorrection.InvalidAction)
 
 	harmonicStatus := "disabled"
