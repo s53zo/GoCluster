@@ -81,6 +81,7 @@ type Server struct {
 	workerQueues     []chan *broadcastJob // Per-worker job queues
 	metrics          broadcastMetrics     // Broadcast metrics counters
 	processor        *commands.Processor  // Command processor for user commands
+	skipHandshake    bool                 // When true, omit Telnet IAC negotiation
 }
 
 // Client represents a connected telnet client session.
@@ -154,7 +155,7 @@ const (
 const broadcastWorkerQueueSize = 32
 
 // NewServer creates a new telnet server
-func NewServer(port int, welcomeMessage string, maxConnections int, broadcastWorkers int, processor *commands.Processor) *Server {
+func NewServer(port int, welcomeMessage string, maxConnections int, broadcastWorkers int, skipHandshake bool, processor *commands.Processor) *Server {
 	workers := broadcastWorkers
 	if workers <= 0 {
 		workers = defaultBroadcastWorkers()
@@ -167,6 +168,7 @@ func NewServer(port int, welcomeMessage string, maxConnections int, broadcastWor
 		shutdown:         make(chan struct{}),
 		broadcast:        make(chan *spot.Spot, 100),
 		broadcastWorkers: workers,
+		skipHandshake:    skipHandshake,
 		processor:        processor,
 	}
 }
@@ -355,11 +357,13 @@ func (s *Server) handleClient(conn net.Conn) {
 		filter:    filter.NewFilter(), // Start with no filters (accept all)
 	}
 
-	// Send telnet options to suppress advanced features
-	client.SendRaw([]byte{IAC, DONT, 1}) // Don't echo
-	client.SendRaw([]byte{IAC, DONT, 3}) // Don't suppress go-ahead
-	client.SendRaw([]byte{IAC, WONT, 1}) // Won't echo
-	client.SendRaw([]byte{IAC, WILL, 3}) // Will suppress go-ahead
+	// Send telnet options to suppress advanced features unless disabled
+	if !s.skipHandshake {
+		client.SendRaw([]byte{IAC, DONT, 1}) // Don't echo
+		client.SendRaw([]byte{IAC, DONT, 3}) // Don't suppress go-ahead
+		client.SendRaw([]byte{IAC, WONT, 1}) // Won't echo
+		client.SendRaw([]byte{IAC, WILL, 3}) // Will suppress go-ahead
+	}
 
 	// Send welcome message
 	client.Send(s.welcomeMessage)

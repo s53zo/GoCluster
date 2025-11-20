@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"dxcluster/cty"
+	"dxcluster/skew"
 	"dxcluster/spot"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -30,6 +31,7 @@ type Client struct {
 	processing chan []byte
 	workerWg   sync.WaitGroup
 	queueDrops uint64
+	skewStore  *skew.Store
 }
 
 // PSKRMessage represents a PSKReporter MQTT message
@@ -53,16 +55,17 @@ const (
 )
 
 // NewClient creates a new PSKReporter MQTT client
-func NewClient(broker string, port int, topics []string, name string, workers int, lookup *cty.CTYDatabase) *Client {
+func NewClient(broker string, port int, topics []string, name string, workers int, lookup *cty.CTYDatabase, skewStore *skew.Store) *Client {
 	return &Client{
-		broker:   broker,
-		port:     port,
-		topics:   append([]string{}, topics...),
-		name:     name,
-		spotChan: make(chan *spot.Spot, 1000), // Buffer 1000 spots
-		shutdown: make(chan struct{}),
-		workers:  workers,
-		lookup:   lookup,
+		broker:    broker,
+		port:      port,
+		topics:    append([]string{}, topics...),
+		name:      name,
+		spotChan:  make(chan *spot.Spot, 1000), // Buffer 1000 spots
+		shutdown:  make(chan struct{}),
+		workers:   workers,
+		lookup:    lookup,
+		skewStore: skewStore,
 	}
 }
 
@@ -243,8 +246,11 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 		return nil
 	}
 
-	// Convert frequency from Hz to kHz
+	// Convert frequency from Hz to kHz and apply skimmer correction for CW/RTTY
 	freqKHz := float64(msg.Frequency) / 1000.0
+	if isCWorRTTY(msg.Mode) {
+		freqKHz = skew.ApplyCorrection(c.skewStore, msg.ReceiverCall, freqKHz)
+	}
 
 	dxInfo, ok := c.fetchCallsignInfo(dxCall)
 	if !ok {
@@ -297,6 +303,11 @@ func metadataFromPrefix(info *cty.PrefixInfo) spot.CallMetadata {
 		CQZone:    info.CQZone,
 		ITUZone:   info.ITUZone,
 	}
+}
+
+func isCWorRTTY(mode string) bool {
+	mode = strings.ToUpper(strings.TrimSpace(mode))
+	return mode == "CW" || mode == "RTTY"
 }
 
 func (c *Client) fetchCallsignInfo(call string) (*cty.PrefixInfo, bool) {

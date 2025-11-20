@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,12 +18,12 @@ import (
 	"time"
 )
 
-// Entry describes the skew characteristics published for a single skimmer.
+// Entry describes a single published skew correction entry.
 type Entry struct {
 	Callsign         string  `json:"callsign"`
-	SkewHz           float64 `json:"skew_hz"`
-	Spots            int     `json:"spots"`
 	CorrectionFactor float64 `json:"correction_factor"`
+	SkewHz           float64 `json:"-"` // only needed while parsing CSV
+	Spots            int     `json:"-"` // used for filtering before JSON is written
 }
 
 // Table provides lookup access to skew entries keyed by raw skimmer ID (SSID preserved).
@@ -56,8 +57,9 @@ func LoadFile(path string) (*Table, error) {
 	if err := json.Unmarshal(payload, &entries); err != nil {
 		return nil, fmt.Errorf("skew: parse %s: %w", path, err)
 	}
+	entries = FilterEntries(entries, 0)
 	if len(entries) == 0 {
-		return nil, fmt.Errorf("skew: %s contained no entries", path)
+		return nil, fmt.Errorf("skew: %s contained no usable entries", path)
 	}
 	return NewTable(entries)
 }
@@ -116,6 +118,21 @@ func (s *Store) Lookup(call string) (float64, bool) {
 	return table.Lookup(call)
 }
 
+// ApplyCorrection multiplies the provided frequency (in kHz) by the stored
+// correction factor for the raw skimmer callsign, rounding to the nearest 0.1 kHz.
+// When skew data is unavailable, the original frequency is returned unchanged.
+func ApplyCorrection(store *Store, rawCall string, freqKHz float64) float64 {
+	if store == nil || freqKHz <= 0 {
+		return freqKHz
+	}
+	factor, ok := store.Lookup(rawCall)
+	if !ok || factor <= 0 {
+		return freqKHz
+	}
+	corrected := freqKHz * factor
+	return math.Round(corrected*10) / 10
+}
+
 // Count returns the number of entries currently cached.
 func (s *Store) Count() int {
 	if s == nil {
@@ -126,6 +143,26 @@ func (s *Store) Count() int {
 		return 0
 	}
 	return table.Count()
+}
+
+// FilterEntries removes skew entries whose correction factor is 1.0 or that fall
+// below the provided minimum spot count. The returned slice is newly allocated
+// and can safely be mutated by callers.
+func FilterEntries(entries []Entry, minSpots int) []Entry {
+	if minSpots < 0 {
+		minSpots = 0
+	}
+	filtered := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.CorrectionFactor == 1 {
+			continue
+		}
+		if minSpots > 0 && entry.Spots < minSpots {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 // Fetch downloads the CSV table and returns parsed skew entries.
@@ -211,6 +248,9 @@ func parseCSV(raw []byte) ([]Entry, error) {
 		if err != nil {
 			return nil, err
 		}
+		if entry.CorrectionFactor == 1 {
+			continue
+		}
 		entries = append(entries, entry)
 	}
 
@@ -253,8 +293,8 @@ func toEntry(record []string) (Entry, error) {
 	}, nil
 }
 
-// FetchAndWrite is a helper that downloads the CSV and writes it to JSON at the given path.
-func FetchAndWrite(ctx context.Context, url, path string) (int, error) {
+// FetchAndWrite is a helper that downloads the CSV, filters the entries, and writes them to JSON.
+func FetchAndWrite(ctx context.Context, url string, minSpots int, path string) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -262,8 +302,12 @@ func FetchAndWrite(ctx context.Context, url, path string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := WriteJSON(entries, path); err != nil {
+	filtered := FilterEntries(entries, minSpots)
+	if len(filtered) == 0 {
+		return 0, errors.New("skew: no entries after filtering")
+	}
+	if err := WriteJSON(filtered, path); err != nil {
 		return 0, err
 	}
-	return len(entries), nil
+	return len(filtered), nil
 }

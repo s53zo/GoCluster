@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"log"
-	"math"
 	"net"
 	"regexp"
 	"strconv"
@@ -337,7 +336,7 @@ func (c *Client) parseSpot(line string) {
 		log.Printf("Failed to parse frequency '%s': %v", freqStr, err)
 		return
 	}
-	freq = c.applySkew(deCallRaw, freq)
+	freq = skew.ApplyCorrection(c.skewStore, deCallRaw, freq)
 
 	// Parse signal report (dB)
 	signalDB, err := strconv.Atoi(dbStr)
@@ -417,18 +416,6 @@ func (c *Client) parseSpot(line string) {
 	default:
 		log.Println("RBN: Spot channel full, dropping spot")
 	}
-}
-
-func (c *Client) applySkew(rawCall string, freq float64) float64 {
-	if c == nil || c.skewStore == nil {
-		return freq
-	}
-	factor, ok := c.skewStore.Lookup(rawCall)
-	if !ok || factor <= 0 {
-		return freq
-	}
-	corrected := freq * factor
-	return math.Round(corrected*10) / 10
 }
 
 func (c *Client) fetchCallsignInfo(call string) (*cty.PrefixInfo, bool) {

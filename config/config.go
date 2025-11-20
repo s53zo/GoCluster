@@ -42,6 +42,7 @@ type TelnetConfig struct {
 	MaxConnections   int    `yaml:"max_connections"`
 	WelcomeMessage   string `yaml:"welcome_message"`
 	BroadcastWorkers int    `yaml:"broadcast_workers"`
+	SkipHandshake    bool   `yaml:"skip_handshake"`
 }
 
 // RBNConfig contains Reverse Beacon Network settings
@@ -86,11 +87,13 @@ func (c *PSKReporterConfig) SubscriptionTopics() []string {
 	return topics
 }
 
-// DedupConfig contains deduplication settings
+// DedupConfig contains deduplication settings. The cluster-wide window controls how
+// aggressively we suppress duplicates:
+//   - A positive window enables deduplication for that many seconds.
+//   - A zero or negative window effectively disables dedup (spots pass through immediately).
 type DedupConfig struct {
-	Enabled              bool `yaml:"enabled"`
-	ClusterWindowSeconds int  `yaml:"cluster_window_seconds"`
-	UserWindowSeconds    int  `yaml:"user_window_seconds"`
+	ClusterWindowSeconds int `yaml:"cluster_window_seconds"` // <=0 disables dedup
+	UserWindowSeconds    int `yaml:"user_window_seconds"`
 }
 
 // AdminConfig contains admin interface settings
@@ -149,6 +152,7 @@ type HarmonicConfig struct {
 	MaxHarmonicMultiple  int     `yaml:"max_harmonic_multiple"`
 	FrequencyToleranceHz float64 `yaml:"frequency_tolerance_hz"`
 	MinReportDelta       int     `yaml:"min_report_delta"`
+	MinReportDeltaStep   float64 `yaml:"min_report_delta_step"`
 }
 
 // SpotPolicy controls generic spot handling rules.
@@ -172,9 +176,10 @@ type BufferConfig struct {
 
 // SkewConfig controls how the RBN skew table is fetched and applied.
 type SkewConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	URL     string `yaml:"url"`
-	File    string `yaml:"file"`
+	Enabled  bool   `yaml:"enabled"`
+	URL      string `yaml:"url"`
+	File     string `yaml:"file"`
+	MinSpots int    `yaml:"min_spots"`
 }
 
 // ConfidenceConfig controls external data for adjusting confidence.
@@ -236,6 +241,9 @@ func Load(filename string) (*Config, error) {
 	if cfg.Harmonics.MinReportDelta <= 0 {
 		cfg.Harmonics.MinReportDelta = 6
 	}
+	if cfg.Harmonics.MinReportDeltaStep < 0 {
+		cfg.Harmonics.MinReportDeltaStep = 0
+	}
 
 	if cfg.SpotPolicy.MaxAgeSeconds <= 0 {
 		cfg.SpotPolicy.MaxAgeSeconds = 120
@@ -249,6 +257,14 @@ func Load(filename string) (*Config, error) {
 	if cfg.SpotPolicy.FrequencyAveragingMinReports <= 0 {
 		cfg.SpotPolicy.FrequencyAveragingMinReports = 4
 	}
+
+	// Normalize dedup settings so the window drives behavior.
+	if cfg.Dedup.ClusterWindowSeconds < 0 {
+		cfg.Dedup.ClusterWindowSeconds = 0
+	}
+	if cfg.Dedup.UserWindowSeconds < 0 {
+		cfg.Dedup.UserWindowSeconds = 0
+	}
 	if strings.TrimSpace(cfg.CTY.File) == "" {
 		cfg.CTY.File = "data/cty/cty.plist"
 	}
@@ -261,6 +277,9 @@ func Load(filename string) (*Config, error) {
 	if strings.TrimSpace(cfg.Skew.File) == "" {
 		cfg.Skew.File = "data/skm_correction/rbnskew.json"
 	}
+	if cfg.Skew.MinSpots < 0 {
+		cfg.Skew.MinSpots = 0
+	}
 	return &cfg, nil
 }
 
@@ -271,7 +290,7 @@ func (c *Config) Print() {
 	if c.Telnet.BroadcastWorkers > 0 {
 		workerDesc = fmt.Sprintf("%d", c.Telnet.BroadcastWorkers)
 	}
-	fmt.Printf("Telnet: port %d (broadcast workers=%s)\n", c.Telnet.Port, workerDesc)
+	fmt.Printf("Telnet: port %d (broadcast workers=%s, skip_handshake=%t)\n", c.Telnet.Port, workerDesc, c.Telnet.SkipHandshake)
 	if c.RBN.Enabled {
 		fmt.Printf("RBN CW/RTTY: %s:%d (as %s)\n", c.RBN.Host, c.RBN.Port, c.RBN.Callsign)
 	}
@@ -281,9 +300,11 @@ func (c *Config) Print() {
 	if c.PSKReporter.Enabled {
 		fmt.Printf("PSKReporter: %s:%d (topic: %s)\n", c.PSKReporter.Broker, c.PSKReporter.Port, c.PSKReporter.Topic)
 	}
-	if c.Dedup.Enabled {
-		fmt.Printf("Dedup: cluster=%ds, user=%ds\n", c.Dedup.ClusterWindowSeconds, c.Dedup.UserWindowSeconds)
+	clusterWindow := "disabled"
+	if c.Dedup.ClusterWindowSeconds > 0 {
+		clusterWindow = fmt.Sprintf("%ds", c.Dedup.ClusterWindowSeconds)
 	}
+	fmt.Printf("Dedup: cluster=%s, user=%ds\n", clusterWindow, c.Dedup.UserWindowSeconds)
 	if len(c.Filter.DefaultModes) > 0 {
 		fmt.Printf("Default modes: %s\n", strings.Join(c.Filter.DefaultModes, ", "))
 	}

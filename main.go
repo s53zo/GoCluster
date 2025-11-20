@@ -134,21 +134,19 @@ func main() {
 			MaxHarmonicMultiple:  cfg.Harmonics.MaxHarmonicMultiple,
 			FrequencyToleranceHz: cfg.Harmonics.FrequencyToleranceHz,
 			MinReportDelta:       cfg.Harmonics.MinReportDelta,
+			MinReportDeltaStep:   cfg.Harmonics.MinReportDeltaStep,
 		})
 	}
 
-	// Create deduplicator if enabled
+	// Create the deduplicator (always active; a zero-second window behaves like "disabled").
 	// THIS IS THE UNIFIED DEDUP ENGINE - ALL SOURCES FEED INTO IT
-	var deduplicator *dedup.Deduplicator
-	if cfg.Dedup.Enabled {
-		window := time.Duration(cfg.Dedup.ClusterWindowSeconds) * time.Second
-		deduplicator = dedup.NewDeduplicator(window)
-		deduplicator.Start() // Start the processing loop
-		log.Printf("Deduplication enabled with %v window", window)
-
-		// Wire up dedup output to ring buffer and telnet broadcast
-		// Deduplicated spots → Ring Buffer → Broadcast to clients
-		go processOutputSpots(deduplicator, spotBuffer, nil, statsTracker, nil, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, knownCalls, freqAverager, cfg.SpotPolicy, ui) // We'll pass telnet server later
+	dedupWindow := time.Duration(cfg.Dedup.ClusterWindowSeconds) * time.Second
+	deduplicator := dedup.NewDeduplicator(dedupWindow)
+	deduplicator.Start()
+	if dedupWindow > 0 {
+		log.Printf("Deduplication active with %v window", dedupWindow)
+	} else {
+		log.Println("Deduplication disabled (cluster window=0); spots pass through unfiltered")
 	}
 
 	// Create command processor
@@ -160,6 +158,7 @@ func main() {
 		cfg.Telnet.WelcomeMessage,
 		cfg.Telnet.MaxConnections,
 		cfg.Telnet.BroadcastWorkers,
+		cfg.Telnet.SkipHandshake,
 		processor,
 	)
 
@@ -168,11 +167,8 @@ func main() {
 		log.Fatalf("Failed to start telnet server: %v", err)
 	}
 
-	// Now wire up the telnet server to the output processor
-	if cfg.Dedup.Enabled {
-		// Restart the output processor with telnet server
-		go processOutputSpots(deduplicator, spotBuffer, telnetServer, statsTracker, correctionIndex, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, knownCalls, freqAverager, cfg.SpotPolicy, ui)
-	}
+	// Start the unified output processor once the telnet server is ready
+	go processOutputSpots(deduplicator, spotBuffer, telnetServer, statsTracker, correctionIndex, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, knownCalls, freqAverager, cfg.SpotPolicy, ui)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
 	// RBN spots go INTO the deduplicator input channel
@@ -183,14 +179,8 @@ func main() {
 		if err != nil {
 			log.Printf("Warning: Failed to connect to RBN CW/RTTY: %v", err)
 		} else {
-			if cfg.Dedup.Enabled {
-				// RBN → Deduplicator Input Channel
-				go processRBNSpots(rbnClient, deduplicator, "RBN-CW")
-				log.Println("RBN CW/RTTY client feeding spots into unified dedup engine")
-			} else {
-				// No dedup - RBN goes directly to buffer (legacy path)
-				go processRBNSpotsNoDedupe(rbnClient, spotBuffer, telnetServer, statsTracker)
-			}
+			go processRBNSpots(rbnClient, deduplicator, "RBN-CW")
+			log.Println("RBN CW/RTTY client feeding spots into unified dedup engine")
 		}
 	}
 
@@ -203,14 +193,8 @@ func main() {
 		if err != nil {
 			log.Printf("Warning: Failed to connect to RBN Digital: %v", err)
 		} else {
-			if cfg.Dedup.Enabled {
-				// RBN Digital → Deduplicator Input Channel
-				go processRBNSpots(rbnDigitalClient, deduplicator, "RBN-FT")
-				log.Println("RBN Digital (FT4/FT8) client feeding spots into unified dedup engine")
-			} else {
-				// No dedup - RBN Digital goes directly to buffer (legacy path)
-				go processRBNSpotsNoDedupe(rbnDigitalClient, spotBuffer, telnetServer, statsTracker)
-			}
+			go processRBNSpots(rbnDigitalClient, deduplicator, "RBN-FT")
+			log.Println("RBN Digital (FT4/FT8) client feeding spots into unified dedup engine")
 		}
 	}
 
@@ -222,25 +206,19 @@ func main() {
 	)
 	if cfg.PSKReporter.Enabled {
 		pskrTopics = cfg.PSKReporter.SubscriptionTopics()
-		pskrClient = pskreporter.NewClient(cfg.PSKReporter.Broker, cfg.PSKReporter.Port, pskrTopics, cfg.PSKReporter.Name, cfg.PSKReporter.Workers, ctyDB)
+		pskrClient = pskreporter.NewClient(cfg.PSKReporter.Broker, cfg.PSKReporter.Port, pskrTopics, cfg.PSKReporter.Name, cfg.PSKReporter.Workers, ctyDB, skewStore)
 		err = pskrClient.Connect()
 		if err != nil {
 			log.Printf("Warning: Failed to connect to PSKReporter: %v", err)
 		} else {
-			if cfg.Dedup.Enabled {
-				// PSKReporter → Deduplicator Input Channel
-				go processPSKRSpots(pskrClient, deduplicator)
-				log.Println("PSKReporter client feeding spots into unified dedup engine")
-			} else {
-				// No dedup - PSKReporter goes directly to buffer (legacy path)
-				go processPSKRSpotsNoDedupe(pskrClient, spotBuffer, telnetServer, statsTracker)
-			}
+			go processPSKRSpots(pskrClient, deduplicator)
+			log.Println("PSKReporter client feeding spots into unified dedup engine")
 		}
 	}
 
 	// Start stats display goroutine
 	statsInterval := time.Duration(cfg.Stats.DisplayIntervalSeconds) * time.Second
-	go displayStats(statsInterval, statsTracker, deduplicator, spotBuffer, ctyDB, knownCalls, ui)
+	go displayStats(statsInterval, statsTracker, deduplicator, spotBuffer, ctyDB, knownCalls, telnetServer, ui)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -261,10 +239,12 @@ func main() {
 		}
 		log.Printf("Receiving digital mode spots from PSKReporter (topics: %s)...", topicList)
 	}
-	if cfg.Dedup.Enabled {
+	if cfg.Dedup.ClusterWindowSeconds > 0 {
 		log.Printf("Unified deduplication active: %d second window", cfg.Dedup.ClusterWindowSeconds)
-		log.Println("Architecture: ALL sources → Dedup Engine → Ring Buffer → Clients")
+	} else {
+		log.Println("Unified deduplication bypassed (window=0); duplicates are not filtered")
 	}
+	log.Println("Architecture: ALL sources → Dedup Engine → Ring Buffer → Clients")
 	log.Printf("Statistics will be displayed every %d seconds...", cfg.Stats.DisplayIntervalSeconds)
 	log.Println("---")
 
@@ -300,7 +280,7 @@ func main() {
 }
 
 // displayStats prints statistics at the configured interval
-func displayStats(interval time.Duration, tracker *stats.Tracker, dedup *dedup.Deduplicator, buf *buffer.RingBuffer, ctyDB *cty.CTYDatabase, known *spot.KnownCallsigns, dash *dashboard) {
+func displayStats(interval time.Duration, tracker *stats.Tracker, dedup *dedup.Deduplicator, buf *buffer.RingBuffer, ctyDB *cty.CTYDatabase, known *spot.KnownCallsigns, telnetSrv *telnet.Server, dash *dashboard) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -321,24 +301,29 @@ func displayStats(interval time.Duration, tracker *stats.Tracker, dedup *dedup.D
 		rbnTotal := diffCounter(sourceTotals, prevSourceCounts, "RBN")
 		rbnCW := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN", "CW")
 		rbnRTTY := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN", "RTTY")
-		lines = append(lines, fmt.Sprintf("RBN: %d / %d / %d", rbnTotal, rbnCW, rbnRTTY))
+		lines = append(lines, fmt.Sprintf("RBN: %d (TOTAL) / %d (CW) / %d (RTTY)", rbnTotal, rbnCW, rbnRTTY))
 
 		rbnFTTotal := diffCounter(sourceTotals, prevSourceCounts, "RBN-DIGITAL")
 		rbnFT8 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN-DIGITAL", "FT8")
 		rbnFT4 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN-DIGITAL", "FT4")
-		lines = append(lines, fmt.Sprintf("RBN FT: %d / %d / %d", rbnFTTotal, rbnFT8, rbnFT4))
+		lines = append(lines, fmt.Sprintf("RBN FT: %d (TOTAL) / %d (FT8) / %d (FT4)", rbnFTTotal, rbnFT8, rbnFT4))
 
 		pskTotal := diffCounter(sourceTotals, prevSourceCounts, "PSKREPORTER")
 		pskCW := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "CW")
 		pskRTTY := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "RTTY")
 		pskFT8 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "FT8")
 		pskFT4 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "FT4")
-		lines = append(lines, fmt.Sprintf("PSKReporter: %d / %d / %d / %d / %d", pskTotal, pskCW, pskRTTY, pskFT8, pskFT4))
+		lines = append(lines, fmt.Sprintf("PSKReporter: %d (TOTAL) / %d (CW) / %d (RTTY) / %d (FT8) / %d (FT4)", pskTotal, pskCW, pskRTTY, pskFT8, pskFT4))
 
 		totalCorrections := tracker.CallCorrections()
 		totalFreqCorrections := tracker.FrequencyCorrections()
-		lines = append(lines, fmt.Sprintf("Corrected calls: %d / %d", totalCorrections, totalFreqCorrections))
-		lines = append(lines, fmt.Sprintf("Harmonics suppressed: %d", tracker.HarmonicSuppressions()))
+		totalHarmonics := tracker.HarmonicSuppressions()
+		lines = append(lines, fmt.Sprintf("Corrected calls: %d (C) / %d (Q) / %d (H)", totalCorrections, totalFreqCorrections, totalHarmonics))
+		var queueDrops, clientDrops uint64
+		if telnetSrv != nil {
+			queueDrops, clientDrops = telnetSrv.BroadcastMetricSnapshot()
+		}
+		lines = append(lines, fmt.Sprintf("Telnet drops: %d (Q) / %d (C)", queueDrops, clientDrops))
 
 		prevSourceCounts = sourceTotals
 		prevSourceModeCounts = sourceModeTotals
@@ -428,8 +413,8 @@ func processOutputSpots(
 		}
 
 		if harmonicDetector != nil && harmonicCfg.Enabled {
-			if drop, fundamental := harmonicDetector.ShouldDrop(spot, time.Now().UTC()); drop {
-				harmonicMsg := fmt.Sprintf("Harmonic suppressed: %s %.1f -> %.1f kHz", spot.DXCall, spot.Frequency, fundamental)
+			if drop, fundamental, corroborators, deltaDB := harmonicDetector.ShouldDrop(spot, time.Now().UTC()); drop {
+				harmonicMsg := fmt.Sprintf("Harmonic suppressed: %s %.1f -> %.1f kHz (%d corroborators, %d dB)", spot.DXCall, spot.Frequency, fundamental, corroborators, deltaDB)
 				if tracker != nil {
 					tracker.IncrementHarmonicSuppressions()
 				}
@@ -470,58 +455,6 @@ func processOutputSpots(
 		if telnet != nil {
 			telnet.BroadcastSpot(spot)
 		}
-	}
-}
-
-// processRBNSpotsNoDedupe is the legacy path when deduplication is disabled
-// RBN → Ring Buffer → Clients (no deduplication)
-func processRBNSpotsNoDedupe(client *rbn.Client, buf *buffer.RingBuffer, telnet *telnet.Server, tracker *stats.Tracker) {
-	spotChan := client.GetSpotChannel()
-
-	for spot := range spotChan {
-		// Track spot by mode
-		modeKey := strings.ToUpper(strings.TrimSpace(spot.Mode))
-		if modeKey == "" {
-			modeKey = string(spot.SourceType)
-		}
-		tracker.IncrementMode(modeKey)
-
-		// Track spot by source node
-		sourceName := strings.ToUpper(strings.TrimSpace(spot.SourceNode))
-		if sourceName != "" {
-			tracker.IncrementSource(sourceName)
-			tracker.IncrementSourceMode(sourceName, modeKey)
-		}
-
-		// Add directly to buffer (no dedup)
-		buf.Add(spot)
-
-		// Broadcast to all connected telnet clients
-		telnet.BroadcastSpot(spot)
-	}
-}
-
-// processPSKRSpotsNoDedupe is the legacy path when deduplication is disabled
-func processPSKRSpotsNoDedupe(client *pskreporter.Client, buf *buffer.RingBuffer, telnet *telnet.Server, tracker *stats.Tracker) {
-	spotChan := client.GetSpotChannel()
-
-	for spot := range spotChan {
-		// Track spot by mode
-		modeKey := strings.ToUpper(strings.TrimSpace(spot.Mode))
-		if modeKey == "" {
-			modeKey = string(spot.SourceType)
-		}
-		tracker.IncrementMode(modeKey)
-
-		// Track spot by source node
-		sourceName := strings.ToUpper(strings.TrimSpace(spot.SourceNode))
-		if sourceName != "" {
-			tracker.IncrementSource(sourceName)
-			tracker.IncrementSourceMode(sourceName, modeKey)
-		}
-
-		buf.Add(spot)
-		telnet.BroadcastSpot(spot)
 	}
 }
 
@@ -672,12 +605,16 @@ func refreshSkewTable(cfg config.SkewConfig, store *skew.Store) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("skew: fetch failed: %w", err)
 	}
-	table, err := skew.NewTable(entries)
+	filtered := skew.FilterEntries(entries, cfg.MinSpots)
+	if len(filtered) == 0 {
+		return 0, fmt.Errorf("skew: no entries after filtering (min_spots=%d)", cfg.MinSpots)
+	}
+	table, err := skew.NewTable(filtered)
 	if err != nil {
 		return 0, fmt.Errorf("skew: build table: %w", err)
 	}
 	store.Set(table)
-	if err := skew.WriteJSON(entries, cfg.File); err != nil {
+	if err := skew.WriteJSON(filtered, cfg.File); err != nil {
 		return 0, fmt.Errorf("skew: write json: %w", err)
 	}
 	return table.Count(), nil

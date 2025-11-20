@@ -8,7 +8,9 @@ import (
 	"dxcluster/spot"
 )
 
-// Deduplicator removes duplicate spots within a time window
+// Deduplicator removes duplicate spots within a time window. A zero or negative
+// window effectively disables filtering while keeping the pipeline topology
+// intact (the component simply never flags duplicates).
 type Deduplicator struct {
 	window          time.Duration
 	shards          []cacheShard
@@ -30,7 +32,8 @@ type cacheShard struct {
 // shardCount must remain a power of two so we can use bit masking for fast shard selection.
 const shardCount = 64
 
-// NewDeduplicator creates a new deduplicator with the specified window
+// NewDeduplicator creates a new deduplicator with the specified window. Passing
+// a zero window disables suppression but still allows metrics/visibility.
 func NewDeduplicator(window time.Duration) *Deduplicator {
 	shards := make([]cacheShard, shardCount)
 	for i := range shards {
@@ -109,7 +112,8 @@ func (d *Deduplicator) process() {
 }
 
 // isDuplicateLocked checks if a spot is a duplicate within a shard.
-// Caller must hold the shard mutex.
+// Caller must hold the shard mutex. When the window is zero the function always
+// returns false, effectively bypassing deduplication.
 func isDuplicateLocked(cache map[uint32]time.Time, hash uint32, spotTime time.Time, window time.Duration) bool {
 	lastSeen, exists := cache[hash]
 	if !exists {

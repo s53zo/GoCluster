@@ -14,6 +14,7 @@ type HarmonicSettings struct {
 	MaxHarmonicMultiple  int
 	FrequencyToleranceHz float64
 	MinReportDelta       int
+	MinReportDeltaStep   float64
 }
 
 // harmonicEntry stores a recently seen "fundamental" spot for comparison.
@@ -41,26 +42,27 @@ func NewHarmonicDetector(settings HarmonicSettings) *HarmonicDetector {
 
 // ShouldDrop returns true if the given spot appears to be a harmonic of a lower
 // frequency fundamental. The second return value is the fundamental frequency
-// that triggered the drop (in kHz) for logging purposes.
-func (hd *HarmonicDetector) ShouldDrop(s *Spot, now time.Time) (bool, float64) {
+// that triggered the drop (in kHz) for logging purposes, and the third value is
+// how many fundamentals corroborated that decision.
+func (hd *HarmonicDetector) ShouldDrop(s *Spot, now time.Time) (bool, float64, int, int) {
 	if hd == nil || !hd.settings.Enabled || s == nil {
-		return false, 0
+		return false, 0, 0, 0
 	}
 	if !IsCallCorrectionCandidate(s.Mode) {
-		return false, 0
+		return false, 0, 0, 0
 	}
 
 	call := strings.ToUpper(strings.TrimSpace(s.DXCall))
 	if call == "" {
-		return false, 0
+		return false, 0, 0, 0
 	}
 
 	hd.mu.Lock()
 	defer hd.mu.Unlock()
 
 	hd.prune(call, now)
-	if fundamental := hd.detectHarmonic(call, s); fundamental > 0 {
-		return true, fundamental
+	if fundamental, corroborators, delta := hd.detectHarmonic(call, s); fundamental > 0 {
+		return true, fundamental, corroborators, delta
 	}
 
 	hd.entries[call] = append(hd.entries[call], harmonicEntry{
@@ -68,42 +70,57 @@ func (hd *HarmonicDetector) ShouldDrop(s *Spot, now time.Time) (bool, float64) {
 		report:    s.Report,
 		at:        s.Time,
 	})
-	return false, 0
+	return false, 0, 0, 0
 }
 
-func (hd *HarmonicDetector) detectHarmonic(call string, s *Spot) float64 {
+func (hd *HarmonicDetector) detectHarmonic(call string, s *Spot) (float64, int, int) {
 	candidates := hd.entries[call]
 	if len(candidates) == 0 {
-		return 0
+		return 0, 0, 0
 	}
 
 	minDelta := hd.settings.MinReportDelta
+	stepDelta := hd.settings.MinReportDeltaStep
 	toleranceKHz := hd.settings.FrequencyToleranceHz / 1000.0
 
 	var fundamental float64
+	var corroborators int
+	var deltaDB int
 	for _, entry := range candidates {
 		if entry.frequency <= 0 || s.Frequency <= entry.frequency {
 			continue
 		}
-		if minDelta > 0 && (entry.report-s.Report) < minDelta {
+		reportDelta := entry.report - s.Report
+		if minDelta > 0 && reportDelta < minDelta {
 			continue
 		}
 		for mult := 2; mult <= hd.settings.MaxHarmonicMultiple; mult++ {
 			expected := entry.frequency * float64(mult)
 			if math.Abs(expected-s.Frequency) <= toleranceKHz {
-				if entry.at.IsZero() || s.Time.Sub(entry.at) <= hd.settings.RecencyWindow {
-					fundamental = entry.frequency
+				requiredDelta := float64(minDelta)
+				if stepDelta > 0 && mult > 2 {
+					requiredDelta += stepDelta * float64(mult-2)
 				}
-			}
-			if fundamental > 0 {
+				if requiredDelta > 0 && float64(reportDelta) < requiredDelta {
+					continue
+				}
+				if entry.at.IsZero() || s.Time.Sub(entry.at) <= hd.settings.RecencyWindow {
+					if fundamental == 0 {
+						fundamental = entry.frequency
+						corroborators = 1
+						deltaDB = reportDelta
+					} else if math.Abs(entry.frequency-fundamental) <= toleranceKHz {
+						corroborators++
+					}
+				}
 				break
 			}
 		}
-		if fundamental > 0 {
-			break
-		}
 	}
-	return fundamental
+	if deltaDB < 0 {
+		deltaDB = -deltaDB
+	}
+	return fundamental, corroborators, deltaDB
 }
 
 func (hd *HarmonicDetector) prune(call string, now time.Time) {

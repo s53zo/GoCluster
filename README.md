@@ -8,15 +8,15 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
 2. **RBN Clients** (`rbn/client.go`) maintain connections to the CW/RTTY (port 7000) and Digital (port 7001) feeds. Each line is parsed, normalized, validated against the CTY database, and enriched before queuing.
 3. **PSKReporter MQTT** (`pskreporter/client.go`) subscribes to `pskr/filter/v2/+/+/#` (or one or more `pskr/filter/v2/+/<MODE>/#` topics when `pskreporter.modes` is configured), converts JSON payloads into canonical spots, and applies locator-based metadata.
 4. **CTY Database** (`cty/parser.go` + `data/cty/cty.plist`) performs longest-prefix lookups so both spotters and spotted stations carry continent/country/CQ/ITU/grid metadata.
-5. **Dedup Engine** (`dedup/deduplicator.go`) optionally filters duplicate spots before they reach the ring buffer and telnet clients.
+5. **Dedup Engine** (`dedup/deduplicator.go`) filters duplicates before they reach the ring buffer. A zero-second window effectively disables dedup, but the pipeline stays unified.
 6. **Frequency Averager** (`spot/frequency_averager.go`) merges CW/RTTY skimmer reports by averaging corroborating reports within a tolerance and rounding to 0.1 kHz once the minimum corroborators is met.
-7. **Call/Harmonic Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections and suppress harmonics; the pipeline logs/dashboards both the correction and the suppressed harmonic frequency.
-8. **Skimmer Frequency Corrections** (`cmd/rbnskewfetch`, `skew/`, `rbn/client.go`) download SM7IUN’s skew list, convert it to JSON, and apply per-spotter multiplicative factors before any callsign normalization.
+7. **Call/Harmonic Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections and suppress harmonics; the pipeline logs/dashboards both the correction and the suppressed harmonic frequency. Harmonic suppression now supports a stepped minimum dB delta (configured via `harmonics.min_report_delta_step`) so higher-order harmonics must be progressively weaker.
+8. **Skimmer Frequency Corrections** (`cmd/rbnskewfetch`, `skew/`, `rbn/client.go`, `pskreporter/client.go`) download SM7IUN’s skew list, convert it to JSON, and apply per-spotter multiplicative factors before any callsign normalization for every CW/RTTY skimmer feed.
 
 ## Data Flow and Spot Record Format
 
 ```
-[Source: RBN/PSKReporter] → Parser → CTY Lookup → Dedup (if enabled) → Ring Buffer → Telnet Broadcast
+[Source: RBN/PSKReporter] → Parser → CTY Lookup → Dedup (window-driven) → Ring Buffer → Telnet Broadcast
 ```
 
 ```

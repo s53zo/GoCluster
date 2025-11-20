@@ -8,7 +8,8 @@ telnet:
   tls_enabled: false
   max_connections: 5000
   welcome_message: "Experimental DX Cluster\nPlease login with your callsign\n"
-  broadcast_workers: 0  # 0 means automatic (half of the CPU cores, minimum 2)
+  broadcast_workers: 0    # 0 means automatic (half of the CPU cores, minimum 2)
+  skip_handshake: true    # Set true to disable Telnet option negotiation (raw TCP clients)
 
 # RBN CW/RTTY feed (port 7000)
 rbn:
@@ -32,7 +33,7 @@ pskreporter:
   name: "PSKReporter"
   broker: "mqtt.pskreporter.info"
   port: 1883
-  modes: ["FT8", "FT4", "CW", "RTTY"]  # List of MQTT modes to subscribe to simultaneously
+  modes: ["FT8", "FT4", "CW", "RTTY"]  # List of MQTT modes to subscribe to
   workers: 0                           # 0 means automatic (half of the CPU cores, minimum 1)
 
 filter:
@@ -43,8 +44,7 @@ filter:
 
 # Deduplication settings
 dedup:
-  enabled: true               # CRITICAL: Must be true to enable deduplication!
-  cluster_window_seconds: 120 # Cluster-level dedup window (prevents network loops and immediate duplicates)
+  cluster_window_seconds: 120 # Dedup window in seconds (0 disables dedup without changing the pipeline)
   user_window_seconds: 300    # User-level dedup window (per-user configurable preference)
 
 admin:
@@ -58,10 +58,10 @@ logging:
 # Consensus thresholds for automated call corrections (only CW/RTTY/SSB considered)
 call_correction:
   enabled: true                # Master switch (set true to enable)
-  min_consensus_reports: 5     # Minimum number of corroborating spotters
-  min_advantage: 2             # Candidate must exceed the original by this many spotters
+  min_consensus_reports: 6     # Minimum number of corroborating spotters
+  min_advantage: 3             # Candidate must exceed the original by this many spotters
   min_confidence_percent: 76   # Candidate supporters must represent at least this percent of unique spotters
-  recency_seconds: 120         # Supporting spots must be this recent
+  recency_seconds: 180         # Supporting spots must be this recent
   max_edit_distance: 2         # Max allowed Levenshtein distance between original and replacement
   frequency_tolerance_hz: 300  # Spots within this frequency window are considered the same signal
   invalid_action: "broadcast"  # "broadcast" original if correction fails CTY, or "suppress" to drop spot
@@ -71,13 +71,14 @@ harmonics:
   enabled: true                # Suppress harmonics when true
   recency_seconds: 120         # Look-back window for fundamental spots
   max_harmonic_multiple: 4     # Highest harmonic multiple to consider (2 = second harmonic, etc.)
-  frequency_tolerance_hz: 400  # Allowed deviation between expected and observed harmonic
+  frequency_tolerance_hz: 600  # Allowed deviation between expected and observed harmonic
   min_report_delta: 6          # Harmonics must be at least this many dB weaker to drop
+  min_report_delta_step: 3.5   # Additional dB required per harmonic order above the second
 
 spot_policy:
   max_age_seconds: 600                   # Drop spots older than this many seconds (based on spot timestamp)
-  frequency_averaging_seconds: 120       # Look-back window for CW/RTTY frequency averaging
-  frequency_averaging_tolerance_hz: 350  # Max deviation between reports when averaging
+  frequency_averaging_seconds: 90        # Look-back window for CW/RTTY frequency averaging
+  frequency_averaging_tolerance_hz: 400  # Max deviation between reports when averaging
   frequency_averaging_min_reports: 3     # Minimum corroborating reports needed to adjust frequency
 
 confidence:
@@ -94,6 +95,7 @@ skew:
   enabled: true
   url: "https://sm7iun.se/rbnskew.csv"
   file: "data/skm_correction/rbnskew.json"
+  min_spots: 500                                   # Require this many spots before trusting a skimmer's correction
 
 # Runtime statistics output interval
 stats:
