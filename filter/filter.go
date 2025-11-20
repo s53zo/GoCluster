@@ -221,6 +221,10 @@ func (f *Filter) SetMode(mode string, enabled bool) {
 		f.AllModes = false // Once we set specific modes, we're not accepting all
 	} else {
 		delete(f.Modes, mode)
+		if len(f.Modes) == 0 {
+			// No specific modes remain; revert to "accept all" so users don't get wedged.
+			f.AllModes = true
+		}
 	}
 }
 

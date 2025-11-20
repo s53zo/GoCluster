@@ -47,11 +47,12 @@ type TelnetConfig struct {
 
 // RBNConfig contains Reverse Beacon Network settings
 type RBNConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	Callsign string `yaml:"callsign"`
-	Name     string `yaml:"name"`
+	Enabled        bool   `yaml:"enabled"`
+	Host           string `yaml:"host"`
+	Port           int    `yaml:"port"`
+	Callsign       string `yaml:"callsign"`
+	Name           string `yaml:"name"`
+	KeepSSIDSuffix bool   `yaml:"keep_ssid_suffix"` // when true, retain -# SSIDs for dedup/call-correction
 }
 
 // PSKReporterConfig contains PSKReporter MQTT settings

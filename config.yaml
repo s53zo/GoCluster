@@ -17,7 +17,8 @@ rbn:
   name: "RBN-CW-RTTY"
   host: "telnet.reversebeacon.net"
   port: 7000
-  callsign: "N0CW"  # Change this to your callsign!
+  callsign: "N0CW"        # Change this to your callsign!
+  keep_ssid_suffix: true  # false collapses VE3EID-1/-2 into VE3EID-#
 
 # RBN Digital modes feed (port 7001) - FT4/FT8
 rbn_digital:
@@ -26,6 +27,7 @@ rbn_digital:
   host: "telnet.reversebeacon.net"
   port: 7001
   callsign: "N0FT"  # Change this to your callsign!
+  keep_ssid_suffix: true
 
 # PSKReporter MQTT feed
 pskreporter:

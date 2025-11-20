@@ -35,10 +35,11 @@ type Client struct {
 	skewStore *skew.Store
 	reconnect chan struct{}
 	stopOnce  sync.Once
+	keepSSID  bool
 }
 
 // NewClient creates a new RBN client
-func NewClient(host string, port int, callsign string, name string, lookup *cty.CTYDatabase, skewStore *skew.Store) *Client {
+func NewClient(host string, port int, callsign string, name string, lookup *cty.CTYDatabase, skewStore *skew.Store, keepSSID bool) *Client {
 	return &Client{
 		host:      host,
 		port:      port,
@@ -49,6 +50,7 @@ func NewClient(host string, port int, callsign string, name string, lookup *cty.
 		lookup:    lookup,
 		skewStore: skewStore,
 		reconnect: make(chan struct{}, 1),
+		keepSSID:  keepSSID,
 	}
 }
 
@@ -188,8 +190,8 @@ func (c *Client) readLoop() {
 	}
 }
 
-// normalizeRBNCallsign removes SSID from RBN skimmer callsigns
-// Example: "W3LPL-1-#" becomes "W3LPL-#"
+// normalizeRBNCallsign removes the SSID portion from RBN skimmer callsigns. Example:
+// "W3LPL-1-#" becomes "W3LPL-#".
 func normalizeRBNCallsign(call string) string {
 	// Check if it ends with -# (RBN skimmer indicator)
 	if !strings.HasSuffix(call, "-#") {
@@ -212,6 +214,15 @@ func normalizeRBNCallsign(call string) string {
 
 	// If no SSID, return as-is with -# back
 	return call
+}
+
+// normalizeSpotter normalizes the spotter (DE) callsign using either the legacy
+// SSID-collapsing behavior or the exact callsign (when keepSSID is true).
+func (c *Client) normalizeSpotter(raw string) string {
+	if c.keepSSID {
+		return spot.NormalizeCallsign(raw)
+	}
+	return normalizeRBNCallsign(raw)
 }
 
 // parseTimeFromRBN parses the HHMMZ format from RBN and creates a proper timestamp
@@ -282,7 +293,7 @@ func (c *Client) parseSpot(line string) {
 
 	// Extract common fields
 	deCallRaw := strings.TrimSuffix(parts[2], ":") // Remove trailing colon
-	deCall := normalizeRBNCallsign(deCallRaw)      // Normalize RBN callsign
+	deCall := c.normalizeSpotter(deCallRaw)        // Normalize RBN callsign
 
 	freqStr := parts[3]
 	dxCall := spot.NormalizeCallsign(parts[4])
