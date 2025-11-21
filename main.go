@@ -386,37 +386,46 @@ func processOutputSpots(
 ) {
 	outputChan := deduplicator.GetOutputChannel()
 
-	for spot := range outputChan {
-		modeKey := strings.ToUpper(strings.TrimSpace(spot.Mode))
+	for s := range outputChan {
+		if s == nil {
+			continue
+		}
+
+		s.RefreshBeaconFlag()
+		if s.IsBeacon {
+			s.Confidence = ""
+		}
+
+		modeKey := strings.ToUpper(strings.TrimSpace(s.Mode))
 		if modeKey == "" {
-			modeKey = string(spot.SourceType)
+			modeKey = string(s.SourceType)
 		}
 		tracker.IncrementMode(modeKey)
 
-		sourceName := strings.ToUpper(strings.TrimSpace(spot.SourceNode))
+		sourceName := strings.ToUpper(strings.TrimSpace(s.SourceNode))
 		if sourceName != "" {
 			tracker.IncrementSource(sourceName)
 			tracker.IncrementSourceMode(sourceName, modeKey)
 		}
 
 		if spotPolicy.MaxAgeSeconds > 0 {
-			if time.Since(spot.Time) > time.Duration(spotPolicy.MaxAgeSeconds)*time.Second {
-				// log.Printf("Spot dropped (stale): %s at %.1fkHz (age=%ds)", spot.DXCall, spot.Frequency, int(time.Since(spot.Time).Seconds()))
+			if time.Since(s.Time) > time.Duration(spotPolicy.MaxAgeSeconds)*time.Second {
+				// log.Printf("Spot dropped (stale): %s at %.1fkHz (age=%ds)", s.DXCall, s.Frequency, int(time.Since(s.Time).Seconds()))
 				continue
 			}
 		}
 
 		var suppress bool
-		if telnet != nil {
-			suppress = maybeApplyCallCorrection(spot, correctionIdx, correctionCfg, ctyDB, knownCalls, tracker, dash)
+		if telnet != nil && !s.IsBeacon {
+			suppress = maybeApplyCallCorrection(s, correctionIdx, correctionCfg, ctyDB, knownCalls, tracker, dash)
 			if suppress {
 				continue
 			}
 		}
 
-		if harmonicDetector != nil && harmonicCfg.Enabled {
-			if drop, fundamental, corroborators, deltaDB := harmonicDetector.ShouldDrop(spot, time.Now().UTC()); drop {
-				harmonicMsg := fmt.Sprintf("Harmonic suppressed: %s %.1f -> %.1f kHz (%d corroborators, %d dB)", spot.DXCall, spot.Frequency, fundamental, corroborators, deltaDB)
+		if !s.IsBeacon && harmonicDetector != nil && harmonicCfg.Enabled {
+			if drop, fundamental, corroborators, deltaDB := harmonicDetector.ShouldDrop(s, time.Now().UTC()); drop {
+				harmonicMsg := fmt.Sprintf("Harmonic suppressed: %s %.1f -> %.1f kHz (%d / %d dB)", s.DXCall, s.Frequency, fundamental, corroborators, deltaDB)
 				if tracker != nil {
 					tracker.IncrementHarmonicSuppressions()
 				}
@@ -429,18 +438,18 @@ func processOutputSpots(
 			}
 		}
 
-		if freqAvg != nil && shouldAverageFrequency(spot) {
+		if !s.IsBeacon && freqAvg != nil && shouldAverageFrequency(s) {
 			window := frequencyAverageWindow(spotPolicy)
 			tolerance := frequencyAverageTolerance(spotPolicy)
-			avg, corroborators, totalReports := freqAvg.Average(spot.DXCall, spot.Frequency, time.Now().UTC(), window, tolerance)
+			avg, corroborators, totalReports := freqAvg.Average(s.DXCall, s.Frequency, time.Now().UTC(), window, tolerance)
 			rounded := math.Round(avg*10) / 10
 			confidence := 0
 			if totalReports > 0 {
 				confidence = corroborators * 100 / totalReports
 			}
-			if corroborators >= spotPolicy.FrequencyAveragingMinReports && math.Abs(rounded-spot.Frequency) >= tolerance {
-				message := fmt.Sprintf("Frequency corrected: %s %.1f -> %.1f kHz (%d corroborators, %d%% confidence)", spot.DXCall, spot.Frequency, rounded, corroborators, confidence)
-				spot.Frequency = rounded
+			if corroborators >= spotPolicy.FrequencyAveragingMinReports && math.Abs(rounded-s.Frequency) >= tolerance {
+				message := fmt.Sprintf("Frequency corrected: %s %.1f -> %.1f kHz (%d / %d%%)", s.DXCall, s.Frequency, rounded, corroborators, confidence)
+				s.Frequency = rounded
 				if tracker != nil {
 					tracker.IncrementFrequencyCorrections()
 				}
@@ -452,10 +461,10 @@ func processOutputSpots(
 			}
 		}
 
-		buf.Add(spot)
+		buf.Add(s)
 
 		if telnet != nil {
-			telnet.BroadcastSpot(spot)
+			telnet.BroadcastSpot(s)
 		}
 	}
 }
@@ -502,7 +511,7 @@ func maybeApplyCallCorrection(spotEntry *spot.Spot, idx *spot.CorrectionIndex, c
 		return false
 	}
 
-	message := fmt.Sprintf("Call corrected: %s -> %s at %.1f kHz (%d corroborators, %d%% confidence)",
+	message := fmt.Sprintf("Call corrected: %s -> %s at %.1f kHz (%d / %d%%)",
 		spotEntry.DXCall, corrected, spotEntry.Frequency, supporters, correctedConfidence)
 
 	if ctyDB != nil {

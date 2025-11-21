@@ -164,6 +164,11 @@ const (
 	defaultWorkerQueueSize    = 128
 )
 
+const (
+	setFilterUsageMsg   = "Usage: SET/FILTER BAND <band>[,<band>...] | SET/FILTER MODE <mode>[,<mode>...] | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | SET/FILTER BEACON\n"
+	unsetFilterUsageMsg = "Usage: UNSET/FILTER ALL | UNSET/FILTER BAND <band>[,<band>...] | UNSET/FILTER MODE <mode>[,<mode>...] | UNSET/FILTER CALL | UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | UNSET/FILTER BEACON\n"
+)
+
 // ServerOptions configures the telnet server instance.
 type ServerOptions struct {
 	Port             int
@@ -545,22 +550,31 @@ func (c *Client) handleFilterCommand(cmd string) string {
 					}
 				}
 				return fmt.Sprintf("Confidence symbols: %s\n", b.String())
+			case "beacon":
+				status := "ENABLED"
+				if !c.filter.BeaconsEnabled() {
+					status = "DISABLED"
+				}
+				return fmt.Sprintf("Beacon spots: %s\n", status)
 			}
 		}
 
 		return fmt.Sprintf("Current filters: %s\n", c.filter.String())
 
 	case "set/filter":
-		if len(parts) < 3 {
-			return "Usage: SET/FILTER BAND <band>[,<band>...] | SET/FILTER MODE <mode>[,<mode>...] | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
+		if len(parts) < 2 {
+			return setFilterUsageMsg
 		}
 
 		filterType := strings.ToUpper(parts[1])
+		if filterType != "BEACON" && len(parts) < 3 {
+			return setFilterUsageMsg
+		}
 		switch filterType {
 		case "BAND":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: SET/FILTER BAND <band>[,<band>...] | SET/FILTER MODE <mode>[,<mode>...] | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
+				return setFilterUsageMsg
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetBands()
@@ -569,7 +583,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			rawBands := parseBandList(value)
 			if len(rawBands) == 0 {
-				return "Usage: SET/FILTER BAND <band>[,<band>...] | SET/FILTER MODE <mode>[,<mode>...] | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
+				return setFilterUsageMsg
 			}
 			normalizedBands := make([]string, 0, len(rawBands))
 			seen := make(map[string]bool)
@@ -589,7 +603,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 				return fmt.Sprintf("Unknown band: %s\nSupported bands: %s\n", strings.Join(invalid, ", "), strings.Join(spot.SupportedBandNames(), ", "))
 			}
 			if len(normalizedBands) == 0 {
-				return "Usage: SET/FILTER BAND <band>[,<band>...] | SET/FILTER MODE <mode>[,<mode>...] | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
+				return setFilterUsageMsg
 			}
 			for _, band := range normalizedBands {
 				c.filter.SetBand(band, true)
@@ -647,13 +661,17 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			c.saveFilter()
 			return fmt.Sprintf("Confidence symbols enabled: %s\n", strings.Join(symbols, ", "))
+		case "BEACON":
+			c.filter.SetBeaconEnabled(true)
+			c.saveFilter()
+			return "Beacon spots enabled\n"
 		default:
-			return "Unknown filter type. Use: BAND, MODE, CALL, or CONFIDENCE\n"
+			return "Unknown filter type. Use: BAND, MODE, CALL, CONFIDENCE, or BEACON\n"
 		}
 
 	case "unset/filter":
 		if len(parts) < 2 {
-			return "Usage: UNSET/FILTER ALL | UNSET/FILTER BAND <band>[,<band>...] | UNSET/FILTER MODE <mode>[,<mode>...] | UNSET/FILTER CALL | UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
+			return unsetFilterUsageMsg
 		}
 
 		filterType := strings.ToUpper(parts[1])
@@ -752,8 +770,12 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			c.saveFilter()
 			return fmt.Sprintf("Confidence symbols disabled: %s\n", strings.Join(symbols, ", "))
+		case "BEACON":
+			c.filter.SetBeaconEnabled(false)
+			c.saveFilter()
+			return "Beacon spots disabled\n"
 		default:
-			return "Unknown filter type. Use: ALL, BAND, MODE, CALL, or CONFIDENCE\n"
+			return "Unknown filter type. Use: ALL, BAND, MODE, CALL, CONFIDENCE, or BEACON\n"
 		}
 
 	default:

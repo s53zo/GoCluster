@@ -34,3 +34,9 @@ func IsValidCallsign(call string) bool {
 	normalized := NormalizeCallsign(call)
 	return validateNormalizedCallsign(normalized)
 }
+
+// IsBeaconCall reports whether the normalized callsign ends with /B.
+func IsBeaconCall(call string) bool {
+	normalized := NormalizeCallsign(call)
+	return strings.HasSuffix(normalized, "/B")
+}

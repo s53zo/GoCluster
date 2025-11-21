@@ -35,6 +35,7 @@ type Spot struct {
 	SourceNode string       // Originating node/cluster
 	TTL        uint8        // Time-to-live for loop prevention
 	IsHuman    bool         // Whether the spot originated from a human operator
+	IsBeacon   bool         // True when DX call ends with /B (beacon identifiers)
 	DXMetadata CallMetadata // Metadata for the DX station
 	DEMetadata CallMetadata // Metadata for the spotter station
 	Confidence string       // Consensus confidence label (e.g., "75%" or "?")
@@ -53,7 +54,7 @@ type CallMetadata struct {
 
 // NewSpot creates a new spot with sensible defaults
 func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
-	return &Spot{
+	spot := &Spot{
 		DXCall:     strings.ToUpper(dxCall),
 		DECall:     strings.ToUpper(deCall),
 		Frequency:  freq,
@@ -65,6 +66,8 @@ func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
 		Report:     0, // 0 means no report available
 		IsHuman:    true,
 	}
+	spot.RefreshBeaconFlag()
+	return spot
 }
 
 // Hash32 returns a 32-bit hash for deduplication

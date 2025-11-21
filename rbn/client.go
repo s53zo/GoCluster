@@ -401,6 +401,8 @@ func (c *Client) parseSpot(line string) {
 		s.Comment = comment
 	}
 
+	s.RefreshBeaconFlag()
+
 	// Determine source type for all modes: FT8/FT4 are digital, others are RBN (CW/RTTY)
 	modeUpper := strings.ToUpper(mode)
 	switch modeUpper {

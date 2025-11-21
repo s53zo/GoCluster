@@ -291,6 +291,8 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 	s.DXMetadata.Grid = msg.SenderLocator
 	s.DEMetadata.Grid = msg.ReceiverLocator
 
+	s.RefreshBeaconFlag()
+
 	return s
 }
 func metadataFromPrefix(info *cty.PrefixInfo) spot.CallMetadata {

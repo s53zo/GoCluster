@@ -10,7 +10,7 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
 4. **CTY Database** (`cty/parser.go` + `data/cty/cty.plist`) performs longest-prefix lookups so both spotters and spotted stations carry continent/country/CQ/ITU/grid metadata.
 5. **Dedup Engine** (`dedup/deduplicator.go`) filters duplicates before they reach the ring buffer. A zero-second window effectively disables dedup, but the pipeline stays unified.
 6. **Frequency Averager** (`spot/frequency_averager.go`) merges CW/RTTY skimmer reports by averaging corroborating reports within a tolerance and rounding to 0.1 kHz once the minimum corroborators is met.
-7. **Call/Harmonic Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections and suppress harmonics; the pipeline logs/dashboards both the correction and the suppressed harmonic frequency. Harmonic suppression now supports a stepped minimum dB delta (configured via `harmonics.min_report_delta_step`) so higher-order harmonics must be progressively weaker. Call correction also honours `call_correction.min_snr_cw` / `min_snr_rtty` so marginal decodes can be ignored when counting corroborators.
+7. **Call/Harmonic Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections and suppress harmonics; the pipeline logs/dashboards both the correction and the suppressed harmonic frequency. Harmonic suppression now supports a stepped minimum dB delta (configured via `harmonics.min_report_delta_step`) so higher-order harmonics must be progressively weaker. Call correction also honours `call_correction.min_snr_cw` / `min_snr_rtty` so marginal decodes can be ignored when counting corroborators. Calls ending in `/B` (standard beacon IDs) are auto-tagged and bypass these correction/harmonic steps.
 8. **Skimmer Frequency Corrections** (`cmd/rbnskewfetch`, `skew/`, `rbn/client.go`, `pskreporter/client.go`) download SM7IUN’s skew list, convert it to JSON, and apply per-spotter multiplicative factors before any callsign normalization for every CW/RTTY skimmer feed.
 
 ## Data Flow and Spot Record Format
@@ -64,10 +64,11 @@ Each `spot.Spot` stores:
 - **Frequency** (kHz), **Band**, **Mode**, **Report** (dB/SNR)
 - **Time** – UTC timestamp from the source
 - **Comment** – parsed message or `Locator>Locator`
-- **SourceType / SourceNode** – origin tags (`RBN`, `RBN-DIGITAL`, `PSKREPORTER`, etc.)
-- **TTL** – hop count preventing loops
-- **IsHuman** – whether the spot was reported by a human operator (automated feeds set this to false)
-- **DXMetadata / DEMetadata** – structured `CallMetadata` each containing:
+- **SourceType / SourceNode** - origin tags (`RBN`, `RBN-DIGITAL`, `PSKREPORTER`, etc.)
+- **TTL** - hop count preventing loops
+- **IsHuman** - whether the spot was reported by a human operator (automated feeds set this to false)
+- **IsBeacon** - true when the DX call ends with `/B` or the comment mentions `NCDXF`/`BEACON` (used to suppress beacon corrections/filtering)
+- **DXMetadata / DEMetadata** - structured `CallMetadata` each containing:
 	- `Continent`
 	- `Country`
 	- `CQZone`
@@ -90,14 +91,17 @@ Filter management commands are implemented directly in `telnet/server.go` and op
 - `SHOW/FILTER MODES` – lists every supported mode along with whether it is currently enabled for the session.
 - `SHOW/FILTER BANDS` – lists all supported bands that can be enabled.
 - `SET/FILTER BAND <band>[,<band>...]` – enables filtering for the comma- or space-separated list (each item normalized via `spot.NormalizeBand`), or specify `ALL` to accept every band; use the band names from `spot.SupportedBandNames()`.
-- `SET/FILTER MODE <mode>[,<mode>...]` – enables one or more modes (comma- or space-separated) that must exist in `filter.SupportedModes`, or specify `ALL` to accept every mode.
-- `SET/FILTER CALL <pattern>` – begins delivering only spots matching the supplied callsign pattern.
-- `SET/FILTER CONFIDENCE <symbol>[,<symbol>...]` – enables the comma- or space-separated list of consensus glyphs (valid symbols: `?`, `S`, `C`, `P`, `V`, `B`; use `ALL` to accept every glyph).
-- `UNSET/FILTER ALL` – resets every filter back to the default (no filtering).
-- `UNSET/FILTER BAND <band>[,<band>...]` – disables only the comma- or space-separated list of bands provided (use `ALL` to clear every band filter).
-- `UNSET/FILTER MODE <mode>[,<mode>...]` – disables only the comma- or space-separated list of modes provided (specify `ALL` to clear every mode filter).
-- `UNSET/FILTER CALL` – removes all callsign patterns.
-- `UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...]` – disables only the comma- or space-separated list of glyphs provided (use `ALL` to clear the whitelist).
+- `SET/FILTER MODE <mode>[,<mode>...]` - enables one or more modes (comma- or space-separated) that must exist in `filter.SupportedModes`, or specify `ALL` to accept every mode.
+- `SET/FILTER CALL <pattern>` - begins delivering only spots matching the supplied callsign pattern.
+- `SET/FILTER CONFIDENCE <symbol>[,<symbol>...]` - enables the comma- or space-separated list of consensus glyphs (valid symbols: `?`, `S`, `C`, `P`, `V`, `B`; use `ALL` to accept every glyph).
+- `SET/FILTER BEACON` - explicitly enable delivery of beacon spots (DX calls ending `/B`; enabled by default).
+- `UNSET/FILTER ALL` - resets every filter back to the default (no filtering).
+- `UNSET/FILTER BAND <band>[,<band>...]` - disables only the comma- or space-separated list of bands provided (use `ALL` to clear every band filter).
+- `UNSET/FILTER MODE <mode>[,<mode>...]` - disables only the comma- or space-separated list of modes provided (specify `ALL` to clear every mode filter).
+- `UNSET/FILTER CALL` - removes all callsign patterns.
+- `UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...]` - disables only the comma- or space-separated list of glyphs provided (use `ALL` to clear the whitelist).
+- `UNSET/FILTER BEACON` - drop beacon spots entirely (they remain tagged internally for future processing).
+- `SHOW/FILTER BEACON` - display the current beacon-filter state.
 - `SHOW/FILTER CONFIDENCE` – lists each glyph alongside whether it is currently enabled.
 
 Band, mode, and confidence commands share identical semantics: they accept comma- or space-separated lists, ignore duplicates/case, and treat the literal `ALL` as a shorthand to reset that filter back to "allow every band/mode/confidence glyph."
@@ -113,6 +117,7 @@ Confidence indicator legend in telnet output:
 
 Use `SET/FILTER CONFIDENCE` with the glyphs above to whitelist the consensus levels you want to see (for example, `SET/FILTER CONFIDENCE P,V` keeps strong/very strong reports while dropping `?`/`S`/`B` entries).
 
+Use `UNSET/FILTER BEACON` to suppress DX beacons when you only want live operator traffic; `SET/FILTER BEACON` re-enables them, and `SHOW/FILTER BEACON` reports the current state. Regardless of delivery, `/B` spots are excluded from call-correction, frequency-averaging, and harmonic checks.
 Errors during filter commands return a usage message (e.g., invalid bands or modes refer to the supported lists) and the `SHOW/FILTER` commands help confirm the active settings.
 
 ## RBN Skew Corrections
@@ -135,9 +140,9 @@ To match the 100 Hz accuracy of the underlying skimmers, the corrected frequency
 
 ## Runtime Logs and Corrections
 
-- **Call corrections**: `2025/11/19 18:50:45 Call corrected: VE3N -> VE3NE at 7011.1 kHz (8 corroborators, 88% confidence)`
-- **Frequency averaging**: `2025/11/19 18:50:45 Frequency corrected: VE3NE 7011.3 -> 7011.1 kHz (8 corroborators, 88% confidence)`
-- **Harmonic suppression**: `2025/11/19 18:50:45 Harmonic suppressed: VE3NE 14022.0 -> 7011.0 kHz` plus a paired frequency-corrected line indicating the fundamental retained.
+- **Call corrections**: `2025/11/19 18:50:45 Call corrected: VE3N -> VE3NE at 7011.1 kHz (8 / 88%)`
+- **Frequency averaging**: `2025/11/19 18:50:45 Frequency corrected: VE3NE 7011.3 -> 7011.1 kHz (8 / 88%)`
+- **Harmonic suppression**: `2025/11/19 18:50:45 Harmonic suppressed: VE3NE 14022.0 -> 7011.0 kHz (3 / 18 dB)` plus a paired frequency-corrected line indicating the fundamental retained.
 
 ### Sample Session
 

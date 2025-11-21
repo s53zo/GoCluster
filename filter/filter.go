@@ -148,29 +148,32 @@ func EnsureUserDataDir() error {
 
 // Filter represents a user's spot filtering preferences.
 //
-// The filter maintains four types of criteria that can be combined:
+// The filter maintains five types of criteria that can be combined:
 //  1. Band filters: Which amateur radio bands to accept (20m, 40m, 160m)
 //  2. Mode filters: Which operating modes to accept (CW, USB, FT8, etc.)
 //  3. Callsign patterns: Which callsigns to accept (W1*, LZ5VV, etc.)
 //  4. Confidence glyphs: Which consensus indicators (?, S, C, P, V, B) to accept.
+//  5. Beacon inclusion: Whether DX calls ending in /B (beacons) should be delivered.
 //
 // Default Behavior:
 //   - AllBands=true: accept every band
 //   - AllModes=false with the curated default mode list pre-enabled
 //   - Callsign patterns: Only applied if non-empty (no impact on band/mode filters)
 //   - AllConfidence=true: accept every consensus glyph until specific ones are enabled
+//   - IncludeBeacons=true: beacon spots are delivered unless explicitly disabled
 //
 // Thread Safety:
 //   - Each client has their own Filter instance (no sharing)
 //   - No internal locking needed (single-threaded per client)
 type Filter struct {
-	Bands         map[string]bool // Enabled bands (e.g., "20m" = true, "40m" = true)
-	Modes         map[string]bool // Enabled modes (e.g., "CW" = true, "FT8" = true)
-	Callsigns     []string        // Callsign patterns (e.g., ["W1*", "LZ5VV"])
-	AllBands      bool            // If true, accept all bands (Bands map ignored)
-	AllModes      bool            // If true, accept all modes (Modes map ignored)
-	Confidence    map[string]bool // Enabled confidence glyphs (e.g., {"P": true, "V": true})
-	AllConfidence bool            // If true, accept all confidence glyphs (Confidence map ignored)
+	Bands          map[string]bool // Enabled bands (e.g., "20m" = true, "40m" = true)
+	Modes          map[string]bool // Enabled modes (e.g., "CW" = true, "FT8" = true)
+	Callsigns      []string        // Callsign patterns (e.g., ["W1*", "LZ5VV"])
+	AllBands       bool            // If true, accept all bands (Bands map ignored)
+	AllModes       bool            // If true, accept all modes (Modes map ignored)
+	Confidence     map[string]bool // Enabled confidence glyphs (e.g., {"P": true, "V": true})
+	AllConfidence  bool            // If true, accept all confidence glyphs (Confidence map ignored)
+	IncludeBeacons *bool           `yaml:"include_beacons,omitempty"` // nil/true delivers beacons; false suppresses
 
 	// LegacyMinConfidence captures the old percentage-based filter persisted to
 	// YAML so we can migrate user data to the new glyph-based approach.
@@ -198,6 +201,7 @@ func NewFilter() *Filter {
 	for _, mode := range defaultModeSelection {
 		f.Modes[mode] = true
 	}
+	f.SetBeaconEnabled(true)
 	return f
 }
 
@@ -346,6 +350,23 @@ func (f *Filter) ResetConfidence() {
 	f.LegacyMinConfidence = 0
 }
 
+// SetBeaconEnabled controls whether DX beacons (/B) are delivered.
+func (f *Filter) SetBeaconEnabled(enabled bool) {
+	if f == nil {
+		return
+	}
+	value := enabled
+	f.IncludeBeacons = &value
+}
+
+// BeaconsEnabled reports whether the filter currently allows beacon spots.
+func (f *Filter) BeaconsEnabled() bool {
+	if f == nil || f.IncludeBeacons == nil {
+		return true
+	}
+	return *f.IncludeBeacons
+}
+
 // ResetBands clears all band filters and accepts all bands.
 //
 // Behavior:
@@ -396,6 +417,7 @@ func (f *Filter) Reset() {
 	f.ResetModes()
 	f.ClearCallsignPatterns()
 	f.ResetConfidence()
+	f.SetBeaconEnabled(true)
 }
 
 // Matches returns true if the spot passes all active filters.
@@ -419,6 +441,10 @@ func (f *Filter) Reset() {
 //	filter.Matches(spot_40m_CW)   → false (wrong band)
 //	filter.Matches(spot_20m_USB)  → false (wrong mode)
 func (f *Filter) Matches(s *spot.Spot) bool {
+	if s != nil && s.IsBeacon && !f.BeaconsEnabled() {
+		return false
+	}
+
 	// Check band filter
 	if !f.AllBands {
 		spotBand := spot.NormalizeBand(s.Band)
@@ -575,6 +601,12 @@ func (f *Filter) String() string {
 		} else {
 			parts = append(parts, "Confidence: NONE (no spots will pass)")
 		}
+	}
+
+	if f.BeaconsEnabled() {
+		parts = append(parts, "Beacons: ON")
+	} else {
+		parts = append(parts, "Beacons: OFF")
 	}
 
 	if len(parts) == 0 {

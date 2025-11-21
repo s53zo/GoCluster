@@ -60,12 +60,15 @@ Filter commands (use from telnet session):
 	SET/FILTER BAND <band>[,<band>...] - Enable specific bands (comma/space separated, or ALL)
 	SET/FILTER MODE <mode>[,<mode>...] - Enable modes (comma or space separated, or ALL)
 	SET/FILTER CONFIDENCE <symbol>[,<symbol>...] - Enable consensus glyphs (?,S,C,P,V,B or ALL)
+	SET/FILTER BEACON - Deliver DX beacons (calls ending in /B)
 	UNSET/FILTER BAND <band>[,<band>...]      - Disable listed bands (use ALL to clear)
 	UNSET/FILTER MODE <mode>[,<mode>...]      - Disable listed modes (use ALL to clear)
 	UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] - Disable listed glyphs (use ALL to clear)
+	UNSET/FILTER BEACON - Suppress DX beacons
 	SHOW/FILTER BANDS             - List supported bands
 	SHOW/FILTER MODES             - Show supported modes and enabled state
 	SHOW/FILTER CONFIDENCE        - Show supported confidence glyphs and enabled state
+	SHOW/FILTER BEACON            - Show whether beacon spots are enabled
 
 Supported modes: %s
 Supported bands: %s
