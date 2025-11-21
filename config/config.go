@@ -24,10 +24,10 @@ type Config struct {
 	CallCorrection CallCorrectionConfig `yaml:"call_correction"`
 	Harmonics      HarmonicConfig       `yaml:"harmonics"`
 	SpotPolicy     SpotPolicy           `yaml:"spot_policy"`
-	Confidence     ConfidenceConfig     `yaml:"confidence"`
 	CTY            CTYConfig            `yaml:"cty"`
 	Buffer         BufferConfig         `yaml:"buffer"`
 	Skew           SkewConfig           `yaml:"skew"`
+	KnownCalls     KnownCallsConfig     `yaml:"known_calls"`
 }
 
 // ServerConfig contains general server settings
@@ -194,9 +194,12 @@ type SkewConfig struct {
 	RefreshUTC string `yaml:"refresh_utc"`
 }
 
-// ConfidenceConfig controls external data for adjusting confidence.
-type ConfidenceConfig struct {
-	KnownCallsignsFile string `yaml:"known_callsigns_file"`
+// KnownCallsConfig controls downloading of the known callsign list.
+type KnownCallsConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	URL        string `yaml:"url"`
+	File       string `yaml:"file"`
+	RefreshUTC string `yaml:"refresh_utc"`
 }
 
 // CTYConfig allows overriding the CTY prefix database path.
@@ -283,6 +286,13 @@ func Load(filename string) (*Config, error) {
 	}
 	if cfg.SpotPolicy.FrequencyAveragingMinReports <= 0 {
 		cfg.SpotPolicy.FrequencyAveragingMinReports = 4
+	}
+
+	if strings.TrimSpace(cfg.KnownCalls.File) == "" {
+		cfg.KnownCalls.File = "data/scp/MASTER.SCP"
+	}
+	if cfg.KnownCalls.RefreshUTC == "" {
+		cfg.KnownCalls.RefreshUTC = "01:00"
 	}
 
 	// Normalize dedup settings so the window drives behavior.
@@ -374,8 +384,8 @@ func (c *Config) Print() {
 	if c.CTY.File != "" {
 		fmt.Printf("CTY database: %s\n", c.CTY.File)
 	}
-	if c.Confidence.KnownCallsignsFile != "" {
-		fmt.Printf("Confidence: known_calls=%s\n", c.Confidence.KnownCallsignsFile)
+	if c.KnownCalls.Enabled && c.KnownCalls.URL != "" {
+		fmt.Printf("Known calls refresh: %s UTC (source=%s)\n", c.KnownCalls.RefreshUTC, c.KnownCalls.URL)
 	}
 	if c.Skew.Enabled {
 		fmt.Printf("Skew: refresh %s UTC (min_spots=%d source=%s)\n", c.Skew.RefreshUTC, c.Skew.MinSpots, c.Skew.URL)

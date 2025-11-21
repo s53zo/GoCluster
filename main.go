@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -91,14 +95,39 @@ func main() {
 	}
 	spot.SetFrequencyToleranceHz(cfg.CallCorrection.FrequencyToleranceHz)
 
-	var knownCalls *spot.KnownCallsigns
-	if cfg.Confidence.KnownCallsignsFile != "" {
-		knownCalls, err = spot.LoadKnownCallsigns(cfg.Confidence.KnownCallsignsFile)
-		if err != nil {
-			log.Printf("Warning: failed to load known callsigns: %v", err)
-		} else {
-			log.Printf("Loaded %d known callsigns from %s", knownCalls.Count(), cfg.Confidence.KnownCallsignsFile)
+	var knownCalls atomic.Pointer[spot.KnownCallsigns]
+	knownCallsPath := strings.TrimSpace(cfg.KnownCalls.File)
+	knownCallsURL := strings.TrimSpace(cfg.KnownCalls.URL)
+	if knownCallsPath != "" {
+		if _, err := os.Stat(knownCallsPath); err != nil {
+			if errors.Is(err, os.ErrNotExist) && knownCallsURL != "" {
+				if fresh, refreshErr := refreshKnownCallsigns(cfg.KnownCalls); refreshErr != nil {
+					log.Printf("Warning: known calls download failed: %v", refreshErr)
+				} else {
+					knownCalls.Store(fresh)
+					log.Printf("Downloaded %d known callsigns from %s", fresh.Count(), knownCallsURL)
+				}
+			} else if err != nil {
+				log.Printf("Warning: unable to access known calls file %s: %v", knownCallsPath, err)
+			}
 		}
+		if knownCalls.Load() == nil {
+			if loaded, loadErr := spot.LoadKnownCallsigns(knownCallsPath); loadErr != nil {
+				log.Printf("Warning: failed to load known callsigns: %v", loadErr)
+			} else {
+				knownCalls.Store(loaded)
+				log.Printf("Loaded %d known callsigns from %s", loaded.Count(), knownCallsPath)
+			}
+		}
+	}
+	if cfg.KnownCalls.Enabled && knownCallsURL != "" && knownCallsPath != "" {
+		if knownCalls.Load() != nil {
+			startKnownCallScheduler(cfg.KnownCalls, &knownCalls)
+		} else {
+			log.Printf("Warning: known calls scheduler disabled (no initial data); ensure %s is reachable", cfg.KnownCalls.URL)
+		}
+	} else if cfg.KnownCalls.Enabled {
+		log.Printf("Warning: known calls download enabled but url or file missing")
 	}
 
 	var skewStore *skew.Store
@@ -170,7 +199,7 @@ func main() {
 	}
 
 	// Start the unified output processor once the telnet server is ready
-	go processOutputSpots(deduplicator, spotBuffer, telnetServer, statsTracker, correctionIndex, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, knownCalls, freqAverager, cfg.SpotPolicy, ui)
+	go processOutputSpots(deduplicator, spotBuffer, telnetServer, statsTracker, correctionIndex, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
 	// RBN spots go INTO the deduplicator input channel
@@ -220,7 +249,7 @@ func main() {
 
 	// Start stats display goroutine
 	statsInterval := time.Duration(cfg.Stats.DisplayIntervalSeconds) * time.Second
-	go displayStats(statsInterval, statsTracker, deduplicator, spotBuffer, ctyDB, knownCalls, telnetServer, ui)
+	go displayStats(statsInterval, statsTracker, deduplicator, spotBuffer, ctyDB, &knownCalls, telnetServer, ui)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -282,7 +311,7 @@ func main() {
 }
 
 // displayStats prints statistics at the configured interval
-func displayStats(interval time.Duration, tracker *stats.Tracker, dedup *dedup.Deduplicator, buf *buffer.RingBuffer, ctyDB *cty.CTYDatabase, known *spot.KnownCallsigns, telnetSrv *telnet.Server, dash *dashboard) {
+func displayStats(interval time.Duration, tracker *stats.Tracker, dedup *dedup.Deduplicator, buf *buffer.RingBuffer, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash *dashboard) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -295,7 +324,7 @@ func displayStats(interval time.Duration, tracker *stats.Tracker, dedup *dedup.D
 	for range ticker.C {
 		lines := make([]string, 0, 6)
 		lines = append(lines, formatUptimeLine(tracker.GetUptime()))
-		lines = append(lines, formatMemoryLine(buf, dedup, ctyDB, known))
+		lines = append(lines, formatMemoryLine(buf, dedup, ctyDB, knownPtr))
 
 		sourceTotals := tracker.GetSourceCounts()
 		sourceModeTotals := tracker.GetSourceModeCounts()
@@ -379,7 +408,7 @@ func processOutputSpots(
 	ctyDB *cty.CTYDatabase,
 	harmonicDetector *spot.HarmonicDetector,
 	harmonicCfg config.HarmonicConfig,
-	knownCalls *spot.KnownCallsigns,
+	knownCalls *atomic.Pointer[spot.KnownCallsigns],
 	freqAvg *spot.FrequencyAverager,
 	spotPolicy config.SpotPolicy,
 	dash *dashboard,
@@ -469,7 +498,7 @@ func processOutputSpots(
 	}
 }
 
-func maybeApplyCallCorrection(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, known *spot.KnownCallsigns, tracker *stats.Tracker, dash *dashboard) bool {
+func maybeApplyCallCorrection(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash *dashboard) bool {
 	if spotEntry == nil {
 		return false
 	}
@@ -498,7 +527,12 @@ func maybeApplyCallCorrection(spotEntry *spot.Spot, idx *spot.CorrectionIndex, c
 	others := idx.Candidates(spotEntry, now, window)
 	corrected, supporters, correctedConfidence, subjectConfidence, totalReporters, ok := spot.SuggestCallCorrection(spotEntry, others, settings, now)
 
-	knownCall := known != nil && known.Contains(spotEntry.DXCall)
+	var knownCall bool
+	if knownPtr != nil {
+		if known := knownPtr.Load(); known != nil {
+			knownCall = known.Contains(spotEntry.DXCall)
+		}
+	}
 	ctyMatch := false
 	if ctyDB != nil {
 		if _, ok := ctyDB.LookupCallsign(spotEntry.DXCall); ok {
@@ -671,7 +705,117 @@ func skewRefreshHourMinute(cfg config.SkewConfig) (int, int) {
 	return 0, 30
 }
 
-func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, ctyDB *cty.CTYDatabase, known *spot.KnownCallsigns) string {
+// startKnownCallScheduler downloads the known-calls file at the configured UTC
+// time every day and updates the in-memory cache pointer after each refresh.
+func startKnownCallScheduler(cfg config.KnownCallsConfig, knownPtr *atomic.Pointer[spot.KnownCallsigns]) {
+	if knownPtr == nil {
+		return
+	}
+	go func() {
+		for {
+			delay := nextKnownCallRefreshDelay(cfg, time.Now().UTC())
+			timer := time.NewTimer(delay)
+			<-timer.C
+			if fresh, err := refreshKnownCallsigns(cfg); err != nil {
+				log.Printf("Warning: scheduled known calls download failed: %v", err)
+			} else {
+				knownPtr.Store(fresh)
+				log.Printf("Scheduled known calls download complete (%d entries)", fresh.Count())
+			}
+		}
+	}()
+}
+
+// refreshKnownCallsigns downloads the known calls file, writes it to disk, and
+// returns the parsed cache.
+func refreshKnownCallsigns(cfg config.KnownCallsConfig) (*spot.KnownCallsigns, error) {
+	url := strings.TrimSpace(cfg.URL)
+	path := strings.TrimSpace(cfg.File)
+	if url == "" {
+		return nil, errors.New("known calls: URL is empty")
+	}
+	if path == "" {
+		return nil, errors.New("known calls: file path is empty")
+	}
+	if err := downloadKnownCallFile(url, path); err != nil {
+		return nil, err
+	}
+	return spot.LoadKnownCallsigns(path)
+}
+
+// downloadKnownCallFile streams the remote SCP file to a temp file and swaps it
+// into place atomically so readers never see a partial write.
+func downloadKnownCallFile(url, destination string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("known calls: build request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("known calls: fetch failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("known calls: fetch failed: status %s", resp.Status)
+	}
+
+	dir := filepath.Dir(destination)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("known calls: create directory: %w", err)
+		}
+	}
+	tmpDir := dir
+	if tmpDir == "" {
+		tmpDir = "."
+	}
+	tmpFile, err := os.CreateTemp(tmpDir, "knowncalls-*.tmp")
+	if err != nil {
+		return fmt.Errorf("known calls: create temp file: %w", err)
+	}
+	tmpName := tmpFile.Name()
+	defer os.Remove(tmpName)
+
+	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("known calls: copy body: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("known calls: finalize temp file: %w", err)
+	}
+	if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("known calls: remove old file: %w", err)
+	}
+	if err := os.Rename(tmpName, destination); err != nil {
+		return fmt.Errorf("known calls: replace file: %w", err)
+	}
+	return nil
+}
+
+func nextKnownCallRefreshDelay(cfg config.KnownCallsConfig, now time.Time) time.Duration {
+	hour, minute := knownCallRefreshHourMinute(cfg)
+	target := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, time.UTC)
+	if !target.After(now) {
+		target = target.Add(24 * time.Hour)
+	}
+	return target.Sub(now)
+}
+
+func knownCallRefreshHourMinute(cfg config.KnownCallsConfig) (int, int) {
+	refresh := strings.TrimSpace(cfg.RefreshUTC)
+	if refresh == "" {
+		refresh = "01:00"
+	}
+	if parsed, err := time.Parse("15:04", refresh); err == nil {
+		return parsed.Hour(), parsed.Minute()
+	}
+	return 1, 0
+}
+
+func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns]) string {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	execMB := bytesToMB(mem.Alloc)
@@ -703,6 +847,10 @@ func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, ctyDB *
 
 	knownMB := 0.0
 	knownRatio := 0.0
+	var known *spot.KnownCallsigns
+	if knownPtr != nil {
+		known = knownPtr.Load()
+	}
 	if known != nil {
 		knownMB = bytesToMB(uint64(known.Count() * knownCallEntryBytes))
 		lookups, hits := known.Stats()

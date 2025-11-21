@@ -89,8 +89,12 @@ spot_policy:
   frequency_averaging_tolerance_hz: 300  # Max deviation between reports when averaging
   frequency_averaging_min_reports: 3     # Minimum corroborating reports needed to adjust frequency
 
-confidence:
-  known_callsigns_file: "data/scp/MASTER.SCP"      # Optional path to newline-delimited list of known calls
+# Known calls list auto-refresh (downloads at startup if file missing, then daily at refresh_utc)
+known_calls:
+  enabled: true
+  url: "https://www.supercheckpartial.com/MASTER.SCP"
+  file: "data/scp/MASTER.SCP"
+  refresh_utc: "00:30"                             # Daily download time in HH:MM UTC
 
 cty:
   file: "data/cty/cty.plist"                       # Path to the CTY prefix database (cty.plist)

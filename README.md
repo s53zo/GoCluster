@@ -138,6 +138,23 @@ Each RBN spot uses the *raw* spotter string (SSID intact, before any normalizati
 
 To match the 100 Hz accuracy of the underlying skimmers, the corrected frequency is rounded to the nearest 0.1 kHz before it continues through the pipeline.
 
+## Known Calls Cache
+
+1. Populate the `known_calls` block in `config.yaml`:
+
+```yaml
+known_calls:
+  enabled: true
+  url: "https://www.supercheckpartial.com/MASTER.SCP"
+  file: "data/scp/MASTER.SCP"
+  refresh_utc: "01:15"
+```
+
+2. On startup the server checks `known_calls.file`. If it is missing and `known_calls.url` is set, the file is downloaded immediately before any spots are processed. The freshly written file is then parsed into the in-memory cache so consensus/confidence checks can use it right away.
+3. When `known_calls.enabled` is true, the built-in scheduler refreshes the file every day at `known_calls.refresh_utc` (default `01:00` UTC). Each download writes to a temporary file, swaps it into place atomically, and updates the runtime cache without needing a restart.
+
+You can disable the scheduler by setting `known_calls.enabled: false`. In that mode the server will still load whatever file already exists (and will fetch it once at startup if an URL is provided), but it will not refresh it automatically.
+
 ## Runtime Logs and Corrections
 
 - **Call corrections**: `2025/11/19 18:50:45 Call corrected: VE3N -> VE3NE at 7011.1 kHz (8 / 88%)`
@@ -239,8 +256,8 @@ C:\src\gocluster\
 2. Optionally enable/tune `call_correction` (master `enabled` switch, minimum corroborating spotters, required advantage, confidence percent, recency window, max edit distance, and `invalid_action` failover).
 3. Optionally enable/tune `harmonics` to drop harmonic CW/USB/LSB/RTTY spots (master `enabled`, recency window, maximum harmonic multiple, frequency tolerance, and minimum report delta).
 4. Set `spot_policy.max_age_seconds` to drop stale spots before they're processed further. For CW/RTTY frequency smoothing, tune `spot_policy.frequency_averaging_seconds` (window), `spot_policy.frequency_averaging_tolerance_hz` (allowed deviation), and `spot_policy.frequency_averaging_min_reports` (minimum corroborating reports).
-5. (Optional) Enable `skew.enabled` after generating `skew.file` via `go run ./cmd/rbnskewfetch` (or let the server fetch it at the next 00:30 UTC window). The server applies each skimmer’s multiplicative correction before normalization so SSIDs stay unique.
-6. If you maintain a historical callsign list, set `confidence.known_callsigns_file` so familiar calls pick up a confidence boost even when unique.
+5. (Optional) Enable `skew.enabled` after generating `skew.file` via `go run ./cmd/rbnskewfetch` (or let the server fetch it at the next 00:30 UTC window). The server applies each skimmer's multiplicative correction before normalization so SSIDs stay unique.
+6. If you maintain a historical callsign list, set `known_calls.file` plus `known_calls.url` (leave `enabled: true` to keep it refreshed). On first launch the server downloads the file if missing, loads it into memory, and then refreshes it daily at `known_calls.refresh_utc`.
 7. Adjust `stats.display_interval_seconds` in `config.yaml` to control how frequently runtime statistics print to the console (defaults to 30 seconds).
 8. Install dependencies and run:
 	 ```pwsh
