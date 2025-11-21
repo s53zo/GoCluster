@@ -10,7 +10,7 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
 4. **CTY Database** (`cty/parser.go` + `data/cty/cty.plist`) performs longest-prefix lookups so both spotters and spotted stations carry continent/country/CQ/ITU/grid metadata.
 5. **Dedup Engine** (`dedup/deduplicator.go`) filters duplicates before they reach the ring buffer. A zero-second window effectively disables dedup, but the pipeline stays unified.
 6. **Frequency Averager** (`spot/frequency_averager.go`) merges CW/RTTY skimmer reports by averaging corroborating reports within a tolerance and rounding to 0.1 kHz once the minimum corroborators is met.
-7. **Call/Harmonic Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections and suppress harmonics; the pipeline logs/dashboards both the correction and the suppressed harmonic frequency. Harmonic suppression now supports a stepped minimum dB delta (configured via `harmonics.min_report_delta_step`) so higher-order harmonics must be progressively weaker.
+7. **Call/Harmonic Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections and suppress harmonics; the pipeline logs/dashboards both the correction and the suppressed harmonic frequency. Harmonic suppression now supports a stepped minimum dB delta (configured via `harmonics.min_report_delta_step`) so higher-order harmonics must be progressively weaker. Call correction also honours `call_correction.min_snr_cw` / `min_snr_rtty` so marginal decodes can be ignored when counting corroborators.
 8. **Skimmer Frequency Corrections** (`cmd/rbnskewfetch`, `skew/`, `rbn/client.go`, `pskreporter/client.go`) download SM7IUN’s skew list, convert it to JSON, and apply per-spotter multiplicative factors before any callsign normalization for every CW/RTTY skimmer feed.
 
 ## Data Flow and Spot Record Format
@@ -89,15 +89,18 @@ Filter management commands are implemented directly in `telnet/server.go` and op
 - `SHOW/FILTER` – prints the current filter state for bands, modes, and callsigns.
 - `SHOW/FILTER MODES` – lists every supported mode along with whether it is currently enabled for the session.
 - `SHOW/FILTER BANDS` – lists all supported bands that can be enabled.
-- `SET/FILTER BAND <band>` – enables filtering for `<band>` (normalized via `spot.NormalizeBand`); use the band names from `spot.SupportedBandNames()`.
-- `SET/FILTER MODE <mode>[,<mode>...]` – enables one or more modes (comma-separated) that must exist in `filter.SupportedModes`.
+- `SET/FILTER BAND <band>[,<band>...]` – enables filtering for the comma- or space-separated list (each item normalized via `spot.NormalizeBand`), or specify `ALL` to accept every band; use the band names from `spot.SupportedBandNames()`.
+- `SET/FILTER MODE <mode>[,<mode>...]` – enables one or more modes (comma- or space-separated) that must exist in `filter.SupportedModes`, or specify `ALL` to accept every mode.
 - `SET/FILTER CALL <pattern>` – begins delivering only spots matching the supplied callsign pattern.
-- `SET/FILTER CONFIDENCE <percent>` – only deliver spots whose consensus confidence is at least `<percent` (0-100, 0 disables).
+- `SET/FILTER CONFIDENCE <symbol>[,<symbol>...]` – enables the comma- or space-separated list of consensus glyphs (valid symbols: `?`, `S`, `C`, `P`, `V`, `B`; use `ALL` to accept every glyph).
 - `UNSET/FILTER ALL` – resets every filter back to the default (no filtering).
-- `UNSET/FILTER BAND` – clears all currently enabled band filters.
-- `UNSET/FILTER MODE [<mode>[,<mode>...]]` – clears every mode filter if no arguments are provided, or just the comma-separated list of modes if one is supplied.
+- `UNSET/FILTER BAND <band>[,<band>...]` – disables only the comma- or space-separated list of bands provided (use `ALL` to clear every band filter).
+- `UNSET/FILTER MODE <mode>[,<mode>...]` – disables only the comma- or space-separated list of modes provided (specify `ALL` to clear every mode filter).
 - `UNSET/FILTER CALL` – removes all callsign patterns.
-- `UNSET/FILTER CONFIDENCE` – removes any confidence threshold and allows all spots again.
+- `UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...]` – disables only the comma- or space-separated list of glyphs provided (use `ALL` to clear the whitelist).
+- `SHOW/FILTER CONFIDENCE` – lists each glyph alongside whether it is currently enabled.
+
+Band, mode, and confidence commands share identical semantics: they accept comma- or space-separated lists, ignore duplicates/case, and treat the literal `ALL` as a shorthand to reset that filter back to "allow every band/mode/confidence glyph."
 
 Confidence indicator legend in telnet output:
 
@@ -107,6 +110,8 @@ Confidence indicator legend in telnet output:
 - `P` - 25-75% consensus
 - `V` - more than 75% consensus
 - `C` - callsign was corrected by consensus
+
+Use `SET/FILTER CONFIDENCE` with the glyphs above to whitelist the consensus levels you want to see (for example, `SET/FILTER CONFIDENCE P,V` keeps strong/very strong reports while dropping `?`/`S`/`B` entries).
 
 Errors during filter commands return a usage message (e.g., invalid bands or modes refer to the supported lists) and the `SHOW/FILTER` commands help confirm the active settings.
 
@@ -122,7 +127,7 @@ skew:
 ```
 
 2. (Optional) Run `go run ./cmd/rbnskewfetch -out data/skm_correction/rbnskew.json` once to pre-seed the JSON file before enabling the feature.
-3. Restart the cluster. At startup, it loads the JSON file (if present) and then fetches the CSV at the next 00:30 UTC boundary. The built-in scheduler automatically refreshes the list every day at 00:30 UTC and rewrites `skew.file`, so no external cron job is required.
+3. Restart the cluster. At startup, it loads the JSON file (if present) and then fetches the CSV at the next `skew.refresh_utc` boundary (default `00:30` UTC). The built-in scheduler automatically refreshes the list every day at that UTC time and rewrites `skew.file`, so no external cron job is required.
 
 Each RBN spot uses the *raw* spotter string (SSID intact, before any normalization) to look up the correction. If found, the original frequency is multiplied by the factor before any dedup, CTY validation, call correction, or harmonic detection runs. This keeps SSID-specific skew data aligned with the broadcast nodes.
 
@@ -158,12 +163,14 @@ SET/FILTER BAND 20M
 Filter set: Band 20M
 SET/FILTER MODE FT8,FT4
 Filter set: Modes FT8, FT4
-SET/FILTER CONFIDENCE 80
-Confidence filter set: >=80
+SET/FILTER CONFIDENCE P,V
+Confidence symbols enabled: P, V
 SHOW/FILTER MODES
 Supported modes: FT8=ENABLED, FT4=ENABLED, CW=DISABLED, ...
+SHOW/FILTER CONFIDENCE
+Confidence symbols: ?=DISABLED, S=DISABLED, C=ENABLED, P=ENABLED, V=ENABLED, B=DISABLED
 SHOW/FILTER
-Current filters: Bands=[20M]; Modes=[FT8, FT4]; Callsigns=[] | Confidence>=80
+Current filters: Bands: 20M | Modes: FT8, FT4 | Confidence: P, V
 UNSET/FILTER MODE FT4
 Mode filters disabled: FT4
 UNSET/FILTER ALL
@@ -173,6 +180,17 @@ BYE
 ```
 
 Use these commands interactively to tailor the spot stream to your operating preferences.
+
+### Telnet Throughput Controls
+
+The telnet server fans every post-dedup spot to every connected client. When PSKReporter or both RBN feeds spike, the broadcast queue can saturate and you'll see `Broadcast channel full, dropping spot` along with a rising `Telnet drops` metric in the stats ticker. Tune the `telnet` block in `config.yaml` to match your load profile:
+
+- `broadcast_workers` keeps the existing behavior (`0` = auto at half your CPUs, minimum 2).
+- `broadcast_queue_size` controls the global queue depth ahead of the worker pool (default `2048`); larger buffers smooth bursty ingest before anything is dropped.
+- `worker_queue_size` controls how many per-shard jobs each worker buffers before dropping a shard assignment (default `128`).
+- `client_buffer_size` defines how many spots a single telnet session can fall behind before its personal queue starts dropping (default `128`).
+
+Increase the queue sizes if you see the broadcast-channel drop message frequently, or raise `broadcast_workers` when you have CPU headroom and thousands of concurrent clients.
 
 ## Project Structure
 
@@ -214,7 +232,7 @@ C:\src\gocluster\
 
 1. Update `config.yaml` with your preferred callsigns for the `rbn`, `rbn_digital`, and optional `pskreporter` sections. Optionally list `pskreporter.modes` (e.g., [`FT8`, `FT4`]) to subscribe to just those MQTT feeds simultaneously.
 2. Optionally enable/tune `call_correction` (master `enabled` switch, minimum corroborating spotters, required advantage, confidence percent, recency window, max edit distance, and `invalid_action` failover).
-3. Optionally enable/tune `harmonics` to drop harmonic CW/SSB/RTTY spots (master `enabled`, recency window, maximum harmonic multiple, frequency tolerance, and minimum report delta).
+3. Optionally enable/tune `harmonics` to drop harmonic CW/USB/LSB/RTTY spots (master `enabled`, recency window, maximum harmonic multiple, frequency tolerance, and minimum report delta).
 4. Set `spot_policy.max_age_seconds` to drop stale spots before they're processed further. For CW/RTTY frequency smoothing, tune `spot_policy.frequency_averaging_seconds` (window), `spot_policy.frequency_averaging_tolerance_hz` (allowed deviation), and `spot_policy.frequency_averaging_min_reports` (minimum corroborating reports).
 5. (Optional) Enable `skew.enabled` after generating `skew.file` via `go run ./cmd/rbnskewfetch` (or let the server fetch it at the next 00:30 UTC window). The server applies each skimmer’s multiplicative correction before normalization so SSIDs stay unique.
 6. If you maintain a historical callsign list, set `confidence.known_callsigns_file` so familiar calls pick up a confidence boost even when unique.

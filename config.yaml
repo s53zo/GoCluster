@@ -6,10 +6,13 @@ server:
 telnet:
   port: 7300
   tls_enabled: false
-  max_connections: 5000
+  max_connections: 1000
   welcome_message: "Experimental DX Cluster\nPlease login with your callsign\n"
-  broadcast_workers: 0    # 0 means automatic (half of the CPU cores, minimum 2)
-  skip_handshake: true    # Set true to disable Telnet option negotiation (raw TCP clients)
+  broadcast_workers: 0        # 0 means automatic (half of the CPU cores, minimum 2)
+  broadcast_queue_size: 2048  # Buffer depth for the global telnet broadcast queue
+  worker_queue_size: 128      # Jobs queued per broadcast worker before dropping
+  client_buffer_size: 128     # Per-client spot backlog before a slow session drops spots
+  skip_handshake: true        # Set true to disable Telnet option negotiation (raw TCP clients)
 
 # RBN CW/RTTY feed (port 7000)
 rbn:
@@ -18,7 +21,7 @@ rbn:
   host: "telnet.reversebeacon.net"
   port: 7000
   callsign: "N0CW"        # Change this to your callsign!
-  keep_ssid_suffix: true  # false collapses VE3EID-1/-2 into VE3EID-#
+  keep_ssid_suffix: false # false collapses VE3EID-1/-2 into VE3EID-#
 
 # RBN Digital modes feed (port 7001) - FT4/FT8
 rbn_digital:
@@ -27,7 +30,7 @@ rbn_digital:
   host: "telnet.reversebeacon.net"
   port: 7001
   callsign: "N0FT"  # Change this to your callsign!
-  keep_ssid_suffix: true
+  keep_ssid_suffix: false
 
 # PSKReporter MQTT feed
 pskreporter:
@@ -41,13 +44,13 @@ pskreporter:
 filter:
   default_modes:
     - CW
-    - SSB
+    - LSB
+    - USB
     - RTTY
 
 # Deduplication settings
 dedup:
   cluster_window_seconds: 120 # Dedup window in seconds (0 disables dedup without changing the pipeline)
-  user_window_seconds: 300    # User-level dedup window (per-user configurable preference)
   prefer_stronger_snr: true   # When duplicates collide, keep the strongest SNR version
 
 admin:
@@ -58,7 +61,7 @@ logging:
   level: "info"
   file: "cluster.log"
 
-# Consensus thresholds for automated call corrections (only CW/RTTY/SSB considered)
+# Consensus thresholds for automated call corrections (only CW/RTTY/USB/LSB considered)
 call_correction:
   enabled: true                # Master switch (set true to enable)
   min_consensus_reports: 6     # Minimum number of corroborating spotters
@@ -68,20 +71,22 @@ call_correction:
   max_edit_distance: 2         # Max allowed Levenshtein distance between original and replacement
   frequency_tolerance_hz: 300  # Spots within this frequency window are considered the same signal
   invalid_action: "broadcast"  # "broadcast" original if correction fails CTY, or "suppress" to drop spot
+  min_snr_cw: 6                # Ignore CW corroborators weaker than this many dB
+  min_snr_rtty: 3              # Ignore RTTY corroborators weaker than this many dB
 
-# Harmonic suppression for CW/SSB/RTTY signals
+# Harmonic suppression for CW/USB/LSB/RTTY signals
 harmonics:
   enabled: true                # Suppress harmonics when true
   recency_seconds: 120         # Look-back window for fundamental spots
-  max_harmonic_multiple: 4     # Highest harmonic multiple to consider (2 = second harmonic, etc.)
-  frequency_tolerance_hz: 600  # Allowed deviation between expected and observed harmonic
+  max_harmonic_multiple: 3     # Highest harmonic multiple to consider (2 = second harmonic, etc.)
+  frequency_tolerance_hz: 400  # Allowed deviation between expected and observed harmonic
   min_report_delta: 6          # Harmonics must be at least this many dB weaker to drop
   min_report_delta_step: 3.5   # Additional dB required per harmonic order above the second
 
 spot_policy:
-  max_age_seconds: 600                   # Drop spots older than this many seconds (based on spot timestamp)
-  frequency_averaging_seconds: 90        # Look-back window for CW/RTTY frequency averaging
-  frequency_averaging_tolerance_hz: 400  # Max deviation between reports when averaging
+  max_age_seconds: 300                   # Drop spots older than this many seconds (based on spot timestamp)
+  frequency_averaging_seconds: 120       # Look-back window for CW/RTTY frequency averaging
+  frequency_averaging_tolerance_hz: 300  # Max deviation between reports when averaging
   frequency_averaging_min_reports: 3     # Minimum corroborating reports needed to adjust frequency
 
 confidence:
@@ -91,7 +96,7 @@ cty:
   file: "data/cty/cty.plist"                       # Path to the CTY prefix database (cty.plist)
 
 buffer:
-  capacity: 500000                                 # Number of spots held in the in-memory ring buffer
+  capacity: 300000                                 # Number of spots held in the in-memory ring buffer
 
 # RBN skew correction table
 skew:
@@ -99,6 +104,7 @@ skew:
   url: "https://sm7iun.se/rbnskew.csv"
   file: "data/skm_correction/rbnskew.json"
   min_spots: 500                                   # Require this many spots before trusting a skimmer's correction
+  refresh_utc: "00:30"                             # Daily download time in HH:MM UTC
 
 # Runtime statistics output interval
 stats:

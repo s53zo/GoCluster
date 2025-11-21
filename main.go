@@ -153,14 +153,16 @@ func main() {
 	processor := commands.NewProcessor(spotBuffer)
 
 	// Create and start telnet server
-	telnetServer := telnet.NewServer(
-		cfg.Telnet.Port,
-		cfg.Telnet.WelcomeMessage,
-		cfg.Telnet.MaxConnections,
-		cfg.Telnet.BroadcastWorkers,
-		cfg.Telnet.SkipHandshake,
-		processor,
-	)
+	telnetServer := telnet.NewServer(telnet.ServerOptions{
+		Port:             cfg.Telnet.Port,
+		WelcomeMessage:   cfg.Telnet.WelcomeMessage,
+		MaxConnections:   cfg.Telnet.MaxConnections,
+		BroadcastWorkers: cfg.Telnet.BroadcastWorkers,
+		BroadcastQueue:   cfg.Telnet.BroadcastQueue,
+		WorkerQueue:      cfg.Telnet.WorkerQueue,
+		ClientBuffer:     cfg.Telnet.ClientBuffer,
+		SkipHandshake:    cfg.Telnet.SkipHandshake,
+	}, processor)
 
 	err = telnetServer.Start()
 	if err != nil {
@@ -318,7 +320,7 @@ func displayStats(interval time.Duration, tracker *stats.Tracker, dedup *dedup.D
 		totalCorrections := tracker.CallCorrections()
 		totalFreqCorrections := tracker.FrequencyCorrections()
 		totalHarmonics := tracker.HarmonicSuppressions()
-		lines = append(lines, fmt.Sprintf("Corrected calls: %d (C) / %d (Q) / %d (H)", totalCorrections, totalFreqCorrections, totalHarmonics))
+		lines = append(lines, fmt.Sprintf("Corrected calls: %d (C) / %d (F) / %d (H)", totalCorrections, totalFreqCorrections, totalHarmonics))
 		var queueDrops, clientDrops uint64
 		if telnetSrv != nil {
 			queueDrops, clientDrops = telnetSrv.BroadcastMetricSnapshot()
@@ -481,6 +483,8 @@ func maybeApplyCallCorrection(spotEntry *spot.Spot, idx *spot.CorrectionIndex, c
 		MinConfidencePercent: cfg.MinConfidencePercent,
 		MaxEditDistance:      cfg.MaxEditDistance,
 		RecencyWindow:        window,
+		MinSNRCW:             cfg.MinSNRCW,
+		MinSNRRTTY:           cfg.MinSNRRTTY,
 	}
 	others := idx.Candidates(spotEntry, now, window)
 	corrected, supporters, correctedConfidence, subjectConfidence, totalReporters, ok := spot.SuggestCallCorrection(spotEntry, others, settings, now)
@@ -626,7 +630,7 @@ func startSkewScheduler(cfg config.SkewConfig, store *skew.Store) {
 	}
 	go func() {
 		for {
-			delay := nextSkewRefreshDelay(time.Now().UTC())
+			delay := nextSkewRefreshDelay(cfg, time.Now().UTC())
 			timer := time.NewTimer(delay)
 			<-timer.C
 			if count, err := refreshSkewTable(cfg, store); err != nil {
@@ -638,12 +642,24 @@ func startSkewScheduler(cfg config.SkewConfig, store *skew.Store) {
 	}()
 }
 
-func nextSkewRefreshDelay(now time.Time) time.Duration {
-	target := time.Date(now.Year(), now.Month(), now.Day(), 0, 30, 0, 0, time.UTC)
+func nextSkewRefreshDelay(cfg config.SkewConfig, now time.Time) time.Duration {
+	hour, minute := skewRefreshHourMinute(cfg)
+	target := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, time.UTC)
 	if !target.After(now) {
 		target = target.Add(24 * time.Hour)
 	}
 	return target.Sub(now)
+}
+
+func skewRefreshHourMinute(cfg config.SkewConfig) (int, int) {
+	refresh := strings.TrimSpace(cfg.RefreshUTC)
+	if refresh == "" {
+		refresh = "00:30"
+	}
+	if parsed, err := time.Parse("15:04", refresh); err == nil {
+		return parsed.Hour(), parsed.Minute()
+	}
+	return 0, 30
 }
 
 func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, ctyDB *cty.CTYDatabase, known *spot.KnownCallsigns) string {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -42,6 +43,9 @@ type TelnetConfig struct {
 	MaxConnections   int    `yaml:"max_connections"`
 	WelcomeMessage   string `yaml:"welcome_message"`
 	BroadcastWorkers int    `yaml:"broadcast_workers"`
+	BroadcastQueue   int    `yaml:"broadcast_queue_size"`
+	WorkerQueue      int    `yaml:"worker_queue_size"`
+	ClientBuffer     int    `yaml:"client_buffer_size"`
 	SkipHandshake    bool   `yaml:"skip_handshake"`
 }
 
@@ -97,8 +101,7 @@ func (c *PSKReporterConfig) SubscriptionTopics() []string {
 // bucket—when enabled we keep the strongest SNR representative.
 type DedupConfig struct {
 	ClusterWindowSeconds int  `yaml:"cluster_window_seconds"` // <=0 disables dedup
-	UserWindowSeconds    int  `yaml:"user_window_seconds"`
-	PreferStrongerSNR    bool `yaml:"prefer_stronger_snr"` // keep max SNR when dropping duplicates
+	PreferStrongerSNR    bool `yaml:"prefer_stronger_snr"`    // keep max SNR when dropping duplicates
 }
 
 // AdminConfig contains admin interface settings
@@ -143,6 +146,9 @@ type CallCorrectionConfig struct {
 	// FrequencyToleranceHz defines how close two frequencies must be to be considered
 	// the same signal when running consensus.
 	FrequencyToleranceHz float64 `yaml:"frequency_tolerance_hz"`
+	// MinSNRCW/RTTY allow discarding marginal decodes from the corroborator set.
+	MinSNRCW   int `yaml:"min_snr_cw"`
+	MinSNRRTTY int `yaml:"min_snr_rtty"`
 	// InvalidAction controls what to do when consensus suggests a callsign that
 	// fails CTY validation. Supported values:
 	//   - "broadcast": keep the original spot (default)
@@ -181,10 +187,11 @@ type BufferConfig struct {
 
 // SkewConfig controls how the RBN skew table is fetched and applied.
 type SkewConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	URL      string `yaml:"url"`
-	File     string `yaml:"file"`
-	MinSpots int    `yaml:"min_spots"`
+	Enabled    bool   `yaml:"enabled"`
+	URL        string `yaml:"url"`
+	File       string `yaml:"file"`
+	MinSpots   int    `yaml:"min_spots"`
+	RefreshUTC string `yaml:"refresh_utc"`
 }
 
 // ConfidenceConfig controls external data for adjusting confidence.
@@ -233,6 +240,21 @@ func Load(filename string) (*Config, error) {
 	if cfg.CallCorrection.InvalidAction == "" {
 		cfg.CallCorrection.InvalidAction = "broadcast"
 	}
+	if cfg.CallCorrection.MinSNRCW < 0 {
+		cfg.CallCorrection.MinSNRCW = 0
+	}
+	if cfg.CallCorrection.MinSNRRTTY < 0 {
+		cfg.CallCorrection.MinSNRRTTY = 0
+	}
+	if cfg.Telnet.BroadcastQueue <= 0 {
+		cfg.Telnet.BroadcastQueue = 2048
+	}
+	if cfg.Telnet.WorkerQueue <= 0 {
+		cfg.Telnet.WorkerQueue = 128
+	}
+	if cfg.Telnet.ClientBuffer <= 0 {
+		cfg.Telnet.ClientBuffer = 128
+	}
 
 	if cfg.Harmonics.RecencySeconds <= 0 {
 		cfg.Harmonics.RecencySeconds = 120
@@ -267,9 +289,6 @@ func Load(filename string) (*Config, error) {
 	if cfg.Dedup.ClusterWindowSeconds < 0 {
 		cfg.Dedup.ClusterWindowSeconds = 0
 	}
-	if cfg.Dedup.UserWindowSeconds < 0 {
-		cfg.Dedup.UserWindowSeconds = 0
-	}
 	if strings.TrimSpace(cfg.CTY.File) == "" {
 		cfg.CTY.File = "data/cty/cty.plist"
 	}
@@ -285,6 +304,12 @@ func Load(filename string) (*Config, error) {
 	if cfg.Skew.MinSpots < 0 {
 		cfg.Skew.MinSpots = 0
 	}
+	if strings.TrimSpace(cfg.Skew.RefreshUTC) == "" {
+		cfg.Skew.RefreshUTC = "00:30"
+	}
+	if _, err := time.Parse("15:04", cfg.Skew.RefreshUTC); err != nil {
+		return nil, fmt.Errorf("invalid skew refresh time %q: %w", cfg.Skew.RefreshUTC, err)
+	}
 	return &cfg, nil
 }
 
@@ -295,7 +320,13 @@ func (c *Config) Print() {
 	if c.Telnet.BroadcastWorkers > 0 {
 		workerDesc = fmt.Sprintf("%d", c.Telnet.BroadcastWorkers)
 	}
-	fmt.Printf("Telnet: port %d (broadcast workers=%s, skip_handshake=%t)\n", c.Telnet.Port, workerDesc, c.Telnet.SkipHandshake)
+	fmt.Printf("Telnet: port %d (broadcast workers=%s queue=%d worker_queue=%d client_buffer=%d skip_handshake=%t)\n",
+		c.Telnet.Port,
+		workerDesc,
+		c.Telnet.BroadcastQueue,
+		c.Telnet.WorkerQueue,
+		c.Telnet.ClientBuffer,
+		c.Telnet.SkipHandshake)
 	if c.RBN.Enabled {
 		fmt.Printf("RBN CW/RTTY: %s:%d (as %s)\n", c.RBN.Host, c.RBN.Port, c.RBN.Callsign)
 	}
@@ -309,7 +340,7 @@ func (c *Config) Print() {
 	if c.Dedup.ClusterWindowSeconds > 0 {
 		clusterWindow = fmt.Sprintf("%ds", c.Dedup.ClusterWindowSeconds)
 	}
-	fmt.Printf("Dedup: cluster=%s, user=%ds\n", clusterWindow, c.Dedup.UserWindowSeconds)
+	fmt.Printf("Dedup: cluster=%s\n", clusterWindow)
 	if len(c.Filter.DefaultModes) > 0 {
 		fmt.Printf("Default modes: %s\n", strings.Join(c.Filter.DefaultModes, ", "))
 	}
@@ -345,6 +376,9 @@ func (c *Config) Print() {
 	}
 	if c.Confidence.KnownCallsignsFile != "" {
 		fmt.Printf("Confidence: known_calls=%s\n", c.Confidence.KnownCallsignsFile)
+	}
+	if c.Skew.Enabled {
+		fmt.Printf("Skew: refresh %s UTC (min_spots=%d source=%s)\n", c.Skew.RefreshUTC, c.Skew.MinSpots, c.Skew.URL)
 	}
 	fmt.Printf("Ring buffer capacity: %d spots\n", c.Buffer.Capacity)
 }

@@ -37,7 +37,6 @@ import (
 	"net"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -76,12 +75,14 @@ type Server struct {
 	clients          map[string]*Client   // Map of callsign → Client
 	clientsMutex     sync.RWMutex         // Protects clients map
 	shutdown         chan struct{}        // Shutdown coordination channel
-	broadcast        chan *spot.Spot      // Broadcast channel for spots (buffered 100)
+	broadcast        chan *spot.Spot      // Broadcast channel for spots (buffered, configurable)
 	broadcastWorkers int                  // Number of goroutines delivering spots
 	workerQueues     []chan *broadcastJob // Per-worker job queues
+	workerQueueSize  int                  // Capacity of each worker's queue
 	metrics          broadcastMetrics     // Broadcast metrics counters
 	processor        *commands.Processor  // Command processor for user commands
 	skipHandshake    bool                 // When true, omit Telnet IAC negotiation
+	clientBufferSize int                  // Per-client spot channel capacity
 }
 
 // Client represents a connected telnet client session.
@@ -100,7 +101,7 @@ type Client struct {
 	callsign  string          // Client's amateur radio callsign
 	connected time.Time       // Timestamp when client connected
 	address   string          // Client's IP address
-	spotChan  chan *spot.Spot // Buffered channel for spot delivery (capacity 10)
+	spotChan  chan *spot.Spot // Buffered channel for spot delivery (configurable capacity)
 	filter    *filter.Filter  // Personal spot filter (band, mode, callsign)
 }
 
@@ -116,6 +117,7 @@ func (c *Client) saveFilter() error {
 		log.Printf("Warning: failed to save filter for %s: %v", callsign, err)
 		return err
 	}
+	log.Printf("Saved filter for %s", callsign)
 	return nil
 }
 
@@ -135,6 +137,10 @@ func (m *broadcastMetrics) snapshot() (queueDrops, clientDrops uint64) {
 	return
 }
 
+func shouldLogQueueDrop(total uint64) bool {
+	return total == 1 || total%100 == 0
+}
+
 // Telnet protocol IAC (Interpret As Command) constants.
 //
 // These constants are used for telnet protocol negotiation:
@@ -152,25 +158,57 @@ const (
 	WILL = 251 // Client agrees to enable an option
 )
 
-const broadcastWorkerQueueSize = 32
+const (
+	defaultBroadcastQueueSize = 2048
+	defaultClientBufferSize   = 128
+	defaultWorkerQueueSize    = 128
+)
+
+// ServerOptions configures the telnet server instance.
+type ServerOptions struct {
+	Port             int
+	WelcomeMessage   string
+	MaxConnections   int
+	BroadcastWorkers int
+	BroadcastQueue   int
+	WorkerQueue      int
+	ClientBuffer     int
+	SkipHandshake    bool
+}
 
 // NewServer creates a new telnet server
-func NewServer(port int, welcomeMessage string, maxConnections int, broadcastWorkers int, skipHandshake bool, processor *commands.Processor) *Server {
-	workers := broadcastWorkers
-	if workers <= 0 {
-		workers = defaultBroadcastWorkers()
-	}
+func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
+	config := normalizeServerOptions(opts)
 	return &Server{
-		port:             port,
-		welcomeMessage:   welcomeMessage,
-		maxConnections:   maxConnections,
+		port:             config.Port,
+		welcomeMessage:   config.WelcomeMessage,
+		maxConnections:   config.MaxConnections,
 		clients:          make(map[string]*Client),
 		shutdown:         make(chan struct{}),
-		broadcast:        make(chan *spot.Spot, 100),
-		broadcastWorkers: workers,
-		skipHandshake:    skipHandshake,
+		broadcast:        make(chan *spot.Spot, config.BroadcastQueue),
+		broadcastWorkers: config.BroadcastWorkers,
+		workerQueueSize:  config.WorkerQueue,
+		clientBufferSize: config.ClientBuffer,
+		skipHandshake:    config.SkipHandshake,
 		processor:        processor,
 	}
+}
+
+func normalizeServerOptions(opts ServerOptions) ServerOptions {
+	config := opts
+	if config.BroadcastWorkers <= 0 {
+		config.BroadcastWorkers = defaultBroadcastWorkers()
+	}
+	if config.BroadcastQueue <= 0 {
+		config.BroadcastQueue = defaultBroadcastQueueSize
+	}
+	if config.WorkerQueue <= 0 {
+		config.WorkerQueue = defaultWorkerQueueSize
+	}
+	if config.ClientBuffer <= 0 {
+		config.ClientBuffer = defaultClientBufferSize
+	}
+	return config
 }
 
 // Start begins listening for telnet connections
@@ -213,7 +251,10 @@ func (s *Server) BroadcastSpot(spot *spot.Spot) {
 	select {
 	case s.broadcast <- spot:
 	default:
-		log.Println("Broadcast channel full, dropping spot")
+		drops := atomic.AddUint64(&s.metrics.queueDrops, 1)
+		if shouldLogQueueDrop(drops) {
+			log.Printf("Broadcast channel full (%d/%d buffered), dropping spot (total queue drops=%d)", len(s.broadcast), cap(s.broadcast), drops)
+		}
 	}
 }
 
@@ -230,9 +271,13 @@ func (s *Server) startWorkerPool() {
 	if len(s.workerQueues) != 0 {
 		return
 	}
+	queueSize := s.workerQueueSize
+	if queueSize <= 0 {
+		queueSize = defaultWorkerQueueSize
+	}
 	s.workerQueues = make([]chan *broadcastJob, s.broadcastWorkers)
 	for i := 0; i < s.broadcastWorkers; i++ {
-		s.workerQueues[i] = make(chan *broadcastJob, broadcastWorkerQueueSize)
+		s.workerQueues[i] = make(chan *broadcastJob, queueSize)
 		go s.broadcastWorker(i, s.workerQueues[i])
 	}
 }
@@ -247,7 +292,9 @@ func (s *Server) dispatchSpotToWorkers(spot *spot.Spot, shards [][]*Client) {
 		case s.workerQueues[i] <- job:
 		default:
 			drops := atomic.AddUint64(&s.metrics.queueDrops, 1)
-			log.Printf("Worker %d queue full, dropping %d-client shard (total queue drops=%d)", i, len(clients), drops)
+			if shouldLogQueueDrop(drops) {
+				log.Printf("Worker %d queue full (%d pending jobs), dropping %d-client shard (total queue drops=%d)", i, len(s.workerQueues[i]), len(clients), drops)
+			}
 		}
 	}
 }
@@ -346,6 +393,11 @@ func (s *Server) handleClient(conn net.Conn) {
 	address := conn.RemoteAddr().String()
 	log.Printf("New connection from %s", address)
 
+	spotQueueSize := s.clientBufferSize
+	if spotQueueSize <= 0 {
+		spotQueueSize = defaultClientBufferSize
+	}
+
 	// Create client object
 	client := &Client{
 		conn:      conn,
@@ -353,7 +405,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		writer:    bufio.NewWriter(conn),
 		connected: time.Now(),
 		address:   address,
-		spotChan:  make(chan *spot.Spot, 50),
+		spotChan:  make(chan *spot.Spot, spotQueueSize),
 		filter:    filter.NewFilter(), // Start with no filters (accept all)
 	}
 
@@ -399,17 +451,6 @@ func (s *Server) handleClient(conn net.Conn) {
 			log.Printf("Warning: failed to load filter for %s: %v", client.callsign, err)
 		}
 	}
-
-	// Ensure we save the filter on disconnect / exit
-	defer func() {
-		if client.callsign != "" && client.filter != nil {
-			if err := filter.SaveUserFilter(client.callsign, client.filter); err != nil {
-				log.Printf("Warning: failed to save filter for %s: %v", client.callsign, err)
-			} else {
-				log.Printf("Saved filter for %s", client.callsign)
-			}
-		}
-	}()
 
 	// Register client
 	s.registerClient(client)
@@ -491,6 +532,19 @@ func (c *Client) handleFilterCommand(cmd string) string {
 				return fmt.Sprintf("Supported modes: %s\n", b.String())
 			case "bands":
 				return fmt.Sprintf("Supported bands: %s\n", strings.Join(spot.SupportedBandNames(), ", "))
+			case "confidence":
+				var b strings.Builder
+				for i, symbol := range filter.SupportedConfidenceSymbols {
+					enabled := "DISABLED"
+					if c.filter.AllConfidence || c.filter.ConfidenceSymbolEnabled(symbol) {
+						enabled = "ENABLED"
+					}
+					b.WriteString(fmt.Sprintf("%s=%s", symbol, enabled))
+					if i < len(filter.SupportedConfidenceSymbols)-1 {
+						b.WriteString(", ")
+					}
+				}
+				return fmt.Sprintf("Confidence symbols: %s\n", b.String())
 			}
 		}
 
@@ -498,7 +552,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 
 	case "set/filter":
 		if len(parts) < 3 {
-			return "Usage: SET/FILTER BAND <band> | SET/FILTER MODE <mode> | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <0-100>\n"
+			return "Usage: SET/FILTER BAND <band>[,<band>...] | SET/FILTER MODE <mode>[,<mode>...] | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
 		}
 
 		filterType := strings.ToUpper(parts[1])
@@ -506,20 +560,55 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "BAND":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: SET/FILTER BAND <band> | SET/FILTER MODE <mode> | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <0-100>\n"
+				return "Usage: SET/FILTER BAND <band>[,<band>...] | SET/FILTER MODE <mode>[,<mode>...] | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
 			}
-			normalized := spot.NormalizeBand(value)
-			if normalized == "" || !spot.IsValidBand(normalized) {
-				return fmt.Sprintf("Unknown band: %s\nSupported bands: %s\n", value, strings.Join(spot.SupportedBandNames(), ", "))
+			if strings.EqualFold(value, "ALL") {
+				c.filter.ResetBands()
+				c.saveFilter()
+				return "All bands enabled\n"
 			}
-			c.filter.SetBand(normalized, true)
+			rawBands := parseBandList(value)
+			if len(rawBands) == 0 {
+				return "Usage: SET/FILTER BAND <band>[,<band>...] | SET/FILTER MODE <mode>[,<mode>...] | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
+			}
+			normalizedBands := make([]string, 0, len(rawBands))
+			seen := make(map[string]bool)
+			invalid := make([]string, 0)
+			for _, candidate := range rawBands {
+				norm := spot.NormalizeBand(candidate)
+				if norm == "" || !spot.IsValidBand(norm) {
+					invalid = append(invalid, candidate)
+					continue
+				}
+				if !seen[norm] {
+					normalizedBands = append(normalizedBands, norm)
+					seen[norm] = true
+				}
+			}
+			if len(invalid) > 0 {
+				return fmt.Sprintf("Unknown band: %s\nSupported bands: %s\n", strings.Join(invalid, ", "), strings.Join(spot.SupportedBandNames(), ", "))
+			}
+			if len(normalizedBands) == 0 {
+				return "Usage: SET/FILTER BAND <band>[,<band>...] | SET/FILTER MODE <mode>[,<mode>...] | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
+			}
+			for _, band := range normalizedBands {
+				c.filter.SetBand(band, true)
+			}
 			c.saveFilter()
-			return fmt.Sprintf("Filter set: Band %s\n", normalized)
+			if len(normalizedBands) == 1 {
+				return fmt.Sprintf("Filter set: Band %s\n", normalizedBands[0])
+			}
+			return fmt.Sprintf("Filter set: Bands %s\n", strings.Join(normalizedBands, ", "))
 		case "MODE":
-			modeArgs := strings.Join(parts[2:], " ")
+			modeArgs := strings.TrimSpace(strings.Join(parts[2:], " "))
+			if strings.EqualFold(modeArgs, "ALL") {
+				c.filter.ResetModes()
+				c.saveFilter()
+				return "All modes enabled\n"
+			}
 			modes := parseModeList(modeArgs)
 			if len(modes) == 0 {
-				return "Usage: SET/FILTER MODE <mode>[,<mode>...]\n"
+				return "Usage: SET/FILTER MODE <mode>[,<mode>...] (comma or space separated)\n"
 			}
 			invalid := collectInvalidModes(modes)
 			if len(invalid) > 0 {
@@ -538,25 +627,33 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "CONFIDENCE":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: SET/FILTER CONFIDENCE <0-100>\n"
+				return "Usage: SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
 			}
-			percent, err := strconv.Atoi(value)
-			if err != nil || percent < 0 || percent > 100 {
-				return "Invalid confidence percentage. Use 0-100.\n"
+			if strings.EqualFold(value, "ALL") {
+				c.filter.ResetConfidence()
+				c.saveFilter()
+				return "All confidence symbols enabled\n"
 			}
-			c.filter.SetMinConfidence(percent)
+			symbols := parseConfidenceList(value)
+			if len(symbols) == 0 {
+				return "Usage: SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
+			}
+			invalid := collectInvalidConfidenceSymbols(symbols)
+			if len(invalid) > 0 {
+				return fmt.Sprintf("Unknown confidence symbol: %s\nSupported symbols: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedConfidenceSymbols, ", "))
+			}
+			for _, symbol := range symbols {
+				c.filter.SetConfidenceSymbol(symbol, true)
+			}
 			c.saveFilter()
-			if percent == 0 {
-				return "Confidence filter disabled\n"
-			}
-			return fmt.Sprintf("Confidence filter set: >=%d\n", percent)
+			return fmt.Sprintf("Confidence symbols enabled: %s\n", strings.Join(symbols, ", "))
 		default:
 			return "Unknown filter type. Use: BAND, MODE, CALL, or CONFIDENCE\n"
 		}
 
 	case "unset/filter":
 		if len(parts) < 2 {
-			return "Usage: UNSET/FILTER ALL | UNSET/FILTER BAND | UNSET/FILTER MODE | UNSET/FILTER CALL | UNSET/FILTER CONFIDENCE\n"
+			return "Usage: UNSET/FILTER ALL | UNSET/FILTER BAND <band>[,<band>...] | UNSET/FILTER MODE <mode>[,<mode>...] | UNSET/FILTER CALL | UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
 		}
 
 		filterType := strings.ToUpper(parts[1])
@@ -567,19 +664,57 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			c.saveFilter()
 			return "All filters cleared\n"
 		case "BAND":
-			c.filter.ResetBands()
+			bandArgs := strings.TrimSpace(strings.Join(parts[2:], " "))
+			if bandArgs == "" {
+				return "Usage: UNSET/FILTER BAND <band>[,<band>...] (comma or space separated, or ALL)\n"
+			}
+			if strings.EqualFold(bandArgs, "ALL") {
+				c.filter.ResetBands()
+				c.saveFilter()
+				return "Band filters cleared\n"
+			}
+			bands := parseBandList(bandArgs)
+			if len(bands) == 0 {
+				return "Usage: UNSET/FILTER BAND <band>[,<band>...] (comma or space separated, or ALL)\n"
+			}
+			invalid := make([]string, 0)
+			normalized := make([]string, 0, len(bands))
+			seen := make(map[string]bool)
+			for _, b := range bands {
+				norm := spot.NormalizeBand(b)
+				if norm == "" || !spot.IsValidBand(norm) {
+					invalid = append(invalid, b)
+					continue
+				}
+				if !seen[norm] {
+					normalized = append(normalized, norm)
+					seen[norm] = true
+				}
+			}
+			if len(invalid) > 0 {
+				return fmt.Sprintf("Unknown band: %s\nSupported bands: %s\n", strings.Join(invalid, ", "), strings.Join(spot.SupportedBandNames(), ", "))
+			}
+			if len(normalized) == 0 {
+				return "Usage: UNSET/FILTER BAND <band>[,<band>...] (comma or space separated, or ALL)\n"
+			}
+			for _, band := range normalized {
+				c.filter.SetBand(band, false)
+			}
 			c.saveFilter()
-			return "Band filters cleared\n"
+			return fmt.Sprintf("Band filters disabled: %s\n", strings.Join(normalized, ", "))
 		case "MODE":
-			modeArgs := strings.Join(parts[2:], " ")
-			if strings.TrimSpace(modeArgs) == "" {
+			modeArgs := strings.TrimSpace(strings.Join(parts[2:], " "))
+			if modeArgs == "" {
+				return "Usage: UNSET/FILTER MODE <mode>[,<mode>...] (comma or space separated, or ALL)\n"
+			}
+			if strings.EqualFold(modeArgs, "ALL") {
 				c.filter.ResetModes()
 				c.saveFilter()
 				return "Mode filters cleared\n"
 			}
 			modes := parseModeList(modeArgs)
 			if len(modes) == 0 {
-				return "Usage: UNSET/FILTER MODE <mode>[,<mode>...]\n"
+				return "Usage: UNSET/FILTER MODE <mode>[,<mode>...] (comma or space separated, or ALL)\n"
 			}
 			invalid := collectInvalidModes(modes)
 			if len(invalid) > 0 {
@@ -595,9 +730,28 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			c.saveFilter()
 			return "Callsign filters cleared\n"
 		case "CONFIDENCE":
-			c.filter.ResetConfidence()
+			value := strings.TrimSpace(strings.Join(parts[2:], " "))
+			if value == "" {
+				return "Usage: UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] (comma or space separated, or ALL)\n"
+			}
+			if strings.EqualFold(value, "ALL") {
+				c.filter.ResetConfidence()
+				c.saveFilter()
+				return "Confidence filter cleared\n"
+			}
+			symbols := parseConfidenceList(value)
+			if len(symbols) == 0 {
+				return "Usage: UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] (comma or space separated, or ALL)\n"
+			}
+			invalid := collectInvalidConfidenceSymbols(symbols)
+			if len(invalid) > 0 {
+				return fmt.Sprintf("Unknown confidence symbol: %s\nSupported symbols: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedConfidenceSymbols, ", "))
+			}
+			for _, symbol := range symbols {
+				c.filter.SetConfidenceSymbol(symbol, false)
+			}
 			c.saveFilter()
-			return "Confidence filter cleared\n"
+			return fmt.Sprintf("Confidence symbols disabled: %s\n", strings.Join(symbols, ", "))
 		default:
 			return "Unknown filter type. Use: ALL, BAND, MODE, CALL, or CONFIDENCE\n"
 		}
@@ -607,20 +761,71 @@ func (c *Client) handleFilterCommand(cmd string) string {
 	}
 }
 
+// parseBandList normalizes user-supplied band lists so SET/UNSET commands
+// share the exact same semantics as their mode counterparts (comma or space
+// delimited input, duplicate suppression happens later).
+func parseBandList(arg string) []string {
+	return splitListValues(arg)
+}
+
+// parseModeList converts user input into normalized mode tokens. Band and mode
+// commands share this list-handling behavior so `ALL`, comma, and space
+// separated values work identically between the two.
 func parseModeList(arg string) []string {
+	values := splitListValues(arg)
+	if len(values) == 0 {
+		return nil
+	}
+	modes := make([]string, 0, len(values))
+	for _, value := range values {
+		mode := strings.ToUpper(strings.TrimSpace(value))
+		if mode == "" {
+			continue
+		}
+		modes = append(modes, mode)
+	}
+	return modes
+}
+
+func parseConfidenceList(arg string) []string {
+	values := splitListValues(arg)
+	if len(values) == 0 {
+		return nil
+	}
+	symbols := make([]string, 0, len(values))
+	for _, value := range values {
+		symbol := strings.ToUpper(strings.TrimSpace(value))
+		if symbol == "" {
+			continue
+		}
+		symbols = append(symbols, symbol)
+	}
+	return symbols
+}
+
+func collectInvalidConfidenceSymbols(symbols []string) []string {
+	invalid := make([]string, 0)
+	for _, symbol := range symbols {
+		if !filter.IsSupportedConfidenceSymbol(symbol) {
+			invalid = append(invalid, symbol)
+		}
+	}
+	return invalid
+}
+
+// splitListValues turns arbitrary comma/space delimited strings into clean
+// tokens. Both band and mode filters rely on this to keep their UX identical.
+func splitListValues(arg string) []string {
 	arg = strings.TrimSpace(arg)
 	if arg == "" {
 		return nil
 	}
-	parts := strings.Split(arg, ",")
-	modes := make([]string, 0, len(parts))
-	for _, part := range parts {
-		mode := strings.ToUpper(strings.TrimSpace(part))
-		if mode != "" {
-			modes = append(modes, mode)
-		}
+	cleaned := strings.ReplaceAll(arg, ",", " ")
+	values := strings.Fields(cleaned)
+	if len(values) == 0 {
+		return nil
 	}
-	return modes
+	return values
 }
 
 func collectInvalidModes(modes []string) []string {
@@ -658,6 +863,7 @@ func (s *Server) unregisterClient(client *Client) {
 	s.clientsMutex.Lock()
 	defer s.clientsMutex.Unlock()
 	delete(s.clients, client.callsign)
+	client.saveFilter()
 	close(client.spotChan)
 	log.Printf("Unregistered client: %s (total: %d)", client.callsign, len(s.clients))
 }

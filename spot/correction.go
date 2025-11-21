@@ -27,6 +27,12 @@ type CorrectionSettings struct {
 	// MaxEditDistance bounds how different the alternate call can be compared to
 	// the subject call. A value of 2 typically allows single-character typos.
 	MaxEditDistance int
+
+	// MinSNRCW/MinSNRRTTY let callers ignore corroborators below a minimum
+	// signal-to-noise ratio. FT8/FT4 aren't run through call correction so we
+	// only need CW/RTTY thresholds.
+	MinSNRCW   int
+	MinSNRRTTY int
 }
 
 var correctionEligibleModes = map[string]struct{}{
@@ -88,7 +94,7 @@ func SuggestCallCorrection(subject *Spot, others []*Spot, settings CorrectionSet
 	subjectReporter := strings.ToUpper(strings.TrimSpace(subject.DECall))
 	subjectVotes := map[string]struct{}{}
 	allReporters := map[string]struct{}{}
-	if subjectReporter != "" {
+	if subjectReporter != "" && passesSNRThreshold(subject, cfg) {
 		subjectVotes[subjectReporter] = struct{}{}
 		allReporters[subjectReporter] = struct{}{}
 	}
@@ -111,6 +117,9 @@ func SuggestCallCorrection(subject *Spot, others []*Spot, settings CorrectionSet
 		// Normalize spotter identifier.
 		reporter := strings.ToUpper(strings.TrimSpace(other.DECall))
 		if reporter == "" {
+			continue
+		}
+		if !passesSNRThreshold(other, cfg) {
 			continue
 		}
 		allReporters[reporter] = struct{}{}
@@ -212,7 +221,35 @@ func normalizeCorrectionSettings(settings CorrectionSettings) CorrectionSettings
 	if cfg.MaxEditDistance <= 0 {
 		cfg.MaxEditDistance = 2
 	}
+	if cfg.MinSNRCW < 0 {
+		cfg.MinSNRCW = 0
+	}
+	if cfg.MinSNRRTTY < 0 {
+		cfg.MinSNRRTTY = 0
+	}
 	return cfg
+}
+
+func minSNRThresholdForMode(mode string, cfg CorrectionSettings) int {
+	switch strings.ToUpper(strings.TrimSpace(mode)) {
+	case "CW":
+		return cfg.MinSNRCW
+	case "RTTY":
+		return cfg.MinSNRRTTY
+	default:
+		return 0
+	}
+}
+
+func passesSNRThreshold(s *Spot, cfg CorrectionSettings) bool {
+	if s == nil {
+		return false
+	}
+	required := minSNRThresholdForMode(s.Mode, cfg)
+	if required <= 0 {
+		return true
+	}
+	return s.Report >= required
 }
 
 // CorrectionIndex maintains a time-bounded, frequency-bucketed view of recent

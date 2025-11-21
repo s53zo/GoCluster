@@ -2,7 +2,7 @@
 //
 // Filters allow users to customize which spots they receive based on:
 //   - Band (e.g., 20m, 40m, 160m)
-//   - Mode (e.g., CW, SSB, FT8, RTTY)
+//   - Mode (e.g., CW, USB, FT8, RTTY)
 //   - Callsign patterns (e.g., W1*, LZ5VV, *ABC)
 //
 // Filter Logic:
@@ -31,14 +31,17 @@ import (
 // SupportedModes lists the commonly used modes that users can enable/disable
 // via the SET/FILTER MODE command. Exported so UI/commands can display them.
 var SupportedModes = []string{
-	"SSB", "HELL", "CW", "WSPR", "RTTY", "FREEDV",
-	"FT8", "FT4", "JS8", "VARAC", "JT65", "FSQ",
-	"PI4", "MSK144", "PSK31", "FST4W", "SSTV", "Q65", "OPERA",
+	"CW",
+	"FT4",
+	"FT8",
+	"LSB",
+	"USB",
+	"RTTY",
 }
 
 // defaultModeSelection controls which modes are enabled when a new filter is created.
-// The initial values match the curated CW/SSB/RTTY set, but can be overridden.
-var defaultModeSelection = []string{"CW", "SSB", "RTTY"}
+// The initial values match the curated CW/USB/LSB/RTTY set, but can be overridden.
+var defaultModeSelection = []string{"CW", "LSB", "USB", "RTTY"}
 
 var supportedModeSet = func() map[string]bool {
 	m := make(map[string]bool)
@@ -48,6 +51,27 @@ var supportedModeSet = func() map[string]bool {
 	return m
 }()
 
+// SupportedConfidenceSymbols enumerates the glyphs emitted in the telnet
+// stream that users can filter on.
+var SupportedConfidenceSymbols = []string{"?", "S", "C", "P", "V", "B"}
+
+var supportedConfidenceSymbolSet = func() map[string]bool {
+	m := make(map[string]bool, len(SupportedConfidenceSymbols))
+	for _, symbol := range SupportedConfidenceSymbols {
+		m[symbol] = true
+	}
+	return m
+}()
+
+var confidenceSymbolScores = map[string]int{
+	"?": 0,
+	"S": 25,
+	"B": 10,
+	"P": 50,
+	"V": 100,
+	"C": 100,
+}
+
 // IsSupportedMode returns true if the given mode is in the supported list.
 func IsSupportedMode(mode string) bool {
 	mode = strings.ToUpper(strings.TrimSpace(mode))
@@ -55,10 +79,10 @@ func IsSupportedMode(mode string) bool {
 }
 
 // SetDefaultModeSelection replaces the modes that brand-new filters enable by default.
-// Passing an empty slice resets to the built-in CW/SSB/RTTY set.
+// Passing an empty slice resets to the built-in CW/LSB/USB/RTTY set.
 func SetDefaultModeSelection(modes []string) {
 	if len(modes) == 0 {
-		defaultModeSelection = []string{"CW", "SSB", "RTTY"}
+		defaultModeSelection = []string{"CW", "LSB", "USB", "RTTY"}
 		return
 	}
 	normalized := make([]string, 0, len(modes))
@@ -70,7 +94,7 @@ func SetDefaultModeSelection(modes []string) {
 		normalized = append(normalized, candidate)
 	}
 	if len(normalized) == 0 {
-		defaultModeSelection = []string{"CW", "SSB", "RTTY"}
+		defaultModeSelection = []string{"CW", "LSB", "USB", "RTTY"}
 		return
 	}
 	defaultModeSelection = normalized
@@ -113,6 +137,7 @@ func LoadUserFilter(callsign string) (*Filter, error) {
 	if err := yaml.Unmarshal(bs, &f); err != nil {
 		return nil, err
 	}
+	f.migrateLegacyConfidence()
 	return &f, nil
 }
 
@@ -125,15 +150,15 @@ func EnsureUserDataDir() error {
 //
 // The filter maintains four types of criteria that can be combined:
 //  1. Band filters: Which amateur radio bands to accept (20m, 40m, 160m)
-//  2. Mode filters: Which operating modes to accept (CW, SSB, FT8, etc.)
+//  2. Mode filters: Which operating modes to accept (CW, USB, FT8, etc.)
 //  3. Callsign patterns: Which callsigns to accept (W1*, LZ5VV, etc.)
-//  4. Confidence threshold: Minimum consensus confidence required.
+//  4. Confidence glyphs: Which consensus indicators (?, S, C, P, V, B) to accept.
 //
 // Default Behavior:
 //   - AllBands=true: accept every band
 //   - AllModes=false with the curated default mode list pre-enabled
 //   - Callsign patterns: Only applied if non-empty (no impact on band/mode filters)
-//   - MinConfidence=0: confidence filtering disabled
+//   - AllConfidence=true: accept every consensus glyph until specific ones are enabled
 //
 // Thread Safety:
 //   - Each client has their own Filter instance (no sharing)
@@ -144,7 +169,12 @@ type Filter struct {
 	Callsigns     []string        // Callsign patterns (e.g., ["W1*", "LZ5VV"])
 	AllBands      bool            // If true, accept all bands (Bands map ignored)
 	AllModes      bool            // If true, accept all modes (Modes map ignored)
-	MinConfidence int             // Minimum consensus confidence percentage (0 disables the check)
+	Confidence    map[string]bool // Enabled confidence glyphs (e.g., {"P": true, "V": true})
+	AllConfidence bool            // If true, accept all confidence glyphs (Confidence map ignored)
+
+	// LegacyMinConfidence captures the old percentage-based filter persisted to
+	// YAML so we can migrate user data to the new glyph-based approach.
+	LegacyMinConfidence int `yaml:"minconfidence,omitempty"`
 }
 
 // NewFilter creates a new filter with every band enabled and the curated default modes.
@@ -157,11 +187,13 @@ type Filter struct {
 //	filter := filter.NewFilter()
 func NewFilter() *Filter {
 	f := &Filter{
-		Bands:     make(map[string]bool),
-		Modes:     make(map[string]bool),
-		Callsigns: make([]string, 0),
-		AllBands:  true,  // Start with all bands enabled
-		AllModes:  false, // Default to the curated mode subset below
+		Bands:         make(map[string]bool),
+		Modes:         make(map[string]bool),
+		Callsigns:     make([]string, 0),
+		Confidence:    make(map[string]bool),
+		AllBands:      true,  // Start with all bands enabled
+		AllModes:      false, // Default to the curated mode subset below
+		AllConfidence: true,  // Accept every confidence glyph until user sets one
 	}
 	for _, mode := range defaultModeSelection {
 		f.Modes[mode] = true
@@ -201,7 +233,7 @@ func (f *Filter) SetBand(band string, enabled bool) {
 // SetMode enables or disables filtering for a specific mode.
 //
 // Parameters:
-//   - mode: Mode to filter (e.g., "CW", "FT8", "SSB")
+//   - mode: Mode to filter (e.g., "CW", "FT8", "USB")
 //   - enabled: true to accept this mode, false to reject
 //
 // Behavior:
@@ -265,21 +297,53 @@ func (f *Filter) ClearCallsignPatterns() {
 	f.Callsigns = make([]string, 0)
 }
 
-// SetMinConfidence configures the minimum confidence percentage a spot must have
-// before it passes through this filter. Values outside 0-100 are clamped.
-func (f *Filter) SetMinConfidence(min int) {
-	if min < 0 {
-		min = 0
+// SetConfidenceSymbol enables or disables filtering for a specific confidence glyph.
+//
+// Parameters:
+//   - symbol: Confidence glyph (e.g., "?", "P", "V")
+//   - enabled: true to accept this glyph, false to reject it
+//
+// Behavior:
+//   - Enabling any glyph disables AllConfidence (whitelist behavior)
+//   - Disabling the last glyph reverts to accepting all confidence values
+func (f *Filter) SetConfidenceSymbol(symbol string, enabled bool) {
+	if f == nil {
+		return
 	}
-	if min > 100 {
-		min = 100
+	canonical := normalizeConfidenceSymbol(symbol)
+	if canonical == "" {
+		return
 	}
-	f.MinConfidence = min
+	if enabled {
+		if f.Confidence == nil {
+			f.Confidence = make(map[string]bool)
+		}
+		f.Confidence[canonical] = true
+		f.AllConfidence = false
+		return
+	}
+	if f.Confidence == nil {
+		f.Confidence = make(map[string]bool)
+	}
+	// If we're transitioning from the default "accept everything" state,
+	// seed the whitelist with every glyph and then remove the requested one.
+	if f.AllConfidence {
+		for _, symbol := range SupportedConfidenceSymbols {
+			f.Confidence[symbol] = true
+		}
+		f.AllConfidence = false
+	}
+	delete(f.Confidence, canonical)
+	if len(f.Confidence) == 0 {
+		f.AllConfidence = true
+	}
 }
 
 // ResetConfidence disables confidence-based filtering.
 func (f *Filter) ResetConfidence() {
-	f.MinConfidence = 0
+	f.Confidence = make(map[string]bool)
+	f.AllConfidence = true
+	f.LegacyMinConfidence = 0
 }
 
 // ResetBands clears all band filters and accepts all bands.
@@ -353,7 +417,7 @@ func (f *Filter) Reset() {
 //	filter.SetMode("CW", true)
 //	filter.Matches(spot_20m_CW)   → true
 //	filter.Matches(spot_40m_CW)   → false (wrong band)
-//	filter.Matches(spot_20m_SSB)  → false (wrong mode)
+//	filter.Matches(spot_20m_USB)  → false (wrong mode)
 func (f *Filter) Matches(s *spot.Spot) bool {
 	// Check band filter
 	if !f.AllBands {
@@ -384,46 +448,14 @@ func (f *Filter) Matches(s *spot.Spot) bool {
 		}
 	}
 
-	if f.MinConfidence > 0 {
-		confidence := parseConfidenceValue(s.Confidence)
-		if confidence < f.MinConfidence {
+	if !f.AllConfidence && len(f.Confidence) > 0 {
+		symbol := normalizeConfidenceSymbol(s.Confidence)
+		if symbol == "" || !f.Confidence[symbol] {
 			return false
 		}
 	}
 
 	return true // Passed all filters
-}
-
-func parseConfidenceValue(label string) int {
-	label = strings.TrimSpace(label)
-	switch label {
-	case "":
-		return 0
-	case "?":
-		return 0
-	case "C":
-		return 100
-	case "B":
-		return 10
-	case "S":
-		return 25
-	case "P":
-		return 50
-	case "V":
-		return 100
-	default:
-		value, err := strconv.Atoi(label)
-		if err != nil {
-			return 0
-		}
-		if value < 0 {
-			return 0
-		}
-		if value > 100 {
-			return 100
-		}
-		return value
-	}
 }
 
 // matchesCallsignPattern checks if a callsign matches a pattern with wildcards.
@@ -532,8 +564,17 @@ func (f *Filter) String() string {
 	if len(f.Callsigns) > 0 {
 		parts = append(parts, "Callsigns: "+strings.Join(f.Callsigns, ", "))
 	}
-	if f.MinConfidence > 0 {
-		parts = append(parts, "Confidence>="+strconv.Itoa(f.MinConfidence))
+
+	// Describe confidence glyph filter
+	if f.AllConfidence || len(f.Confidence) == 0 {
+		parts = append(parts, "Confidence: ALL")
+	} else {
+		levels := f.EnabledConfidenceSymbols()
+		if len(levels) > 0 {
+			parts = append(parts, "Confidence: "+strings.Join(levels, ", "))
+		} else {
+			parts = append(parts, "Confidence: NONE (no spots will pass)")
+		}
 	}
 
 	if len(parts) == 0 {
@@ -541,4 +582,111 @@ func (f *Filter) String() string {
 	}
 
 	return strings.Join(parts, " | ")
+}
+
+// EnabledConfidenceSymbols returns the currently whitelisted glyphs in display order.
+func (f *Filter) EnabledConfidenceSymbols() []string {
+	if f == nil || len(f.Confidence) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(f.Confidence))
+	seen := make(map[string]bool, len(f.Confidence))
+	for _, symbol := range SupportedConfidenceSymbols {
+		if f.Confidence[symbol] {
+			result = append(result, symbol)
+			seen[symbol] = true
+		}
+	}
+	for symbol := range f.Confidence {
+		if !seen[symbol] {
+			result = append(result, symbol)
+		}
+	}
+	return result
+}
+
+// ConfidenceSymbolEnabled reports whether the glyph is currently allowed.
+func (f *Filter) ConfidenceSymbolEnabled(symbol string) bool {
+	if f == nil || f.AllConfidence {
+		return true
+	}
+	canonical := normalizeConfidenceSymbol(symbol)
+	if canonical == "" {
+		return false
+	}
+	return f.Confidence[canonical]
+}
+
+// IsSupportedConfidenceSymbol returns true if the glyph is one of the known consensus indicators.
+func IsSupportedConfidenceSymbol(symbol string) bool {
+	normalized := strings.ToUpper(strings.TrimSpace(symbol))
+	if normalized == "" {
+		return false
+	}
+	return supportedConfidenceSymbolSet[normalized]
+}
+
+func normalizeConfidenceSymbol(label string) string {
+	value := strings.TrimSpace(label)
+	if value == "" {
+		return "?"
+	}
+	upper := strings.ToUpper(value)
+	if supportedConfidenceSymbolSet[upper] {
+		return upper
+	}
+	trimmed := strings.TrimSuffix(upper, "%")
+	if trimmed != upper {
+		upper = trimmed
+	}
+	num, err := strconv.Atoi(upper)
+	if err != nil {
+		return ""
+	}
+	switch {
+	case num <= 25:
+		return "?"
+	case num <= 75:
+		return "P"
+	default:
+		return "V"
+	}
+}
+
+func confidenceSymbolsForThreshold(threshold int) []string {
+	if threshold < 0 {
+		threshold = 0
+	}
+	if threshold > 100 {
+		threshold = 100
+	}
+	result := make([]string, 0, len(SupportedConfidenceSymbols))
+	for _, symbol := range SupportedConfidenceSymbols {
+		score := confidenceSymbolScores[symbol]
+		if score >= threshold {
+			result = append(result, symbol)
+		}
+	}
+	return result
+}
+
+func (f *Filter) migrateLegacyConfidence() {
+	if f == nil {
+		return
+	}
+	if f.Confidence == nil {
+		f.Confidence = make(map[string]bool)
+	}
+	if f.LegacyMinConfidence > 0 {
+		for _, symbol := range confidenceSymbolsForThreshold(f.LegacyMinConfidence) {
+			f.Confidence[symbol] = true
+		}
+		if len(f.Confidence) > 0 {
+			f.AllConfidence = false
+		}
+		f.LegacyMinConfidence = 0
+	}
+	if len(f.Confidence) == 0 {
+		f.AllConfidence = true
+	}
 }

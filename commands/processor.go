@@ -57,13 +57,15 @@ SHOW/DX [count]      - Show last N DX spots (default: 10)
 BYE                  - Disconnect
 
 Filter commands (use from telnet session):
-	SET/FILTER BAND <band>        - Enable a band filter (valid bands below)
-	SET/FILTER MODE <mode>        - Enable a mode filter (valid modes listed below)
-	SET/FILTER CONFIDENCE <0-100> - Require a minimum consensus confidence
-	UNSET/FILTER MODE <mode>      - Disable a mode filter
-	UNSET/FILTER CONFIDENCE       - Remove the confidence requirement
+	SET/FILTER BAND <band>[,<band>...] - Enable specific bands (comma/space separated, or ALL)
+	SET/FILTER MODE <mode>[,<mode>...] - Enable modes (comma or space separated, or ALL)
+	SET/FILTER CONFIDENCE <symbol>[,<symbol>...] - Enable consensus glyphs (?,S,C,P,V,B or ALL)
+	UNSET/FILTER BAND <band>[,<band>...]      - Disable listed bands (use ALL to clear)
+	UNSET/FILTER MODE <mode>[,<mode>...]      - Disable listed modes (use ALL to clear)
+	UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] - Disable listed glyphs (use ALL to clear)
 	SHOW/FILTER BANDS             - List supported bands
 	SHOW/FILTER MODES             - Show supported modes and enabled state
+	SHOW/FILTER CONFIDENCE        - Show supported confidence glyphs and enabled state
 
 Supported modes: %s
 Supported bands: %s
@@ -71,6 +73,7 @@ Supported bands: %s
 Examples:
 	SHOW/DX            - Show last 10 spots
 	SET/FILTER MODE FT8
+	SET/FILTER CONFIDENCE P,V
 `, strings.Join(filter.SupportedModes, ", "), strings.Join(spot.SupportedBandNames(), ", "))
 }
 
