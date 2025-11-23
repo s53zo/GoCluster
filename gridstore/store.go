@@ -112,6 +112,33 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// PurgeOlderThan deletes records whose updated_at is older than cutoff. Returns rows removed.
+func (s *Store) PurgeOlderThan(cutoff time.Time) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("gridstore: store is not initialized")
+	}
+	res, err := s.db.Exec(`DELETE FROM calls WHERE updated_at < ?`, cutoff.UTC().Unix())
+	if err != nil {
+		return 0, fmt.Errorf("gridstore: purge: %w", err)
+	}
+	removed, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("gridstore: purge rows: %w", err)
+	}
+	return removed, nil
+}
+
+// ClearKnownFlags resets is_known to 0 for all calls.
+func (s *Store) ClearKnownFlags() error {
+	if s == nil || s.db == nil {
+		return errors.New("gridstore: store is not initialized")
+	}
+	if _, err := s.db.Exec(`UPDATE calls SET is_known = 0 WHERE is_known != 0`); err != nil {
+		return fmt.Errorf("gridstore: clear known flags: %w", err)
+	}
+	return nil
+}
+
 // Upsert inserts or updates a record. If FirstSeen is zero, UpdatedAt is used for both.
 func (s *Store) Upsert(rec Record) error {
 	if s == nil || s.db == nil {

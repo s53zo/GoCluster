@@ -29,6 +29,7 @@ import (
 	"dxcluster/gridstore"
 	"dxcluster/pskreporter"
 	"dxcluster/rbn"
+	"dxcluster/recorder"
 	"dxcluster/skew"
 	"dxcluster/spot"
 	"dxcluster/stats"
@@ -135,6 +136,17 @@ func (c *gridCache) add(call, grid string) {
 	}
 }
 
+func (c *gridCache) get(call string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if elem, ok := c.entries[call]; ok {
+		c.lru.MoveToFront(elem)
+		entry := elem.Value.(*gridEntry)
+		return entry.grid, entry.grid != ""
+	}
+	return "", false
+}
+
 func main() {
 	disableTUI := os.Getenv("DXC_NO_TUI") == "1"
 	ui := newDashboard(!disableTUI)
@@ -225,7 +237,8 @@ func main() {
 		}
 	}
 	cache := newGridCache(cfg.GridCacheSize)
-	gridUpdater, gridUpdateState, stopGridWriter := startGridWriter(gridStore, time.Duration(cfg.GridFlushSec)*time.Second, cache)
+	gridTTL := time.Duration(cfg.GridTTLDays) * 24 * time.Hour
+	gridUpdater, gridUpdateState, stopGridWriter, gridLookup := startGridWriter(gridStore, time.Duration(cfg.GridFlushSec)*time.Second, cache, gridTTL)
 	defer func() {
 		if stopGridWriter != nil {
 			stopGridWriter()
@@ -279,6 +292,17 @@ func main() {
 		})
 	}
 
+	var spotRecorder *recorder.Recorder
+	if cfg.Recorder.Enabled {
+		rec, err := recorder.NewRecorder(cfg.Recorder.DBPath, cfg.Recorder.PerModeLimit)
+		if err != nil {
+			log.Printf("Warning: failed to start recorder: %v", err)
+		} else {
+			spotRecorder = rec
+			defer spotRecorder.Close()
+		}
+	}
+
 	// Create the deduplicator (always active; a zero-second window behaves like "disabled").
 	// THIS IS THE UNIFIED DEDUP ENGINE - ALL SOURCES FEED INTO IT
 	dedupWindow := time.Duration(cfg.Dedup.ClusterWindowSeconds) * time.Second
@@ -311,7 +335,7 @@ func main() {
 	}
 
 	// Start the unified output processor once the telnet server is ready
-	go processOutputSpots(deduplicator, spotBuffer, telnetServer, statsTracker, correctionIndex, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater)
+	go processOutputSpots(deduplicator, spotBuffer, telnetServer, statsTracker, correctionIndex, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, spotRecorder)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
 	// RBN spots go INTO the deduplicator input channel
@@ -349,7 +373,7 @@ func main() {
 	)
 	if cfg.PSKReporter.Enabled {
 		pskrTopics = cfg.PSKReporter.SubscriptionTopics()
-		pskrClient = pskreporter.NewClient(cfg.PSKReporter.Broker, cfg.PSKReporter.Port, pskrTopics, cfg.PSKReporter.Name, cfg.PSKReporter.Workers, ctyDB, skewStore)
+		pskrClient = pskreporter.NewClient(cfg.PSKReporter.Broker, cfg.PSKReporter.Port, pskrTopics, cfg.PSKReporter.Name, cfg.PSKReporter.Workers, ctyDB, skewStore, cfg.PSKReporter.AppendSpotterSSID)
 		err = pskrClient.Connect()
 		if err != nil {
 			log.Printf("Warning: Failed to connect to PSKReporter: %v", err)
@@ -528,6 +552,8 @@ func processOutputSpots(
 	spotPolicy config.SpotPolicy,
 	dash *dashboard,
 	gridUpdate func(call, grid string),
+	gridLookup func(call string) (string, bool),
+	rec *recorder.Recorder,
 ) {
 	outputChan := deduplicator.GetOutputChannel()
 
@@ -537,6 +563,21 @@ func processOutputSpots(
 		}
 
 		s.RefreshBeaconFlag()
+
+		if gridLookup != nil {
+			// Backfill missing grids from the persisted store so downstream consumers
+			// (recorder, clients) see metadata even when the upstream spot omitted it.
+			if strings.TrimSpace(s.DXMetadata.Grid) == "" {
+				if grid, ok := gridLookup(s.DXCall); ok {
+					s.DXMetadata.Grid = grid
+				}
+			}
+			if strings.TrimSpace(s.DEMetadata.Grid) == "" {
+				if grid, ok := gridLookup(s.DECall); ok {
+					s.DEMetadata.Grid = grid
+				}
+			}
+		}
 		if s.IsBeacon {
 			s.Confidence = ""
 		}
@@ -613,6 +654,10 @@ func processOutputSpots(
 			if deGrid := strings.TrimSpace(s.DEMetadata.Grid); deGrid != "" {
 				gridUpdate(s.DECall, deGrid)
 			}
+		}
+
+		if rec != nil {
+			rec.Record(s)
 		}
 
 		buf.Add(s)
@@ -968,6 +1013,9 @@ func seedKnownCalls(store *gridstore.Store, known *spot.KnownCallsigns) error {
 	if store == nil || known == nil {
 		return nil
 	}
+	if err := store.ClearKnownFlags(); err != nil {
+		return err
+	}
 	calls := known.List()
 	if len(calls) == 0 {
 		return nil
@@ -986,9 +1034,9 @@ func seedKnownCalls(store *gridstore.Store, known *spot.KnownCallsigns) error {
 	return store.UpsertBatch(records)
 }
 
-func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache *gridCache) (func(call, grid string), *gridMetrics, func()) {
+func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache *gridCache, ttl time.Duration) (func(call, grid string), *gridMetrics, func(), func(call string) (string, bool)) {
 	if store == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	if flushInterval <= 0 {
 		flushInterval = 60 * time.Second
@@ -1005,6 +1053,13 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		defer close(done)
 		ticker := time.NewTicker(flushInterval)
 		defer ticker.Stop()
+		var ttlTicker *time.Ticker
+		var ttlCh <-chan time.Time
+		if ttl > 0 {
+			ttlTicker = time.NewTicker(ttl)
+			defer ttlTicker.Stop()
+			ttlCh = ttlTicker.C
+		}
 
 		pending := make(map[string]update)
 		flush := func() {
@@ -1043,6 +1098,13 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 				}
 			case <-ticker.C:
 				flush()
+			case <-ttlCh:
+				cutoff := time.Now().UTC().Add(-ttl)
+				if removed, err := store.PurgeOlderThan(cutoff); err != nil {
+					log.Printf("Warning: gridstore TTL purge failed: %v", err)
+				} else if removed > 0 {
+					log.Printf("Gridstore: purged %d entries older than %v", removed, ttl)
+				}
 			}
 		}
 	}()
@@ -1068,7 +1130,34 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		<-done
 	}
 
-	return updateFn, metrics, stopFn
+	lookupFn := func(call string) (string, bool) {
+		call = strings.TrimSpace(strings.ToUpper(call))
+		if call == "" {
+			return "", false
+		}
+		if cache != nil {
+			if grid, ok := cache.get(call); ok {
+				return grid, true
+			}
+		}
+		if store == nil {
+			return "", false
+		}
+		rec, err := store.Get(call)
+		if err != nil || rec == nil || !rec.Grid.Valid {
+			return "", false
+		}
+		grid := strings.ToUpper(strings.TrimSpace(rec.Grid.String))
+		if grid == "" {
+			return "", false
+		}
+		if cache != nil {
+			cache.add(call, grid)
+		}
+		return grid, true
+	}
+
+	return updateFn, metrics, stopFn, lookupFn
 }
 
 func sqlNullString(v string) sql.NullString {

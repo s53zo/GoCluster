@@ -21,7 +21,7 @@ rbn:
   host: "telnet.reversebeacon.net"
   port: 7000
   callsign: "N0CW"        # Change this to your callsign!
-  keep_ssid_suffix: false # false collapses VE3EID-1/-2 into VE3EID-#
+  keep_ssid_suffix: true  # false collapses VE3EID-1/-2 into VE3EID-#
 
 # RBN Digital modes feed (port 7001) - FT4/FT8
 rbn_digital:
@@ -29,8 +29,8 @@ rbn_digital:
   name: "RBN-FT4-FT8"
   host: "telnet.reversebeacon.net"
   port: 7001
-  callsign: "N0FT"  # Change this to your callsign!
-  keep_ssid_suffix: false
+  callsign: "N0FT"       # Change this to your callsign!
+  keep_ssid_suffix: true # false collapses VE3EID-1/-2 into VE3EID-#
 
 # PSKReporter MQTT feed
 pskreporter:
@@ -40,6 +40,7 @@ pskreporter:
   port: 1883
   modes: ["FT8", "FT4", "CW", "RTTY"]  # List of MQTT modes to subscribe to
   workers: 0                           # 0 means automatic (half of the CPU cores, minimum 1)
+  append_spotter_ssid: true            # Append "-#" to receiver calls lacking an SSID for dedup
 
 filter:
   default_modes:
@@ -69,7 +70,7 @@ call_correction:
   min_confidence_percent: 75    # Candidate supporters must represent at least this percent of unique spotters
   recency_seconds: 180          # Supporting spots must be this recent
   max_edit_distance: 2          # Max allowed Levenshtein distance between original and replacement
-  frequency_tolerance_hz: 300   # Spots within this frequency window are considered the same signal
+  frequency_tolerance_hz: 500   # Spots within this frequency window are considered the same signal
   distance_model_cw: "morse"    # "plain" = standard Levenshtein, "morse" = Morse-aware (CW only)
   distance_model_rtty: "baudot" # "plain" = standard Levenshtein, "baudot" = Baudot-aware (RTTY only)
   invalid_action: "broadcast"   # "broadcast" original if correction fails CTY, or "suppress" to drop spot
@@ -81,15 +82,15 @@ harmonics:
   enabled: true                # Suppress harmonics when true
   recency_seconds: 120         # Look-back window for fundamental spots
   max_harmonic_multiple: 3     # Highest harmonic multiple to consider (2 = second harmonic, etc.)
-  frequency_tolerance_hz: 400  # Allowed deviation between expected and observed harmonic
+  frequency_tolerance_hz: 500  # Allowed deviation between expected and observed harmonic
   min_report_delta: 6          # Harmonics must be at least this many dB weaker to drop
   min_report_delta_step: 3.5   # Additional dB required per harmonic order above the second
 
 spot_policy:
   max_age_seconds: 300                   # Drop spots older than this many seconds (based on spot timestamp)
-  frequency_averaging_seconds: 120       # Look-back window for CW/RTTY frequency averaging
-  frequency_averaging_tolerance_hz: 300  # Max deviation between reports when averaging
-  frequency_averaging_min_reports: 3     # Minimum corroborating reports needed to adjust frequency
+  frequency_averaging_seconds: 180       # Look-back window for CW/RTTY frequency averaging
+  frequency_averaging_tolerance_hz: 500  # Max deviation between reports when averaging
+  frequency_averaging_min_reports: 4     # Minimum corroborating reports needed to adjust frequency
 
 # Known calls list auto-refresh (downloads at startup if file missing, then daily at refresh_utc)
 known_calls:
@@ -102,12 +103,19 @@ known_calls:
 grid_db: "data/grids/calls.db"
 grid_flush_seconds: 60                             # Batch DB writes at most once per this many seconds
 grid_cache_size: 100000                            # Max in-memory grid cache entries (lazy LRU; falls back to SQLite on miss)
+grid_ttl_days: 0                                   # >0 prunes grid records older than this many days (0=keep forever)
 
 cty:
   file: "data/cty/cty.plist"                       # Path to the CTY prefix database (cty.plist)
 
 buffer:
   capacity: 300000                                 # Number of spots held in the in-memory ring buffer
+
+# Spot recorder (captures first N spots per mode into SQLite for offline analysis)
+recorder:
+  enabled: true
+  db_path: "data/records/spots.db"
+  per_mode_limit: 100
 
 # RBN skew correction table
 skew:
