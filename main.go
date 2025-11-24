@@ -730,6 +730,8 @@ func maybeApplyCallCorrection(spotEntry *spot.Spot, idx *spot.CorrectionIndex, c
 		Distance3ExtraReports:    cfg.Distance3ExtraReports,
 		Distance3ExtraAdvantage:  cfg.Distance3ExtraAdvantage,
 		Distance3ExtraConfidence: cfg.Distance3ExtraConfidence,
+		DistanceCacheSize:        cfg.DistanceCacheSize,
+		DistanceCacheTTL:         time.Duration(cfg.DistanceCacheTTLSeconds) * time.Second,
 	}
 	others := idx.Candidates(spotEntry, now, window)
 	corrected, supporters, correctedConfidence, subjectConfidence, totalReporters, ok := spot.SuggestCallCorrection(spotEntry, others, settings, now)

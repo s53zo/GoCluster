@@ -179,6 +179,11 @@ type CallCorrectionConfig struct {
 	Distance3ExtraReports    int `yaml:"distance3_extra_reports"`    // additional unique reporters required
 	Distance3ExtraAdvantage  int `yaml:"distance3_extra_advantage"`  // additional advantage over subject required
 	Distance3ExtraConfidence int `yaml:"distance3_extra_confidence"` // additional confidence percentage points required
+	// DistanceCache* control memoization of string distance calculations across the
+	// consensus window. A small cache reduces CPU churn when the same candidates
+	// are compared repeatedly during bursts.
+	DistanceCacheSize       int `yaml:"distance_cache_size"`
+	DistanceCacheTTLSeconds int `yaml:"distance_cache_ttl_seconds"`
 }
 
 // HarmonicConfig controls detection and suppression of harmonic spots.
@@ -305,6 +310,15 @@ func Load(filename string) (*Config, error) {
 	}
 	if cfg.CallCorrection.Distance3ExtraConfidence < 0 {
 		cfg.CallCorrection.Distance3ExtraConfidence = 0
+	}
+	if cfg.CallCorrection.DistanceCacheSize <= 0 {
+		cfg.CallCorrection.DistanceCacheSize = 5000
+	}
+	if cfg.CallCorrection.DistanceCacheTTLSeconds <= 0 {
+		cfg.CallCorrection.DistanceCacheTTLSeconds = cfg.CallCorrection.RecencySeconds
+		if cfg.CallCorrection.DistanceCacheTTLSeconds <= 0 {
+			cfg.CallCorrection.DistanceCacheTTLSeconds = 120
+		}
 	}
 	if cfg.Telnet.BroadcastQueue <= 0 {
 		cfg.Telnet.BroadcastQueue = 2048
@@ -454,6 +468,9 @@ func (c *Config) Print() {
 		c.CallCorrection.Distance3ExtraReports,
 		c.CallCorrection.Distance3ExtraAdvantage,
 		c.CallCorrection.Distance3ExtraConfidence)
+	fmt.Printf("Call correction cache: size=%d ttl=%ds\n",
+		c.CallCorrection.DistanceCacheSize,
+		c.CallCorrection.DistanceCacheTTLSeconds)
 
 	harmonicStatus := "disabled"
 	if c.Harmonics.Enabled {

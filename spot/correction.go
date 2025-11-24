@@ -48,6 +48,11 @@ type CorrectionSettings struct {
 	Distance3ExtraReports    int
 	Distance3ExtraAdvantage  int
 	Distance3ExtraConfidence int
+	// DistanceCache* control memoization of string distance calculations. This
+	// lowers CPU when the same candidate set is evaluated repeatedly during
+	// bursts. Disable by setting size<=0 or ttl<=0.
+	DistanceCacheSize int
+	DistanceCacheTTL  time.Duration
 }
 
 var correctionEligibleModes = map[string]struct{}{
@@ -69,6 +74,92 @@ func IsCallCorrectionCandidate(mode string) bool {
 // so we allow a half-kilohertz wiggle room to absorb rounding differences between
 // data sources.
 var frequencyToleranceKHz = 0.5
+
+// distanceCacheEntry stores a computed distance with expiry.
+type distanceCacheEntry struct {
+	distance int
+	expires  time.Time
+}
+
+// distanceCache is a size- and TTL-bound memoization map for call distances.
+type distanceCache struct {
+	mu      sync.Mutex
+	entries map[string]distanceCacheEntry
+	order   []string // insertion order for eviction
+	max     int
+	ttl     time.Duration
+}
+
+func (dc *distanceCache) configure(max int, ttl time.Duration) {
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+	if max <= 0 || ttl <= 0 {
+		dc.max = 0
+		dc.entries = nil
+		dc.order = nil
+		dc.ttl = 0
+		return
+	}
+	if dc.max != max || dc.ttl != ttl || dc.entries == nil {
+		dc.max = max
+		dc.ttl = ttl
+		dc.entries = make(map[string]distanceCacheEntry, max)
+		dc.order = dc.order[:0]
+	}
+}
+
+func (dc *distanceCache) get(key string, now time.Time) (int, bool) {
+	if dc.max <= 0 || dc.ttl <= 0 {
+		return 0, false
+	}
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+	entry, ok := dc.entries[key]
+	if !ok {
+		return 0, false
+	}
+	if now.After(entry.expires) {
+		delete(dc.entries, key)
+		return 0, false
+	}
+	return entry.distance, true
+}
+
+func (dc *distanceCache) put(key string, distance int, now time.Time) {
+	if dc.max <= 0 || dc.ttl <= 0 {
+		return
+	}
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+	if dc.entries == nil {
+		dc.entries = make(map[string]distanceCacheEntry, dc.max)
+	}
+	dc.entries[key] = distanceCacheEntry{
+		distance: distance,
+		expires:  now.Add(dc.ttl),
+	}
+	dc.order = append(dc.order, key)
+	if len(dc.entries) > dc.max {
+		dc.evictOldest()
+	}
+}
+
+func (dc *distanceCache) evictOldest() {
+	// Drop oldest entries until we're within the max bound.
+	for len(dc.entries) > dc.max && len(dc.order) > 0 {
+		k := dc.order[0]
+		dc.order = dc.order[1:]
+		if _, ok := dc.entries[k]; ok {
+			delete(dc.entries, k)
+		}
+	}
+	// Trim runaway order slice if it has grown much larger than the cache.
+	if cap(dc.order) > 0 && len(dc.order) > dc.max*2 {
+		dc.order = append([]string(nil), dc.order...)
+	}
+}
+
+var sharedDistanceCache distanceCache
 
 // SetFrequencyToleranceHz updates the frequency similarity window in Hz.
 func SetFrequencyToleranceHz(hz float64) {
@@ -192,7 +283,11 @@ func SuggestCallCorrection(subject *Spot, others []*Spot, settings CorrectionSet
 		if count < subjectCount+cfg.MinAdvantage {
 			continue
 		}
-		distance := callDistance(subjectCall, call, subject.Mode, cfg.DistanceModelCW, cfg.DistanceModelRTTY)
+		cacheCfg := distanceCacheConfig{
+			size: cfg.DistanceCacheSize,
+			ttl:  cfg.DistanceCacheTTL,
+		}
+		distance := cachedCallDistance(subjectCall, call, subject.Mode, cfg.DistanceModelCW, cfg.DistanceModelRTTY, cacheCfg, now)
 		if cfg.MaxEditDistance >= 0 && distance > cfg.MaxEditDistance {
 			continue
 		}
@@ -266,8 +361,18 @@ func normalizeCorrectionSettings(settings CorrectionSettings) CorrectionSettings
 	if cfg.Distance3ExtraConfidence < 0 {
 		cfg.Distance3ExtraConfidence = 0
 	}
+	if cfg.DistanceCacheSize <= 0 {
+		cfg.DistanceCacheSize = 5000
+	}
 	cfg.DistanceModelCW = normalizeCWDistanceModel(cfg.DistanceModelCW)
 	cfg.DistanceModelRTTY = normalizeRTTYDistanceModel(cfg.DistanceModelRTTY)
+	if cfg.DistanceCacheTTL <= 0 {
+		// Default TTL tracks the recency window so cached distances expire alongside supporting data.
+		cfg.DistanceCacheTTL = cfg.RecencyWindow
+		if cfg.DistanceCacheTTL <= 0 {
+			cfg.DistanceCacheTTL = 2 * time.Minute
+		}
+	}
 	return cfg
 }
 
@@ -438,6 +543,11 @@ const (
 	distanceModelBaudot = "baudot"
 )
 
+type distanceCacheConfig struct {
+	size int
+	ttl  time.Duration
+}
+
 func normalizeCWDistanceModel(model string) string {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case distanceModelMorse:
@@ -456,20 +566,56 @@ func normalizeRTTYDistanceModel(model string) string {
 	}
 }
 
-// callDistance picks the distance function based on mode/model.
-func callDistance(subject, candidate, mode, cwModel, rttyModel string) int {
+// cachedCallDistance wraps callDistanceCore with an optional memoization layer
+// controlled by size/ttl. It normalizes mode/models before building the cache key.
+func cachedCallDistance(subject, candidate, mode, cwModel, rttyModel string, cacheCfg distanceCacheConfig, now time.Time) int {
 	modeKey := strings.ToUpper(strings.TrimSpace(mode))
-	switch modeKey {
+	cwModelNorm := normalizeCWDistanceModel(cwModel)
+	rttyModelNorm := normalizeRTTYDistanceModel(rttyModel)
+
+	if cacheCfg.size > 0 && cacheCfg.ttl > 0 {
+		sharedDistanceCache.configure(cacheCfg.size, cacheCfg.ttl)
+		key := distanceCacheKey(subject, candidate, modeKey, cwModelNorm, rttyModelNorm)
+		if dist, ok := sharedDistanceCache.get(key, now); ok {
+			return dist
+		}
+		dist := callDistanceCore(subject, candidate, modeKey, cwModelNorm, rttyModelNorm)
+		sharedDistanceCache.put(key, dist, now)
+		return dist
+	}
+	return callDistanceCore(subject, candidate, modeKey, cwModelNorm, rttyModelNorm)
+}
+
+func distanceCacheKey(subject, candidate, mode, cwModel, rttyModel string) string {
+	return strings.ToUpper(subject) + "|" + strings.ToUpper(candidate) + "|" + mode + "|" + cwModel + "|" + rttyModel
+}
+
+// callDistanceCore picks the distance function based on mode/model without caching.
+func callDistanceCore(subject, candidate, mode, cwModel, rttyModel string) int {
+	switch mode {
 	case "CW":
-		if normalizeCWDistanceModel(cwModel) == distanceModelMorse {
+		if cwModel == distanceModelMorse {
 			return cwCallDistance(subject, candidate)
 		}
 	case "RTTY":
-		if normalizeRTTYDistanceModel(rttyModel) == distanceModelBaudot {
+		if rttyModel == distanceModelBaudot {
 			return rttyCallDistance(subject, candidate)
 		}
 	}
 	return levenshtein(subject, candidate)
+}
+
+// callDistance is retained for tests; it routes to the core distance function
+// after normalizing mode/model inputs (no caching).
+func callDistance(subject, candidate, mode, cwModel, rttyModel string) int {
+	modeKey := strings.ToUpper(strings.TrimSpace(mode))
+	return callDistanceCore(
+		subject,
+		candidate,
+		modeKey,
+		normalizeCWDistanceModel(cwModel),
+		normalizeRTTYDistanceModel(rttyModel),
+	)
 }
 
 // cwCallDistance computes Levenshtein at the callsign level but uses Morse-aware

@@ -19,13 +19,13 @@ stats:
 telnet:
   port: 7300
   tls_enabled: false
-  max_connections: 1000
+  max_connections: 100
   welcome_message: "Experimental DX Cluster\nPlease login with your callsign\n"
   duplicate_login_message: "Another login for your callsign connected. This session is being closed (multiple logins are not allowed)."
   broadcast_workers: 0            # 0 means automatic (half of the CPU cores, minimum 2)
-  broadcast_queue_size: 2048      # Buffer depth for the global telnet broadcast queue
-  worker_queue_size: 128          # Jobs queued per broadcast worker before dropping
-  client_buffer_size: 128         # Per-client spot backlog before a slow session drops spots
+  broadcast_queue_size: 4096      # Buffer depth for the global telnet broadcast queue
+  worker_queue_size: 256          # Jobs queued per broadcast worker before dropping
+  client_buffer_size: 256         # Per-client spot backlog before a slow session drops spots
   skip_handshake: true            # Set true to disable Telnet option negotiation (raw TCP clients)
 
 # Default filters applied to new users
@@ -58,6 +58,8 @@ call_correction:
   distance3_extra_reports: 4      # Extra unique supporters required when suggested call is distance 3
   distance3_extra_advantage: 2    # Extra advantage over the subject required when distance 3
   distance3_extra_confidence: 10  # Extra confidence percentage points required when distance 3
+  distance_cache_size: 5000       # Memoize call distance calculations (entries)
+  distance_cache_ttl_seconds: 120 # Expire cached distances after this many seconds (tie to recency window)
 
 # Harmonic suppression for CW/USB/LSB/RTTY signals
 harmonics:
@@ -70,9 +72,9 @@ harmonics:
 
 spot_policy:
   max_age_seconds: 300                   # Drop spots older than this many seconds (based on spot timestamp)
-  frequency_averaging_seconds: 180       # Look-back window for CW/RTTY frequency averaging
+  frequency_averaging_seconds: 120       # Look-back window for CW/RTTY frequency averaging
   frequency_averaging_tolerance_hz: 500  # Max deviation between reports when averaging
-  frequency_averaging_min_reports: 7     # Minimum corroborating reports needed to adjust frequency
+  frequency_averaging_min_reports: 6     # Minimum corroborating reports needed to adjust frequency
 
 # Spot sources
 rbn:
@@ -108,7 +110,7 @@ known_calls:
   enabled: true
   url: "https://www.supercheckpartial.com/MASTER.SCP"
   file: "data/scp/MASTER.SCP"
-  refresh_utc: "00:30"                    # Daily download time in HH:MM UTC
+  refresh_utc: "00:01"                    # Daily download time in HH:MM UTC
 
 # Combined database for known calls + grids
 grid_db: "data/grids/calls.db"
@@ -126,7 +128,7 @@ skew:
   refresh_utc: "00:30"                 # Daily download time in HH:MM UTC
 
 buffer:
-  capacity: 300000                     # Number of spots held in the in-memory ring buffer
+  capacity: 250000                     # Number of spots held in the in-memory ring buffer
 
 # Spot recorder (captures first N spots per mode into SQLite for offline analysis)
 recorder:

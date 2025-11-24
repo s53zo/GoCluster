@@ -3,6 +3,7 @@ package spot
 import (
 	"fmt"
 	"hash/fnv"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,7 @@ type CallMetadata struct {
 
 // NewSpot creates a new spot with sensible defaults
 func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
+	freq = roundFrequencyTo100Hz(freq)
 	spot := &Spot{
 		DXCall:     strings.ToUpper(dxCall),
 		DECall:     strings.ToUpper(deCall),
@@ -68,6 +70,11 @@ func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
 	}
 	spot.RefreshBeaconFlag()
 	return spot
+}
+
+// roundFrequencyTo100Hz normalizes a kHz value to the nearest 100 Hz (0.1 kHz).
+func roundFrequencyTo100Hz(freqKHz float64) float64 {
+	return math.Round(freqKHz*10) / 10
 }
 
 // Hash32 returns a 32-bit hash for deduplication
