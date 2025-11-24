@@ -667,15 +667,27 @@ func processOutputSpots(
 			}
 			if corroborators >= spotPolicy.FrequencyAveragingMinReports && math.Abs(rounded-s.Frequency) >= tolerance {
 				message := fmt.Sprintf("Frequency corrected: %s %.1f -> %.1f kHz (%d / %d%%)", s.DXCall, s.Frequency, rounded, corroborators, confidence)
+				messageDash := message
+				if dash != nil {
+					messageDash = fmt.Sprintf("Frequency corrected: %s [red]%.1f[-] -> [green]%.1f[-] kHz (%d / %d%%)", s.DXCall, s.Frequency, rounded, corroborators, confidence)
+				}
 				s.Frequency = rounded
 				if tracker != nil {
 					tracker.IncrementFrequencyCorrections()
 				}
 				if dash != nil {
-					dash.AppendFrequency(message)
+					dash.AppendFrequency(messageDash)
 				} else {
 					log.Println(message)
 				}
+			}
+		}
+
+		// Ensure CW/RTTY/SSB carry at least a placeholder confidence glyph when no correction applied.
+		if !s.IsBeacon {
+			modeUpper := strings.ToUpper(strings.TrimSpace(s.Mode))
+			if (modeUpper == "CW" || modeUpper == "RTTY" || modeUpper == "SSB") && strings.TrimSpace(s.Confidence) == "" {
+				s.Confidence = "?"
 			}
 		}
 
@@ -756,11 +768,16 @@ func maybeApplyCallCorrection(spotEntry *spot.Spot, idx *spot.CorrectionIndex, c
 
 	message := fmt.Sprintf("Call corrected: %s -> %s at %.1f kHz (%d / %d%%)",
 		spotEntry.DXCall, corrected, spotEntry.Frequency, supporters, correctedConfidence)
+	messageDash := message
+	if dash != nil {
+		messageDash = fmt.Sprintf("Call corrected: [red]%s[-] -> [green]%s[-] at %.1f kHz (%d / %d%%)",
+			spotEntry.DXCall, corrected, spotEntry.Frequency, supporters, correctedConfidence)
+	}
 
 	if ctyDB != nil {
 		if _, valid := ctyDB.LookupCallsign(corrected); valid {
 			if dash != nil {
-				dash.AppendCall(message)
+				dash.AppendCall(messageDash)
 			} else {
 				log.Println(message)
 			}
@@ -783,7 +800,7 @@ func maybeApplyCallCorrection(spotEntry *spot.Spot, idx *spot.CorrectionIndex, c
 	}
 
 	if dash != nil {
-		dash.AppendCall(message)
+		dash.AppendCall(messageDash)
 	} else {
 		log.Println(message)
 	}

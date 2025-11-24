@@ -65,10 +65,12 @@ func newDashboard(enable bool) *dashboard {
 	}
 
 	stats := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
+	stats.SetTextColor(tcell.ColorYellow)
 	callPane := makePane("Corrected Calls")
 	freqPane := makePane("Corrected Frequencies")
 	harmonicPane := makePane("Harmonics")
 	systemPane := makePane("System")
+	systemPane.SetTextColor(tcell.ColorYellow)
 
 	layout := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(stats, 7, 0, false).
