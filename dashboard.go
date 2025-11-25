@@ -5,7 +5,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -22,31 +21,8 @@ type dashboard struct {
 	frequencyView *tview.TextView
 	harmonicView  *tview.TextView
 	systemView    *tview.TextView
-	callLines     []string
-	freqLines     []string
-	harmonicLines []string
-	systemLines   []string
-	paneMu        sync.Mutex
 	statsMu       sync.Mutex
-	events        chan paneEvent
-	closed        atomic.Bool
 	ready         chan struct{}
-}
-
-const paneMaxLines = 6
-
-type paneType int
-
-const (
-	paneCall paneType = iota
-	paneFrequency
-	paneHarmonic
-	paneSystem
-)
-
-type paneEvent struct {
-	pane paneType
-	line string
 }
 
 func newDashboard(enable bool) *dashboard {
@@ -61,16 +37,17 @@ func newDashboard(enable bool) *dashboard {
 		if title != "" {
 			tv.SetTitle(title).SetTitleAlign(tview.AlignLeft)
 		}
+		tv.SetChangedFunc(func() {
+			tv.ScrollToEnd()
+		})
 		return tv
 	}
 
 	stats := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
-	stats.SetTextColor(tcell.ColorYellow)
 	callPane := makePane("Corrected Calls")
 	freqPane := makePane("Corrected Frequencies")
 	harmonicPane := makePane("Harmonics")
 	systemPane := makePane("System")
-	systemPane.SetTextColor(tcell.ColorYellow)
 
 	layout := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(stats, 7, 0, false).
@@ -97,12 +74,8 @@ func newDashboard(enable bool) *dashboard {
 		frequencyView: freqPane,
 		harmonicView:  harmonicPane,
 		systemView:    systemPane,
-		events:        make(chan paneEvent, 256),
 		ready:         ready,
 	}
-
-	// Dedicated flusher so the hot path can drop instead of blocking when the UI lags.
-	go d.runEventLoop()
 
 	go func() {
 		if err := app.Run(); err != nil {
@@ -117,8 +90,6 @@ func (d *dashboard) Stop() {
 	if d == nil || d.app == nil {
 		return
 	}
-	d.closed.Store(true)
-	close(d.events)
 	d.app.Stop()
 }
 
@@ -142,30 +113,29 @@ func (d *dashboard) SetStats(lines []string) {
 }
 
 func (d *dashboard) AppendCall(line string) {
-	d.enqueue(paneCall, line)
+	d.appendLine(d.callView, line)
 }
 
 func (d *dashboard) AppendFrequency(line string) {
-	d.enqueue(paneFrequency, line)
+	d.appendLine(d.frequencyView, line)
 }
 
 func (d *dashboard) AppendHarmonic(line string) {
-	d.enqueue(paneHarmonic, line)
+	d.appendLine(d.harmonicView, line)
 }
 
 func (d *dashboard) AppendSystem(line string) {
-	d.enqueue(paneSystem, line)
+	d.appendLine(d.systemView, line)
 }
 
-func (d *dashboard) enqueue(p paneType, line string) {
-	if d == nil || d.closed.Load() {
+func (d *dashboard) appendLine(view *tview.TextView, line string) {
+	if d == nil || view == nil {
 		return
 	}
-	select {
-	case d.events <- paneEvent{pane: p, line: line}:
-	default:
-		// Drop on saturation to keep the hot path non-blocking.
-	}
+	ts := time.Now().Format("2006/01/02 15:04:05 ")
+	d.app.QueueUpdateDraw(func() {
+		fmt.Fprintln(view, ts+line)
+	})
 }
 
 func (d *dashboard) SystemWriter() *paneWriter {
@@ -191,67 +161,6 @@ func (w *paneWriter) Write(p []byte) (int, error) {
 	}
 	w.app.QueueUpdateDraw(func() {
 		fmt.Fprint(w.view, text)
-		w.view.ScrollToEnd()
 	})
 	return len(p), nil
-}
-
-func (d *dashboard) runEventLoop() {
-	if d == nil {
-		return
-	}
-	for ev := range d.events {
-		d.appendLine(ev.pane, ev.line)
-	}
-}
-
-func (d *dashboard) appendLine(p paneType, line string) {
-	if d == nil {
-		return
-	}
-	tsLine := time.Now().Format("2006/01/02 15:04:05 ") + line
-
-	d.paneMu.Lock()
-	buf := d.getPaneBuffer(p)
-	view := d.getPaneView(p)
-	*buf = append(*buf, tsLine)
-	if len(*buf) > paneMaxLines {
-		*buf = (*buf)[len(*buf)-paneMaxLines:]
-	}
-	text := strings.Join(*buf, "\n")
-	d.paneMu.Unlock()
-
-	if view == nil || d.app == nil {
-		return
-	}
-	d.app.QueueUpdateDraw(func() {
-		view.SetText(text)
-		view.ScrollToEnd()
-	})
-}
-
-func (d *dashboard) getPaneBuffer(p paneType) *[]string {
-	switch p {
-	case paneCall:
-		return &d.callLines
-	case paneFrequency:
-		return &d.freqLines
-	case paneHarmonic:
-		return &d.harmonicLines
-	default:
-		return &d.systemLines
-	}
-}
-
-func (d *dashboard) getPaneView(p paneType) *tview.TextView {
-	switch p {
-	case paneCall:
-		return d.callView
-	case paneFrequency:
-		return d.frequencyView
-	case paneHarmonic:
-		return d.harmonicView
-	default:
-		return d.systemView
-	}
 }

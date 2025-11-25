@@ -27,6 +27,7 @@ type Config struct {
 	CTY             CTYConfig            `yaml:"cty"`
 	Buffer          BufferConfig         `yaml:"buffer"`
 	Skew            SkewConfig           `yaml:"skew"`
+	FCCULS          FCCULSConfig         `yaml:"fcc_uls"`
 	KnownCalls      KnownCallsConfig     `yaml:"known_calls"`
 	GridDBPath      string               `yaml:"grid_db"`
 	GridFlushSec    int                  `yaml:"grid_flush_seconds"`
@@ -239,6 +240,15 @@ type KnownCallsConfig struct {
 	RefreshUTC string `yaml:"refresh_utc"`
 }
 
+// FCCULSConfig controls downloading of the FCC ULS database archive.
+type FCCULSConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	URL        string `yaml:"url"`
+	Archive    string `yaml:"archive_path"`
+	DBPath     string `yaml:"db_path"`
+	RefreshUTC string `yaml:"refresh_utc"`
+}
+
 // CTYConfig allows overriding the CTY prefix database path.
 type CTYConfig struct {
 	File string `yaml:"file"`
@@ -368,6 +378,21 @@ func Load(filename string) (*Config, error) {
 	if cfg.KnownCalls.RefreshUTC == "" {
 		cfg.KnownCalls.RefreshUTC = "01:00"
 	}
+	if strings.TrimSpace(cfg.FCCULS.URL) == "" {
+		cfg.FCCULS.URL = "https://data.fcc.gov/download/pub/uls/complete/l_amat.zip"
+	}
+	if strings.TrimSpace(cfg.FCCULS.Archive) == "" {
+		cfg.FCCULS.Archive = "data/fcc/l_amat.zip"
+	}
+	if strings.TrimSpace(cfg.FCCULS.DBPath) == "" {
+		cfg.FCCULS.DBPath = "data/fcc/fcc_uls.db"
+	}
+	if strings.TrimSpace(cfg.FCCULS.RefreshUTC) == "" {
+		cfg.FCCULS.RefreshUTC = "02:15"
+	}
+	if _, err := time.Parse("15:04", cfg.FCCULS.RefreshUTC); err != nil {
+		return nil, fmt.Errorf("invalid FCC ULS refresh time %q: %w", cfg.FCCULS.RefreshUTC, err)
+	}
 	if strings.TrimSpace(cfg.GridDBPath) == "" {
 		cfg.GridDBPath = "data/grids/calls.db"
 	}
@@ -489,6 +514,9 @@ func (c *Config) Print() {
 	}
 	if c.KnownCalls.Enabled && c.KnownCalls.URL != "" {
 		fmt.Printf("Known calls refresh: %s UTC (source=%s)\n", c.KnownCalls.RefreshUTC, c.KnownCalls.URL)
+	}
+	if c.FCCULS.Enabled && c.FCCULS.URL != "" {
+		fmt.Printf("FCC ULS: refresh %s UTC (source=%s archive=%s db=%s)\n", c.FCCULS.RefreshUTC, c.FCCULS.URL, c.FCCULS.Archive, c.FCCULS.DBPath)
 	}
 	if strings.TrimSpace(c.GridDBPath) != "" {
 		fmt.Printf("Grid/known DB: %s (flush=%ds cache=%d ttl=%dd)\n", c.GridDBPath, c.GridFlushSec, c.GridCacheSize, c.GridTTLDays)

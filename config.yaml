@@ -13,7 +13,7 @@ admin:
   bind_address: "127.0.0.1"
 
 stats:
-  display_interval_seconds: 30  # How often to print stats to stdout
+  display_interval_seconds: 15  # How often to print stats to stdout
 
 # Telnet server (user-facing interface)
 telnet:
@@ -111,6 +111,13 @@ known_calls:
   url: "https://www.supercheckpartial.com/MASTER.SCP"
   file: "data/scp/MASTER.SCP"
   refresh_utc: "00:01"                    # Daily download time in HH:MM UTC
+
+fcc_uls:
+  enabled: true
+  url: "https://data.fcc.gov/download/pub/uls/complete/l_amat.zip"  # FCC ULS amateur archive
+  archive_path: "data/fcc/l_amat.zip"                               # Where to store the downloaded ZIP
+  db_path: "data/fcc/fcc_uls.db"                                    # Where to write the built SQLite database
+  refresh_utc: "22:00"                                              # Daily download time in HH:MM UTC
 
 # Combined database for known calls + grids
 grid_db: "data/grids/calls.db"

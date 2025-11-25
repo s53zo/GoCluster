@@ -34,6 +34,9 @@ import (
 	"dxcluster/spot"
 	"dxcluster/stats"
 	"dxcluster/telnet"
+	"dxcluster/uls"
+
+	"github.com/dustin/go-humanize"
 )
 
 const (
@@ -208,6 +211,9 @@ func main() {
 	} else {
 		log.Printf("Configuration loaded for %s (%s)", cfg.Server.Name, cfg.Server.NodeID)
 	}
+
+	// Start the FCC ULS downloader in the background (does not block spot processing)
+	uls.StartBackground(cfg.FCCULS)
 
 	// Load CTY database for callsign validation
 	ctyDB, err := cty.LoadCTYDatabase(cfg.CTY.File)
@@ -415,9 +421,11 @@ func main() {
 		}
 	}
 
+	fccSnap := loadFCCSnapshot(cfg.FCCULS.DBPath)
+
 	// Start stats display goroutine
 	statsInterval := time.Duration(cfg.Stats.DisplayIntervalSeconds) * time.Second
-	go displayStats(statsInterval, statsTracker, deduplicator, spotBuffer, ctyDB, &knownCalls, telnetServer, ui, gridUpdateState, gridStore)
+	go displayStatsWithFCC(statsInterval, statsTracker, deduplicator, spotBuffer, ctyDB, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, fccSnap)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -480,6 +488,10 @@ func main() {
 
 // displayStats prints statistics at the configured interval
 func displayStats(interval time.Duration, tracker *stats.Tracker, dedup *dedup.Deduplicator, buf *buffer.RingBuffer, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash *dashboard, gridStats *gridMetrics, gridDB *gridstore.Store) {
+	displayStatsWithFCC(interval, tracker, dedup, buf, ctyDB, knownPtr, telnetSrv, dash, gridStats, gridDB, nil)
+}
+
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *dedup.Deduplicator, buf *buffer.RingBuffer, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash *dashboard, gridStats *gridMetrics, gridDB *gridstore.Store, fcc *fccSnapshot) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -490,42 +502,41 @@ func displayStats(interval time.Duration, tracker *stats.Tracker, dedup *dedup.D
 	prevSourceModeCounts := make(map[string]uint64)
 
 	for range ticker.C {
-		lines := make([]string, 0, 6)
-		lines = append(lines, formatUptimeLine(tracker.GetUptime()))
-		lines = append(lines, formatMemoryLine(buf, dedup, ctyDB, knownPtr))
-		if gridStats != nil {
-			lines = append(lines, formatGridLine(gridStats, gridDB))
-		}
-
 		sourceTotals := tracker.GetSourceCounts()
 		sourceModeTotals := tracker.GetSourceModeCounts()
 
 		rbnTotal := diffCounter(sourceTotals, prevSourceCounts, "RBN")
 		rbnCW := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN", "CW")
 		rbnRTTY := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN", "RTTY")
-		lines = append(lines, fmt.Sprintf("RBN: %d (TOTAL) / %d (CW) / %d (RTTY)", rbnTotal, rbnCW, rbnRTTY))
 
 		rbnFTTotal := diffCounter(sourceTotals, prevSourceCounts, "RBN-DIGITAL")
 		rbnFT8 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN-DIGITAL", "FT8")
 		rbnFT4 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN-DIGITAL", "FT4")
-		lines = append(lines, fmt.Sprintf("RBN FT: %d (TOTAL) / %d (FT8) / %d (FT4)", rbnFTTotal, rbnFT8, rbnFT4))
 
 		pskTotal := diffCounter(sourceTotals, prevSourceCounts, "PSKREPORTER")
 		pskCW := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "CW")
 		pskRTTY := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "RTTY")
 		pskFT8 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "FT8")
 		pskFT4 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "FT4")
-		lines = append(lines, fmt.Sprintf("PSKReporter: %d (TOTAL) / %d (CW) / %d (RTTY) / %d (FT8) / %d (FT4)", pskTotal, pskCW, pskRTTY, pskFT8, pskFT4))
 
 		totalCorrections := tracker.CallCorrections()
 		totalFreqCorrections := tracker.FrequencyCorrections()
 		totalHarmonics := tracker.HarmonicSuppressions()
-		lines = append(lines, fmt.Sprintf("Corrected calls: %d (C) / %d (F) / %d (H)", totalCorrections, totalFreqCorrections, totalHarmonics))
+
 		var queueDrops, clientDrops uint64
 		if telnetSrv != nil {
 			queueDrops, clientDrops = telnetSrv.BroadcastMetricSnapshot()
 		}
-		lines = append(lines, fmt.Sprintf("Telnet drops: %d (Q) / %d (C)", queueDrops, clientDrops))
+
+		lines := []string{
+			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, ctyDB, knownPtr)), // 1
+			formatGridLineOrPlaceholder(gridStats, gridDB),                                                               // 2
+			formatFCCLineOrPlaceholder(fcc),                                                                              // 3
+			fmt.Sprintf("RBN: %d (TOTAL) / %d (CW) / %d (RTTY)   RBN FT: %d (TOTAL) / %d (FT8) / %d (FT4)", rbnTotal, rbnCW, rbnRTTY, rbnFTTotal, rbnFT8, rbnFT4), // 4
+			fmt.Sprintf("PSKReporter: %d (TOTAL) / %d (CW) / %d (RTTY) / %d (FT8) / %d (FT4)", pskTotal, pskCW, pskRTTY, pskFT8, pskFT4),                          // 5
+			fmt.Sprintf("Corrected calls: %d (C) / %d (F) / %d (H)", totalCorrections, totalFreqCorrections, totalHarmonics),                                      // 6
+			fmt.Sprintf("Telnet drops: %d (Q) / %d (C)", queueDrops, clientDrops),                                                                                 // 7
+		}
 
 		prevSourceCounts = sourceTotals
 		prevSourceModeCounts = sourceModeTotals
@@ -536,6 +547,7 @@ func displayStats(interval time.Duration, tracker *stats.Tracker, dedup *dedup.D
 			for _, line := range lines {
 				log.Print(line)
 			}
+			log.Print("") // spacer between stats and status/messages
 		}
 	}
 }
@@ -1065,9 +1077,47 @@ func formatGridLine(metrics *gridMetrics, store *gridstore.Store) string {
 	}
 
 	if dbTotal >= 0 {
-		return fmt.Sprintf("Grid database: %d (UPDATED) / %d (TOTAL DB) / cache hits: %.1f%%", updatesSinceStart, dbTotal, hitRate)
+		return fmt.Sprintf("Grid database: %s (UPDATED) / %s (TOTAL) / %.1f%%",
+			humanize.Comma(int64(updatesSinceStart)),
+			humanize.Comma(dbTotal),
+			hitRate)
 	}
-	return fmt.Sprintf("Grid database: %d (UPDATED) / cache hits: %.1f%%", updatesSinceStart, hitRate)
+	return fmt.Sprintf("Grid database: %s (UPDATED) / %.1f%%",
+		humanize.Comma(int64(updatesSinceStart)),
+		hitRate)
+}
+
+type fccSnapshot struct {
+	HDCount   int64
+	AMCount   int64
+	DBSize    int64
+	UpdatedAt time.Time
+	Path      string
+}
+
+func formatFCCLine(fcc *fccSnapshot) string {
+	if fcc == nil {
+		return ""
+	}
+	ts := ""
+	if !fcc.UpdatedAt.IsZero() {
+		ts = fcc.UpdatedAt.UTC().Format("2006-01-02 15:04")
+	}
+	return fmt.Sprintf("FCC ULS: %s records. Last updated %s", humanize.Comma(fcc.HDCount), ts)
+}
+
+func formatGridLineOrPlaceholder(metrics *gridMetrics, store *gridstore.Store) string {
+	if metrics == nil {
+		return "Grid database: (not available)"
+	}
+	return formatGridLine(metrics, store)
+}
+
+func formatFCCLineOrPlaceholder(fcc *fccSnapshot) string {
+	if fcc == nil {
+		return "FCC ULS: (not available)"
+	}
+	return formatFCCLine(fcc)
 }
 
 func seedKnownCalls(store *gridstore.Store, known *spot.KnownCallsigns) error {
@@ -1219,6 +1269,41 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 	}
 
 	return updateFn, metrics, stopFn, lookupFn
+}
+
+// loadFCCSnapshot opens the FCC ULS database to report simple stats for the dashboard.
+func loadFCCSnapshot(path string) *fccSnapshot {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	db, err := sql.Open("sqlite", path+"?_busy_timeout=5000")
+	if err != nil {
+		log.Printf("Warning: FCC ULS open failed: %v", err)
+		return nil
+	}
+	defer db.Close()
+
+	count := func(table string) int64 {
+		var c int64
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&c); err != nil {
+			log.Printf("Warning: FCC ULS count %s failed: %v", table, err)
+			return 0
+		}
+		return c
+	}
+
+	snap := &fccSnapshot{
+		HDCount:   count("HD"),
+		AMCount:   count("AM"),
+		DBSize:    info.Size(),
+		UpdatedAt: info.ModTime(),
+		Path:      path,
+	}
+	return snap
 }
 
 func sqlNullString(v string) sql.NullString {

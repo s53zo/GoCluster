@@ -148,7 +148,7 @@ To match the 100 Hz accuracy of the underlying skimmers, the corrected frequency
 1. Populate the `known_calls` block in `config.yaml`:
 
 ```yaml
-known_calls:
+ known_calls:
   enabled: true
   url: "https://www.supercheckpartial.com/MASTER.SCP"
   file: "data/scp/MASTER.SCP"
@@ -159,6 +159,24 @@ known_calls:
 3. When `known_calls.enabled` is true, the built-in scheduler refreshes the file every day at `known_calls.refresh_utc` (default `01:00` UTC). Each download writes to a temporary file, swaps it into place atomically, and updates the runtime cache without needing a restart.
 
 You can disable the scheduler by setting `known_calls.enabled: false`. In that mode the server will still load whatever file already exists (and will fetch it once at startup if an URL is provided), but it will not refresh it automatically.
+
+## FCC ULS Downloads
+
+1. Configure the `fcc_uls` block in `config.yaml`:
+
+```yaml
+fcc_uls:
+  enabled: true
+  url: "https://data.fcc.gov/download/pub/uls/complete/l_amat.zip"
+  archive_path: "data/fcc/l_amat.zip"
+  db_path: "data/fcc/fcc_uls.db"
+  refresh_utc: "02:15"
+```
+
+2. On startup the cluster launches a background job that downloads the archive if it is missing or stale (using conditional requests when a metadata file exists), extracts the AM/EN/HD tables, and builds a fresh SQLite database at `fcc_uls.db_path`. Both the ZIP and DB are written via temp files and swapped atomically; metadata/status is stored at `archive_path + ".status.json"` (the previous `.meta.json` is still read for compatibility).
+3. During the load, only active licenses are kept (`HD.license_status = 'A'`). HD is slimmed to a few useful fields (unique ID, call sign, status, service, grant/expire/cancel/last-action dates), and AM is reduced to just unique ID + call sign for active records. EN is not loaded. The downloaded ZIP is deleted after a successful build to save space.
+4. When `fcc_uls.enabled` is true, a built-in scheduler refreshes the archive and rebuilds the database once per day at `fcc_uls.refresh_utc` (UTC). The job runs independently of spot processing, so the rest of the cluster continues handling spots while the download, unzip, and load proceed.
+5. The console/TUI stats include an FCC line showing active-record counts and the DB size.
 
 ## Grid Persistence and Caching
 
