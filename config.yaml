@@ -13,7 +13,7 @@ admin:
   bind_address: "127.0.0.1"
 
 stats:
-  display_interval_seconds: 15  # How often to print stats to stdout
+  display_interval_seconds: 60  # How often to print stats to stdout
 
 # Telnet server (user-facing interface)
 telnet:
