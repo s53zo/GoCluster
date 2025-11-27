@@ -1,3 +1,6 @@
+// Package dedup implements a shard-locked deduplication cache that suppresses
+// identical spots within a configurable time window. All sources feed into this
+// component before entering the shared ring buffer.
 package dedup
 
 import (
@@ -61,7 +64,8 @@ func NewDeduplicator(window time.Duration, preferStronger bool, outputBuffer int
 	}
 }
 
-// Start begins the deduplication processing loop
+// Start begins the deduplication processing loop and the background cleanup
+// goroutine. Safe to call once during startup.
 func (d *Deduplicator) Start() {
 	log.Println("Deduplicator: Starting unified processing loop for ALL sources")
 
@@ -72,18 +76,20 @@ func (d *Deduplicator) Start() {
 	go d.cleanupLoop()
 }
 
-// Stop stops the deduplicator
+// Stop signals the processing and cleanup loops to exit.
 func (d *Deduplicator) Stop() {
 	log.Println("Deduplicator: Stopping...")
 	close(d.shutdown)
 }
 
-// GetInputChannel returns the input channel for spots
+// GetInputChannel returns the input channel for spots. Each spot is checked
+// against the windowed cache and either forwarded or dropped.
 func (d *Deduplicator) GetInputChannel() chan<- *spot.Spot {
 	return d.inputChan
 }
 
-// GetOutputChannel returns the output channel for deduplicated spots
+// GetOutputChannel returns the output channel for deduplicated spots. Consumers
+// read from this to continue the pipeline (ring buffer, telnet broadcast, etc.).
 func (d *Deduplicator) GetOutputChannel() <-chan *spot.Spot {
 	return d.outputChan
 }
@@ -149,7 +155,8 @@ func isDuplicateLocked(cache map[uint32]cachedEntry, hash uint32, spotTime time.
 	return age < window, lastSeen
 }
 
-// cleanupLoop periodically removes expired entries from the cache
+// cleanupLoop periodically removes expired entries from the cache so the
+// footprint stays bounded when dedup is enabled.
 func (d *Deduplicator) cleanupLoop() {
 	ticker := time.NewTicker(d.cleanupInterval)
 	defer ticker.Stop()

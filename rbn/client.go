@@ -1,3 +1,6 @@
+// Package rbn maintains TCP connections to the Reverse Beacon Network (CW/RTTY
+// and FT4/FT8 feeds), parsing telnet lines into canonical *spot.Spot entries
+// with CTY enrichment and optional skew corrections.
 package rbn
 
 import (

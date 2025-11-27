@@ -1,3 +1,5 @@
+// Package pskreporter subscribes to PSKReporter MQTT feeds (FT8/FT4/CW/RTTY)
+// and converts incoming JSON payloads into canonical *spot.Spot records.
 package pskreporter
 
 import (

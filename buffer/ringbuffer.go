@@ -1,3 +1,7 @@
+// Package buffer provides a lock-free ring buffer used to fan recent spots to
+// telnet clients without blocking the ingest pipeline. Each slot stores an
+// atomic pointer so readers either see a complete spot or the previous one,
+// never a partially written structure.
 package buffer
 
 import (
@@ -7,7 +11,9 @@ import (
 	"dxcluster/spot"
 )
 
-// RingBuffer is a thread-safe circular buffer for storing recent spots
+// RingBuffer is a thread-safe circular buffer for storing recent spots. Writers
+// atomically publish completed *spot.Spot values, and readers walk backwards
+// from the newest index to gather a snapshot for SHOW/DX requests.
 type RingBuffer struct {
 	// Each slot is an atomic pointer so writers can publish a fully built spot in one step.
 	// Combined with the monotonic ID counter, this removes the need for a global mutex.
@@ -16,7 +22,9 @@ type RingBuffer struct {
 	total    atomic.Uint64 // Total spots added (may exceed capacity)
 }
 
-// NewRingBuffer creates a new ring buffer with the specified capacity
+// NewRingBuffer allocates a ring buffer with the specified capacity. Capacity
+// bounds the number of spots retained for historical queries; the dedup and
+// broadcast pipeline run independently of this storage.
 func NewRingBuffer(capacity int) *RingBuffer {
 	return &RingBuffer{
 		slots:    make([]atomic.Pointer[spot.Spot], capacity),
@@ -24,7 +32,8 @@ func NewRingBuffer(capacity int) *RingBuffer {
 	}
 }
 
-// Add adds a spot to the buffer
+// Add appends a spot to the ring, assigning a monotonic ID so readers can skip
+// over stale entries when the buffer wraps.
 func (rb *RingBuffer) Add(s *spot.Spot) {
 	// Assign monotonic ID using atomic counter
 	newID := rb.total.Add(1)
@@ -35,7 +44,8 @@ func (rb *RingBuffer) Add(s *spot.Spot) {
 	rb.slots[idx].Store(s)
 }
 
-// GetRecent returns the N most recent spots
+// GetRecent returns the N most recent spots (up to capacity). Readers walk the
+// ID-ordered ring backward to avoid taking locks or disturbing writers.
 func (rb *RingBuffer) GetRecent(n int) []*spot.Spot {
 	if n <= 0 {
 		return []*spot.Spot{}

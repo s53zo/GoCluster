@@ -1,3 +1,6 @@
+// Package cty loads and queries the CTY prefix database so spots can be
+// enriched with continent/zone/country metadata and validated quickly using a
+// cache-backed longest-prefix lookup.
 package cty
 
 import (
@@ -65,6 +68,8 @@ func LoadCTYDatabase(path string) (*CTYDatabase, error) {
 }
 
 // LoadCTYDatabaseFromReader decodes CTY data from an io.Reader (exposed for testing).
+// It normalizes keys to uppercase and pre-sorts them longest-first for prefix
+// search speed.
 func LoadCTYDatabaseFromReader(r io.ReadSeeker) (*CTYDatabase, error) {
 	data, err := decodeCTYData(r)
 	if err != nil {
@@ -109,7 +114,8 @@ func normalizeCallsign(cs string) string {
 	return cs
 }
 
-// LookupCallsign returns metadata for the callsign or false if unknown.
+// LookupCallsign returns metadata for the callsign or false if unknown. Results
+// are memoized (including misses) to cut repeated plist scans during bursts.
 func (db *CTYDatabase) LookupCallsign(cs string) (*PrefixInfo, bool) {
 	cs = normalizeCallsign(cs)
 	db.totalLookups.Add(1)

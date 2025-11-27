@@ -1,3 +1,5 @@
+// Package main also hosts the optional terminal dashboard shown when a TTY is
+// available; this file renders stats and event panes using tview/tcell.
 package main
 
 import (

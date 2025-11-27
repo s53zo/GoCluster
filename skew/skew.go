@@ -1,3 +1,5 @@
+// Package skew fetches and applies per-skimmer frequency correction factors so
+// incoming RBN/PSKReporter spots can be normalized before deduplication.
 package skew
 
 import (

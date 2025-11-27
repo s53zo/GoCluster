@@ -1,3 +1,5 @@
+// Package stats tracks per-source and per-mode counters plus correction metrics
+// for display in the dashboard and periodic console output.
 package stats
 
 import (

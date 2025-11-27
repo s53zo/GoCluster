@@ -1,3 +1,6 @@
+// Program gocluster wires together all ingest clients (RBN, PSKReporter),
+// protections (deduplication, call correction, harmonics), persistence layers
+// (ring buffer, grid store, optional recorder), and the telnet server UI.
 package main
 
 import (
@@ -69,6 +72,8 @@ type gridEntry struct {
 	updatedAt time.Time
 }
 
+// newGridCache builds an in-memory LRU for grids keyed by callsign, honoring an
+// optional TTL so old observations can expire without hitting SQLite.
 func newGridCache(capacity int, ttl time.Duration) *gridCache {
 	if capacity <= 0 {
 		capacity = 100000

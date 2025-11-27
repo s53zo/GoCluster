@@ -1,3 +1,5 @@
+// Package recorder persists a bounded number of spots per mode to SQLite for
+// offline analysis without slowing the live pipeline.
 package recorder
 
 import (

@@ -1,3 +1,6 @@
+// Package commands implements the minimal command processor used by telnet
+// sessions. It focuses on HELP/SHOW/DX and defers filter manipulation to the
+// telnet package so both layers stay small and easy to reason about.
 package commands
 
 import (
@@ -9,19 +12,23 @@ import (
 	"dxcluster/spot"
 )
 
-// Processor handles command processing
+// Processor handles telnet command parsing and replies that rely on shared state
+// (recent spots in the ring buffer).
 type Processor struct {
 	spotBuffer *buffer.RingBuffer
 }
 
-// NewProcessor creates a new command processor
+// NewProcessor wraps the shared ring buffer so SHOW/DX commands can read from
+// the central spot store.
 func NewProcessor(buf *buffer.RingBuffer) *Processor {
 	return &Processor{
 		spotBuffer: buf,
 	}
 }
 
-// ProcessCommand processes a command from a client
+// ProcessCommand parses a single telnet command and returns the response text
+// to write back to the client. A response of "BYE" signals the caller to close
+// the session.
 func (p *Processor) ProcessCommand(cmd string) string {
 	cmd = strings.TrimSpace(cmd)
 
@@ -49,7 +56,7 @@ func (p *Processor) ProcessCommand(cmd string) string {
 	}
 }
 
-// handleHelp returns help text
+// handleHelp returns help text for builtin commands and filter controls.
 func (p *Processor) handleHelp() string {
 	return fmt.Sprintf(`Available commands:
 HELP                 - Show this help
@@ -92,7 +99,7 @@ Examples:
 `, strings.Join(filter.SupportedModes, ", "), strings.Join(spot.SupportedBandNames(), ", "))
 }
 
-// handleShow handles the SHOW command
+// handleShow routes SHOW subcommands; only SHOW/DX is currently supported.
 func (p *Processor) handleShow(args []string) string {
 	if len(args) == 0 {
 		return "Usage: SHOW/DX [count]\n"
@@ -108,7 +115,7 @@ func (p *Processor) handleShow(args []string) string {
 	}
 }
 
-// handleShowDX shows recent DX spots
+// handleShowDX renders the most recent N spots from the shared ring buffer.
 func (p *Processor) handleShowDX(args []string) string {
 	count := 10 // Default count
 

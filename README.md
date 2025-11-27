@@ -288,6 +288,17 @@ C:\src\gocluster\
 └── README.md            # This documentation
 ```
 
+## Code Walkthrough
+
+- `main.go` glues together ingest clients (RBN/PSKReporter), protections (dedup, call correction, harmonics, frequency averaging), persistence (grid store, optional recorder), telnet server, dashboard, schedulers (FCC ULS, known calls, skew), and graceful shutdown. Helpers are commented so you can follow the pipeline without prior cluster context.
+- `telnet/server.go` documents the connection lifecycle, broadcast sharding, filter commands, and how per-client filters interact with the shared ring buffer.
+- `buffer/` explains the lock-free ring buffer used by SHOW/DX and broadcasts; it stores atomic spot pointers and IDs to avoid partial reads.
+- `config/` describes the YAML schema, default normalization, and `Print` diagnostics. The “Configuration Loader Defaults” section mirrors these behaviors.
+- `cty/` covers longest-prefix CTY lookups and cache metrics. `spot/` holds the canonical spot struct, formatting, hashing, validation, callsign utilities, harmonics/frequency averaging/correction helpers, and known-calls cache.
+- `dedup/`, `filter/`, `gridstore/`, `recorder/`, `skew/`, and `uls/` each have package-level docs and function comments outlining how they feed or persist data without blocking ingest.
+- `rbn/` and `pskreporter/` detail how each source is parsed, normalized, CTY-enriched, skew-corrected, and routed into the unified dedup channel.
+- `commands/` and `cmd/*` binaries include focused comments explaining the helper CLIs for SHOW/DX, CTY lookup, and skew prefetching.
+
 ## Getting Started
 
 1. Update `config.yaml` with your preferred callsigns for the `rbn`, `rbn_digital`, and optional `pskreporter` sections. Optionally list `pskreporter.modes` (e.g., [`FT8`, `FT4`]) to subscribe to just those MQTT feeds simultaneously.
@@ -304,6 +315,21 @@ C:\src\gocluster\
 	 go run main.go
 	 ```
 10. Connect via `telnet localhost 7300`, enter your callsign, and the server will immediately stream real-time spots.
+
+## Configuration Loader Defaults
+
+`config.Load` reads `config.yaml`, normalizes missing fields, and refuses to start when time strings are invalid. Key fallbacks:
+
+- Stats tickers default to `30s` when unset. Telnet queues fall back to `broadcast_queue_size=2048`, `worker_queue_size=128`, `client_buffer_size=128`, and friendly greeting/duplicate-login messages are injected if blank.
+- Call correction uses conservative baselines unless overridden: `min_consensus_reports=4`, `min_advantage=1`, `min_confidence_percent=70`, `recency_seconds=45`, `max_edit_distance=2`, `frequency_tolerance_hz=0.5`, `invalid_action=broadcast`. Empty distance models inherit from `distance_model` or default to `plain`; negative SNR floors/extras are clamped to zero. Distance cache defaults to `size=5000` and `ttl=recency_seconds` (or `120s`).
+- Harmonic suppression clamps to sane minimums (`recency_seconds=120`, `max_harmonic_multiple=4`, `frequency_tolerance_hz=20`, `min_report_delta=6`, `min_report_delta_step>=0`).
+- Spot policy defaults prevent runaway averaging: `max_age_seconds=120`, `frequency_averaging_seconds=45`, `frequency_averaging_tolerance_hz=300`, `frequency_averaging_min_reports=4`.
+- Known calls default to `data/scp/MASTER.SCP` and refresh at `01:00` UTC if unspecified. CTY falls back to `data/cty/cty.plist`.
+- FCC ULS fetches use the official URL/paths (`archive_path=data/fcc/l_amat.zip`, `db_path=data/fcc/fcc_uls.db`, `temp_dir` inherits from `db_path`), and refresh times must parse as `HH:MM` or loading fails fast.
+- Grid store defaults: `grid_db=data/grids/calls.db`, `grid_flush_seconds=60`, `grid_cache_size=100000`, with TTL/retention floors of zero to avoid negative durations.
+- Dedup windows are coerced to zero-or-greater; `output_buffer_size` defaults to `1000` so bursts do not immediately drop spots.
+- Buffer capacity defaults to `300000` spots; skew downloads default to SM7IUN's CSV (`url=https://sm7iun.se/rbnskew.csv`, `file=data/skm_correction/rbnskew.json`, `refresh_utc=00:30`) with non-negative `min_spots`. Recorder defaults to `data/records/spots.db` and caps per-mode inserts at `100`.
+- `config.Print` writes a concise summary of the loaded settings to stdout for easy startup diagnostics.
 
 ## Testing & Tooling
 

@@ -1,3 +1,5 @@
+// Package uls downloads and refreshes the FCC ULS amateur archive, rebuilding a
+// slim SQLite database used for call metadata enrichment.
 package uls
 
 import (

@@ -1,3 +1,5 @@
+// Package gridstore persists known calls and grids to a small SQLite database,
+// providing durable lookup and aggregation for grid statistics and TTL purges.
 package gridstore
 
 import (
@@ -295,6 +297,7 @@ func (s *Store) Count() (int64, error) {
 	return count, nil
 }
 
+// initSchema creates the calls table and supporting indexes if they do not yet exist.
 func initSchema(db *sql.DB) error {
 	const schema = `
 CREATE TABLE IF NOT EXISTS calls (

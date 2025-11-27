@@ -1,3 +1,6 @@
+// Package spot defines the canonical spot structure and helpers used across the
+// cluster pipeline: creation, formatting, hashing for dedup, and basic
+// validation/mapping to bands.
 package spot
 
 import (

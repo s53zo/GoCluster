@@ -1,3 +1,5 @@
+// Package config loads the cluster's YAML configuration, normalizes defaults,
+// and exposes a strongly typed struct other packages rely on at startup.
 package config
 
 import (
@@ -10,7 +12,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config represents the complete cluster configuration
+// Config represents the complete cluster configuration. The struct maps
+// directly to `config.yaml` and is enriched with defaults during Load so
+// downstream packages can assume sane, non-zero values.
 type Config struct {
 	Server          ServerConfig         `yaml:"server"`
 	Telnet          TelnetConfig         `yaml:"telnet"`
@@ -258,7 +262,8 @@ type CTYConfig struct {
 	File string `yaml:"file"`
 }
 
-// Load loads configuration from a YAML file
+// Load reads configuration from a YAML file, applies defaults, and validates
+// key fields so the rest of the cluster can rely on a consistent baseline.
 func Load(filename string) (*Config, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -273,6 +278,8 @@ func Load(filename string) (*Config, error) {
 	if cfg.Stats.DisplayIntervalSeconds <= 0 {
 		cfg.Stats.DisplayIntervalSeconds = 30
 	}
+	// Call-correction defaults keep consensus strict unless the operator opts in
+	// to looser thresholds.
 	if cfg.CallCorrection.MinConsensusReports <= 0 {
 		cfg.CallCorrection.MinConsensusReports = 4
 	}
@@ -294,6 +301,8 @@ func Load(filename string) (*Config, error) {
 	if cfg.CallCorrection.InvalidAction == "" {
 		cfg.CallCorrection.InvalidAction = "broadcast"
 	}
+	// Normalize the distance model, inheriting the legacy default when mode-
+	// specific overrides are absent.
 	defaultDistance := strings.TrimSpace(cfg.CallCorrection.DistanceModel)
 	if defaultDistance == "" {
 		defaultDistance = "plain"
@@ -343,6 +352,7 @@ func Load(filename string) (*Config, error) {
 	if cfg.Telnet.ClientBuffer <= 0 {
 		cfg.Telnet.ClientBuffer = 128
 	}
+	// Provide operator-facing telnet prompts even when omitted from YAML.
 	if strings.TrimSpace(cfg.Telnet.DuplicateLoginMsg) == "" {
 		cfg.Telnet.DuplicateLoginMsg = "Another login for your callsign connected. This session is being closed (multiple logins are not allowed)."
 	}
@@ -350,6 +360,7 @@ func Load(filename string) (*Config, error) {
 		cfg.Telnet.LoginGreeting = "Hello <CALL>, you are now connected to <CLUSTER>."
 	}
 
+	// Harmonic guardrails ensure suppression logic runs with bounded windows and tolerances.
 	if cfg.Harmonics.RecencySeconds <= 0 {
 		cfg.Harmonics.RecencySeconds = 120
 	}
@@ -366,6 +377,7 @@ func Load(filename string) (*Config, error) {
 		cfg.Harmonics.MinReportDeltaStep = 0
 	}
 
+	// Spot policy defaults avoid unbounded averaging or delivery of stale spots.
 	if cfg.SpotPolicy.MaxAgeSeconds <= 0 {
 		cfg.SpotPolicy.MaxAgeSeconds = 120
 	}
@@ -385,6 +397,8 @@ func Load(filename string) (*Config, error) {
 	if cfg.KnownCalls.RefreshUTC == "" {
 		cfg.KnownCalls.RefreshUTC = "01:00"
 	}
+	// ULS fetch defaults keep the downloader pointed at the official FCC archive
+	// and provide safe on-disk locations when omitted.
 	if strings.TrimSpace(cfg.FCCULS.URL) == "" {
 		cfg.FCCULS.URL = "https://data.fcc.gov/download/pub/uls/complete/l_amat.zip"
 	}
@@ -403,6 +417,7 @@ func Load(filename string) (*Config, error) {
 	if _, err := time.Parse("15:04", cfg.FCCULS.RefreshUTC); err != nil {
 		return nil, fmt.Errorf("invalid FCC ULS refresh time %q: %w", cfg.FCCULS.RefreshUTC, err)
 	}
+	// Grid store defaults keep the local cache warm and bound persistence churn.
 	if strings.TrimSpace(cfg.GridDBPath) == "" {
 		cfg.GridDBPath = "data/grids/calls.db"
 	}
@@ -432,6 +447,7 @@ func Load(filename string) (*Config, error) {
 	if cfg.Buffer.Capacity <= 0 {
 		cfg.Buffer.Capacity = 300000
 	}
+	// Skew fetch defaults keep the daily scheduler pointed at SM7IUN's published list.
 	if strings.TrimSpace(cfg.Skew.URL) == "" {
 		cfg.Skew.URL = "https://sm7iun.se/rbnskew.csv"
 	}
@@ -447,6 +463,7 @@ func Load(filename string) (*Config, error) {
 	if _, err := time.Parse("15:04", cfg.Skew.RefreshUTC); err != nil {
 		return nil, fmt.Errorf("invalid skew refresh time %q: %w", cfg.Skew.RefreshUTC, err)
 	}
+	// Recorder defaults prevent unbounded disk growth by capping per-mode inserts.
 	if strings.TrimSpace(cfg.Recorder.DBPath) == "" {
 		cfg.Recorder.DBPath = "data/records/spots.db"
 	}
@@ -456,7 +473,8 @@ func Load(filename string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Print displays the configuration
+// Print displays a concise, human-readable summary of the loaded configuration,
+// primarily for startup logs and diagnostics.
 func (c *Config) Print() {
 	fmt.Printf("Server: %s (%s)\n", c.Server.Name, c.Server.NodeID)
 	workerDesc := "auto"
