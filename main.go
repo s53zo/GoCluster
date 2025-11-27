@@ -187,6 +187,8 @@ func main() {
 	if ui != nil {
 		ui.WaitReady()
 		defer ui.Stop()
+		// Dashboard handles its own timestamp formatting; disable the default log prefixes.
+		log.SetFlags(0)
 		log.SetOutput(ui.SystemWriter())
 		ui.SetStats([]string{"Initializing..."})
 	} else {
@@ -363,6 +365,8 @@ func main() {
 		Port:              cfg.Telnet.Port,
 		WelcomeMessage:    cfg.Telnet.WelcomeMessage,
 		DuplicateLoginMsg: cfg.Telnet.DuplicateLoginMsg,
+		LoginGreeting:     cfg.Telnet.LoginGreeting,
+		ClusterCall:       cfg.Server.NodeID,
 		MaxConnections:    cfg.Telnet.MaxConnections,
 		BroadcastWorkers:  cfg.Telnet.BroadcastWorkers,
 		BroadcastQueue:    cfg.Telnet.BroadcastQueue,
@@ -528,12 +532,19 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *
 			queueDrops, clientDrops = telnetSrv.BroadcastMetricSnapshot()
 		}
 
+		combinedRBN := rbnTotal + rbnFTTotal
 		lines := []string{
 			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, ctyDB, knownPtr)), // 1
 			formatGridLineOrPlaceholder(gridStats, gridDB),                                                               // 2
 			formatFCCLineOrPlaceholder(fcc),                                                                              // 3
-			fmt.Sprintf("RBN: %d (TOTAL) / %d (CW) / %d (RTTY)   RBN FT: %d (TOTAL) / %d (FT8) / %d (FT4)", rbnTotal, rbnCW, rbnRTTY, rbnFTTotal, rbnFT8, rbnFT4), // 4
-			fmt.Sprintf("PSKReporter: %d (TOTAL) / %d (CW) / %d (RTTY) / %d (FT8) / %d (FT4)", pskTotal, pskCW, pskRTTY, pskFT8, pskFT4),                          // 5
+			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4),                              // 4
+			fmt.Sprintf("PSKReporter: %s TOTAL / %s CW / %s RTTY / %s FT8 / %s FT4",
+				humanize.Comma(int64(pskTotal)),
+				humanize.Comma(int64(pskCW)),
+				humanize.Comma(int64(pskRTTY)),
+				humanize.Comma(int64(pskFT8)),
+				humanize.Comma(int64(pskFT4)),
+			), // 5
 			fmt.Sprintf("Corrected calls: %d (C) / %d (F) / %d (H)", totalCorrections, totalFreqCorrections, totalHarmonics),                                      // 6
 			fmt.Sprintf("Telnet drops: %d (Q) / %d (C)", queueDrops, clientDrops),                                                                                 // 7
 		}
@@ -623,7 +634,8 @@ func processOutputSpots(
 			}
 		}
 		if s.IsBeacon {
-			s.Confidence = ""
+			// Beacons are tagged with a strong confidence so they still display a glyph.
+			s.Confidence = "V"
 		}
 
 		modeKey := strings.ToUpper(strings.TrimSpace(s.Mode))
@@ -1110,7 +1122,7 @@ func formatFCCLine(fcc *fccSnapshot) string {
 	}
 	ts := ""
 	if !fcc.UpdatedAt.IsZero() {
-		ts = fcc.UpdatedAt.UTC().Format("2006-01-02 15:04")
+		ts = fcc.UpdatedAt.UTC().Format("01-02-2006 15:04:05")
 	}
 	return fmt.Sprintf("FCC ULS: %s records. Last updated %s", humanize.Comma(fcc.HDCount), ts)
 }

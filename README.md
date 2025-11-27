@@ -85,22 +85,27 @@ Both the RBN (standard and digital) and PSKReporter feeds run the same normaliza
 Telnet clients can issue commands via the prompt once logged in. The processor, located in `commands/processor.go`, supports the following general commands:
 
 - `HELP` / `H` – display the help text that includes short summaries and valid bands/modes at the bottom of the message.
-- `SHOW DX [N]` / `SHOW/DX [N]` – stream the most recent `N` spots directly from the shared ring buffer (`N` ranges from 1–100, default 10). The command accepts the alias `SH DX` as well.
-- `BYE`, `QUIT`, `EXIT` – request a graceful logout; the server replies with `73!` and closes the connection.
+- `SHOW DX [N]` / `SHOW/DX [N]` - stream the most recent `N` spots directly from the shared ring buffer (`N` ranges from 1-100, default 10). The command accepts the alias `SH DX` as well.
+- `BYE`, `QUIT`, `EXIT` - request a graceful logout; the server replies with `73!` and closes the connection.
 
-Filter management commands are implemented directly in `telnet/server.go` and operate on each client’s `filter.Filter`. They can be used at any time and fall into `SET`, `UNSET`, and `SHOW` groups:
+Filter management commands are implemented directly in `telnet/server.go` and operate on each client's `filter.Filter`. They can be used at any time and fall into `SET`, `UNSET`, and `SHOW` groups:
 
-- `SHOW/FILTER` – prints the current filter state for bands, modes, and callsigns.
-- `SHOW/FILTER MODES` – lists every supported mode along with whether it is currently enabled for the session.
-- `SHOW/FILTER BANDS` – lists all supported bands that can be enabled.
-- `SET/FILTER BAND <band>[,<band>...]` – enables filtering for the comma- or space-separated list (each item normalized via `spot.NormalizeBand`), or specify `ALL` to accept every band; use the band names from `spot.SupportedBandNames()`.
+- `SHOW/FILTER` - prints the current filter state for bands, modes, continents, CQ zones, and callsigns.
+- `SHOW/FILTER MODES` - lists every supported mode along with whether it is currently enabled for the session.
+- `SHOW/FILTER BANDS` - lists all supported bands that can be enabled.
+- `SHOW/FILTER DXCONT` / `DECONT` - list supported DX/spotter continents and enabled state.
+- `SHOW/FILTER DXZONE` / `DEZONE` - list CQ zones (1-40) and enabled state for DX/spotter.
+- `SET/FILTER BAND <band>[,<band>...]` - enables filtering for the comma- or space-separated list (each item normalized via `spot.NormalizeBand`), or specify `ALL` to accept every band; use the band names from `spot.SupportedBandNames()`.
 - `SET/FILTER MODE <mode>[,<mode>...]` - enables one or more modes (comma- or space-separated) that must exist in `filter.SupportedModes`, or specify `ALL` to accept every mode.
+- `SET/FILTER DXCONT <cont>[,<cont>...]` / `DECONT <cont>[,<cont>...]` - enable only the listed DX/spotter continents (AF, AN, AS, EU, NA, OC, SA), or `ALL`.
+- `SET/FILTER DXZONE <zone>[,<zone>...]` / `DEZONE <zone>[,<zone>...]` - enable only the listed DX/spotter CQ zones (1-40), or `ALL`.
 - `SET/FILTER CALL <pattern>` - begins delivering only spots matching the supplied callsign pattern.
 - `SET/FILTER CONFIDENCE <symbol>[,<symbol>...]` - enables the comma- or space-separated list of consensus glyphs (valid symbols: `?`, `S`, `C`, `P`, `V`, `B`; use `ALL` to accept every glyph).
 - `SET/FILTER BEACON` - explicitly enable delivery of beacon spots (DX calls ending `/B`; enabled by default).
 - `UNSET/FILTER ALL` - resets every filter back to the default (no filtering).
 - `UNSET/FILTER BAND <band>[,<band>...]` - disables only the comma- or space-separated list of bands provided (use `ALL` to clear every band filter).
 - `UNSET/FILTER MODE <mode>[,<mode>...]` - disables only the comma- or space-separated list of modes provided (specify `ALL` to clear every mode filter).
+- `UNSET/FILTER DXCONT` / `DECONT` / `DXZONE` / `DEZONE` - clear continent/zone filters (use `ALL` to reset).
 - `UNSET/FILTER CALL` - removes all callsign patterns.
 - `UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...]` - disables only the comma- or space-separated list of glyphs provided (use `ALL` to clear the whitelist).
 - `UNSET/FILTER BEACON` - drop beacon spots entirely (they remain tagged internally for future processing).
@@ -124,6 +129,8 @@ Use `SET/FILTER CONFIDENCE` with the glyphs above to whitelist the consensus lev
 
 Use `UNSET/FILTER BEACON` to suppress DX beacons when you only want live operator traffic; `SET/FILTER BEACON` re-enables them, and `SHOW/FILTER BEACON` reports the current state. Regardless of delivery, `/B` spots are excluded from call-correction, frequency-averaging, and harmonic checks.
 Errors during filter commands return a usage message (e.g., invalid bands or modes refer to the supported lists) and the `SHOW/FILTER` commands help confirm the active settings.
+
+Continent and CQ-zone filters behave like the band/mode whitelists: start permissive, tighten with `SET/FILTER`, reset with `ALL`. When a continent/zone filter is active, spots missing that metadata are rejected so the whitelist cannot be bypassed by incomplete records.
 
 ## RBN Skew Corrections
 

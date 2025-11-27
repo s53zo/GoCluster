@@ -37,6 +37,8 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strconv"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -72,6 +74,8 @@ type Server struct {
 	welcomeMessage    string               // Welcome message for new connections
 	maxConnections    int                  // Maximum concurrent client connections
 	duplicateLoginMsg string               // Message sent to evicted duplicate session
+	greetingTemplate  string               // Post-login greeting with placeholders
+	clusterCall       string               // Cluster/node callsign for greeting substitution
 	listener          net.Listener         // TCP listener
 	clients           map[string]*Client   // Map of callsign → Client
 	clientsMutex      sync.RWMutex         // Protects clients map
@@ -167,8 +171,8 @@ const (
 )
 
 const (
-	setFilterUsageMsg   = "Usage: SET/FILTER BAND <band>[,<band>...] | SET/FILTER MODE <mode>[,<mode>...] | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | SET/FILTER BEACON\n"
-	unsetFilterUsageMsg = "Usage: UNSET/FILTER ALL | UNSET/FILTER BAND <band>[,<band>...] | UNSET/FILTER MODE <mode>[,<mode>...] | UNSET/FILTER CALL | UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | UNSET/FILTER BEACON\n"
+	setFilterUsageMsg   = "Usage: SET/FILTER BAND <band>[,<band>...] | SET/FILTER MODE <mode>[,<mode>...] | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | SET/FILTER BEACON | SET/FILTER DXCONT <cont>[,<cont>...] | SET/FILTER DECONT <cont>[,<cont>...] | SET/FILTER DXZONE <zone>[,<zone>...] | SET/FILTER DEZONE <zone>[,<zone>...]\n"
+	unsetFilterUsageMsg = "Usage: UNSET/FILTER ALL | UNSET/FILTER BAND <band>[,<band>...] | UNSET/FILTER MODE <mode>[,<mode>...] | UNSET/FILTER CALL | UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | UNSET/FILTER BEACON | UNSET/FILTER DXCONT <cont>[,<cont>...] | UNSET/FILTER DECONT <cont>[,<cont>...] | UNSET/FILTER DXZONE <zone>[,<zone>...] | UNSET/FILTER DEZONE <zone>[,<zone>...]\n"
 )
 
 // ServerOptions configures the telnet server instance.
@@ -176,6 +180,8 @@ type ServerOptions struct {
 	Port              int
 	WelcomeMessage    string
 	DuplicateLoginMsg string
+	LoginGreeting     string
+	ClusterCall       string
 	MaxConnections    int
 	BroadcastWorkers  int
 	BroadcastQueue    int
@@ -192,6 +198,8 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		welcomeMessage:    config.WelcomeMessage,
 		maxConnections:    config.MaxConnections,
 		duplicateLoginMsg: config.DuplicateLoginMsg,
+		greetingTemplate:  config.LoginGreeting,
+		clusterCall:       config.ClusterCall,
 		clients:           make(map[string]*Client),
 		shutdown:          make(chan struct{}),
 		broadcast:         make(chan *spot.Spot, config.BroadcastQueue),
@@ -219,6 +227,12 @@ func normalizeServerOptions(opts ServerOptions) ServerOptions {
 	}
 	if strings.TrimSpace(config.DuplicateLoginMsg) == "" {
 		config.DuplicateLoginMsg = defaultDuplicateLoginMessage
+	}
+	if strings.TrimSpace(config.LoginGreeting) == "" {
+		config.LoginGreeting = "Hello <CALL>, you are now connected to <CLUSTER>. Type HELP for available commands."
+	}
+	if strings.TrimSpace(config.ClusterCall) == "" {
+		config.ClusterCall = "DXC"
 	}
 	return config
 }
@@ -345,7 +359,9 @@ func (s *Server) broadcastWorker(id int, jobs <-chan *broadcastJob) {
 
 func (s *Server) deliverJob(job *broadcastJob) {
 	for _, client := range job.clients {
-		if !client.filter.Matches(job.spot) {
+		// Always deliver spots where the DX callsign matches the logged-in user,
+		// regardless of filters (self-spots should not be filtered out).
+		if !strings.EqualFold(job.spot.DXCall, client.callsign) && !client.filter.Matches(job.spot) {
 			continue
 		}
 		select {
@@ -469,8 +485,11 @@ func (s *Server) handleClient(conn net.Conn) {
 	defer s.unregisterClient(client)
 
 	// Send login confirmation
-	client.Send(fmt.Sprintf("Hello %s, you are now connected.\n", client.callsign))
-	client.Send("Type HELP for available commands.\n")
+	greeting := formatGreeting(s.greetingTemplate, client.callsign, s.clusterCall)
+	if strings.TrimSpace(greeting) == "" {
+		greeting = fmt.Sprintf("Hello %s, you are now connected.", client.callsign)
+	}
+	client.Send(greeting + "\n")
 
 	// Start spot sender goroutine
 	go client.spotSender()
@@ -563,6 +582,14 @@ func (c *Client) handleFilterCommand(cmd string) string {
 					status = "DISABLED"
 				}
 				return fmt.Sprintf("Beacon spots: %s\n", status)
+			case "dxcont":
+				return fmt.Sprintf("DX continents: %s\n", formatContinentStates(c.filter.AllDXContinents, c.filter.DXContinents))
+			case "decont":
+				return fmt.Sprintf("DE continents: %s\n", formatContinentStates(c.filter.AllDEContinents, c.filter.DEContinents))
+			case "dxzone":
+				return fmt.Sprintf("DX zones: %s\n", formatZoneStates(c.filter.AllDXZones, c.filter.DXZones))
+			case "dezone":
+				return fmt.Sprintf("DE zones: %s\n", formatZoneStates(c.filter.AllDEZones, c.filter.DEZones))
 			}
 		}
 
@@ -672,8 +699,96 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			c.filter.SetBeaconEnabled(true)
 			c.saveFilter()
 			return "Beacon spots enabled\n"
+		case "DXCONT":
+			value := strings.TrimSpace(strings.Join(parts[2:], " "))
+			if value == "" {
+				return "Usage: SET/FILTER DXCONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\n"
+			}
+			if strings.EqualFold(value, "ALL") {
+				c.filter.ResetDXContinents()
+				c.saveFilter()
+				return "All DX continents enabled\n"
+			}
+			continents := parseContinentList(value)
+			if len(continents) == 0 {
+				return "Usage: SET/FILTER DXCONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\n"
+			}
+			if invalid := collectInvalidContinents(continents); len(invalid) > 0 {
+				return fmt.Sprintf("Unknown continent: %s\nSupported continents: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedContinents, ", "))
+			}
+			for _, cont := range continents {
+				c.filter.SetDXContinent(cont, true)
+			}
+			c.saveFilter()
+			return fmt.Sprintf("Filter set: DX continents %s\n", strings.Join(continents, ", "))
+		case "DECONT":
+			value := strings.TrimSpace(strings.Join(parts[2:], " "))
+			if value == "" {
+				return "Usage: SET/FILTER DECONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\n"
+			}
+			if strings.EqualFold(value, "ALL") {
+				c.filter.ResetDEContinents()
+				c.saveFilter()
+				return "All DE continents enabled\n"
+			}
+			continents := parseContinentList(value)
+			if len(continents) == 0 {
+				return "Usage: SET/FILTER DECONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\n"
+			}
+			if invalid := collectInvalidContinents(continents); len(invalid) > 0 {
+				return fmt.Sprintf("Unknown continent: %s\nSupported continents: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedContinents, ", "))
+			}
+			for _, cont := range continents {
+				c.filter.SetDEContinent(cont, true)
+			}
+			c.saveFilter()
+			return fmt.Sprintf("Filter set: DE continents %s\n", strings.Join(continents, ", "))
+		case "DXZONE":
+			value := strings.TrimSpace(strings.Join(parts[2:], " "))
+			if value == "" {
+				return "Usage: SET/FILTER DXZONE <zone>[,<zone>...] (1-40, or ALL)\n"
+			}
+			if strings.EqualFold(value, "ALL") {
+				c.filter.ResetDXZones()
+				c.saveFilter()
+				return "All DX zones enabled\n"
+			}
+			zones := parseZoneList(value)
+			if len(zones) == 0 {
+				return "Usage: SET/FILTER DXZONE <zone>[,<zone>...] (1-40, or ALL)\n"
+			}
+			if invalid := collectInvalidZones(zones); len(invalid) > 0 {
+				return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone())
+			}
+			for _, zone := range zones {
+				c.filter.SetDXZone(zone, true)
+			}
+			c.saveFilter()
+			return fmt.Sprintf("Filter set: DX zones %s\n", joinZones(zones))
+		case "DEZONE":
+			value := strings.TrimSpace(strings.Join(parts[2:], " "))
+			if value == "" {
+				return "Usage: SET/FILTER DEZONE <zone>[,<zone>...] (1-40, or ALL)\n"
+			}
+			if strings.EqualFold(value, "ALL") {
+				c.filter.ResetDEZones()
+				c.saveFilter()
+				return "All DE zones enabled\n"
+			}
+			zones := parseZoneList(value)
+			if len(zones) == 0 {
+				return "Usage: SET/FILTER DEZONE <zone>[,<zone>...] (1-40, or ALL)\n"
+			}
+			if invalid := collectInvalidZones(zones); len(invalid) > 0 {
+				return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone())
+			}
+			for _, zone := range zones {
+				c.filter.SetDEZone(zone, true)
+			}
+			c.saveFilter()
+			return fmt.Sprintf("Filter set: DE zones %s\n", joinZones(zones))
 		default:
-			return "Unknown filter type. Use: BAND, MODE, CALL, CONFIDENCE, or BEACON\n"
+			return "Unknown filter type. Use: BAND, MODE, CALL, CONFIDENCE, BEACON, DXCONT, DECONT, DXZONE, or DEZONE\n"
 		}
 
 	case "unset/filter":
@@ -781,8 +896,96 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			c.filter.SetBeaconEnabled(false)
 			c.saveFilter()
 			return "Beacon spots disabled\n"
+		case "DXCONT":
+			value := strings.TrimSpace(strings.Join(parts[2:], " "))
+			if value == "" {
+				return "Usage: UNSET/FILTER DXCONT <cont>[,<cont>...] (comma or space separated, or ALL)\n"
+			}
+			if strings.EqualFold(value, "ALL") {
+				c.filter.ResetDXContinents()
+				c.saveFilter()
+				return "DX continent filters cleared\n"
+			}
+			continents := parseContinentList(value)
+			if len(continents) == 0 {
+				return "Usage: UNSET/FILTER DXCONT <cont>[,<cont>...] (comma or space separated, or ALL)\n"
+			}
+			if invalid := collectInvalidContinents(continents); len(invalid) > 0 {
+				return fmt.Sprintf("Unknown continent: %s\nSupported continents: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedContinents, ", "))
+			}
+			for _, cont := range continents {
+				c.filter.SetDXContinent(cont, false)
+			}
+			c.saveFilter()
+			return fmt.Sprintf("DX continent filters disabled: %s\n", strings.Join(continents, ", "))
+		case "DECONT":
+			value := strings.TrimSpace(strings.Join(parts[2:], " "))
+			if value == "" {
+				return "Usage: UNSET/FILTER DECONT <cont>[,<cont>...] (comma or space separated, or ALL)\n"
+			}
+			if strings.EqualFold(value, "ALL") {
+				c.filter.ResetDEContinents()
+				c.saveFilter()
+				return "DE continent filters cleared\n"
+			}
+			continents := parseContinentList(value)
+			if len(continents) == 0 {
+				return "Usage: UNSET/FILTER DECONT <cont>[,<cont>...] (comma or space separated, or ALL)\n"
+			}
+			if invalid := collectInvalidContinents(continents); len(invalid) > 0 {
+				return fmt.Sprintf("Unknown continent: %s\nSupported continents: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedContinents, ", "))
+			}
+			for _, cont := range continents {
+				c.filter.SetDEContinent(cont, false)
+			}
+			c.saveFilter()
+			return fmt.Sprintf("DE continent filters disabled: %s\n", strings.Join(continents, ", "))
+		case "DXZONE":
+			value := strings.TrimSpace(strings.Join(parts[2:], " "))
+			if value == "" {
+				return "Usage: UNSET/FILTER DXZONE <zone>[,<zone>...] (comma or space separated, or ALL)\n"
+			}
+			if strings.EqualFold(value, "ALL") {
+				c.filter.ResetDXZones()
+				c.saveFilter()
+				return "DX zone filters cleared\n"
+			}
+			zones := parseZoneList(value)
+			if len(zones) == 0 {
+				return "Usage: UNSET/FILTER DXZONE <zone>[,<zone>...] (comma or space separated, or ALL)\n"
+			}
+			if invalid := collectInvalidZones(zones); len(invalid) > 0 {
+				return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone())
+			}
+			for _, zone := range zones {
+				c.filter.SetDXZone(zone, false)
+			}
+			c.saveFilter()
+			return fmt.Sprintf("DX zone filters disabled: %s\n", joinZones(zones))
+		case "DEZONE":
+			value := strings.TrimSpace(strings.Join(parts[2:], " "))
+			if value == "" {
+				return "Usage: UNSET/FILTER DEZONE <zone>[,<zone>...] (comma or space separated, or ALL)\n"
+			}
+			if strings.EqualFold(value, "ALL") {
+				c.filter.ResetDEZones()
+				c.saveFilter()
+				return "DE zone filters cleared\n"
+			}
+			zones := parseZoneList(value)
+			if len(zones) == 0 {
+				return "Usage: UNSET/FILTER DEZONE <zone>[,<zone>...] (comma or space separated, or ALL)\n"
+			}
+			if invalid := collectInvalidZones(zones); len(invalid) > 0 {
+				return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone())
+			}
+			for _, zone := range zones {
+				c.filter.SetDEZone(zone, false)
+			}
+			c.saveFilter()
+			return fmt.Sprintf("DE zone filters disabled: %s\n", joinZones(zones))
 		default:
-			return "Unknown filter type. Use: ALL, BAND, MODE, CALL, CONFIDENCE, or BEACON\n"
+			return "Unknown filter type. Use: ALL, BAND, MODE, CALL, CONFIDENCE, BEACON, DXCONT, DECONT, DXZONE, or DEZONE\n"
 		}
 
 	default:
@@ -832,11 +1035,74 @@ func parseConfidenceList(arg string) []string {
 	return symbols
 }
 
+func parseContinentList(arg string) []string {
+	values := splitListValues(arg)
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	continents := make([]string, 0, len(values))
+	for _, value := range values {
+		cont := strings.ToUpper(strings.TrimSpace(value))
+		if cont == "" || seen[cont] {
+			continue
+		}
+		continents = append(continents, cont)
+		seen[cont] = true
+	}
+	return continents
+}
+
+func parseZoneList(arg string) []int {
+	values := splitListValues(arg)
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[int]bool)
+	zones := make([]int, 0, len(values))
+	for _, value := range values {
+		v := strings.TrimSpace(value)
+		if v == "" {
+			continue
+		}
+		zone, err := strconv.Atoi(v)
+		if err != nil {
+			return append(zones, -1) // leave invalid marker for the caller to handle uniformly
+		}
+		if seen[zone] {
+			continue
+		}
+		zones = append(zones, zone)
+		seen[zone] = true
+	}
+	return zones
+}
+
 func collectInvalidConfidenceSymbols(symbols []string) []string {
 	invalid := make([]string, 0)
 	for _, symbol := range symbols {
 		if !filter.IsSupportedConfidenceSymbol(symbol) {
 			invalid = append(invalid, symbol)
+		}
+	}
+	return invalid
+}
+
+func collectInvalidContinents(continents []string) []string {
+	invalid := make([]string, 0)
+	for _, cont := range continents {
+		if !filter.IsSupportedContinent(cont) {
+			invalid = append(invalid, cont)
+		}
+	}
+	return invalid
+}
+
+func collectInvalidZones(zones []int) []int {
+	invalid := make([]int, 0)
+	for _, zone := range zones {
+		if !filter.IsSupportedZone(zone) {
+			invalid = append(invalid, zone)
 		}
 	}
 	return invalid
@@ -865,6 +1131,65 @@ func collectInvalidModes(modes []string) []string {
 		}
 	}
 	return invalid
+}
+
+func formatContinentStates(all bool, enabled map[string]bool) string {
+	if all {
+		return "ALL"
+	}
+	var b strings.Builder
+	for i, cont := range filter.SupportedContinents {
+		state := "DISABLED"
+		if enabled[cont] {
+			state = "ENABLED"
+		}
+		b.WriteString(fmt.Sprintf("%s=%s", cont, state))
+		if i < len(filter.SupportedContinents)-1 {
+			b.WriteString(", ")
+		}
+	}
+	return b.String()
+}
+
+func formatZoneStates(all bool, enabled map[int]bool) string {
+	if all {
+		return "ALL"
+	}
+	var b strings.Builder
+	for zone := filter.MinCQZone(); zone <= filter.MaxCQZone(); zone++ {
+		state := "DISABLED"
+		if enabled[zone] {
+			state = "ENABLED"
+		}
+		b.WriteString(fmt.Sprintf("%d=%s", zone, state))
+		if zone < filter.MaxCQZone() {
+			b.WriteString(", ")
+		}
+	}
+	return b.String()
+}
+
+func joinZones(zones []int) string {
+	if len(zones) == 0 {
+		return ""
+	}
+	cp := append([]int(nil), zones...)
+	sort.Ints(cp)
+	parts := make([]string, 0, len(cp))
+	for _, z := range cp {
+		parts = append(parts, fmt.Sprintf("%d", z))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatGreeting replaces placeholders with the client's callsign and the cluster call.
+func formatGreeting(tmpl, call, cluster string) string {
+	if tmpl == "" {
+		return ""
+	}
+	out := strings.ReplaceAll(tmpl, "<CALL>", call)
+	out = strings.ReplaceAll(out, "<CLUSTER>", cluster)
+	return out
 }
 
 // spotSender sends spots to the client from the spot channel

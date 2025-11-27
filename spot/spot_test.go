@@ -97,3 +97,19 @@ func TestFormatGridLabelTruncates(t *testing.T) {
 		t.Fatalf("expected truncated grid, got %q", got)
 	}
 }
+
+func TestFormatDXClusterZeroReport(t *testing.T) {
+	s := &Spot{
+		DXCall:    "N0CALL",
+		DECall:    "W1ABC",
+		Frequency: 14074.0,
+		Mode:      "FT8",
+		Report:    0,
+		Time:      time.Date(2025, time.November, 22, 6, 15, 0, 0, time.UTC),
+	}
+
+	got := s.FormatDXCluster()
+	if !strings.Contains(got, "FT8 +0") {
+		t.Fatalf("expected 0 dB report to render, got %q", got)
+	}
+}

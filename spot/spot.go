@@ -125,27 +125,17 @@ func (s *Spot) FormatDXCluster() string {
 
 		commentPayload := s.formatZoneGridComment()
 		// Build comment section: mode + signal report + comment
-		var commentSection string
-		if s.Report != 0 {
-			// Format signal report based on mode
-			var reportStr string
-			mode := strings.ToUpper(s.Mode)
-
-			// For CW and RTTY: no sign (signal strength is always positive)
-			// For FT8, FT4 and other digital modes: include sign (SNR can be negative)
-			if mode == "CW" || mode == "RTTY" {
-				reportStr = fmt.Sprintf("%d dB", s.Report)
-			} else {
-				// FT8, FT4, and other digital modes use SNR with sign
-				reportStr = fmt.Sprintf("%+d", s.Report) // Always show sign for digital modes
-			}
-
-			// Mode with signal report and CQ zone/grid annotation
-			commentSection = fmt.Sprintf("%s %s %s", s.Mode, reportStr, commentPayload)
+		// Build the signal report string; zero is a valid SNR and must be rendered.
+		var reportStr string
+		mode := strings.ToUpper(s.Mode)
+		if mode == "CW" || mode == "RTTY" {
+			reportStr = fmt.Sprintf("%d dB", s.Report)
 		} else {
-			// No report available, just mode and CQ zone/grid annotation
-			commentSection = fmt.Sprintf("%s %s", s.Mode, commentPayload)
+			reportStr = fmt.Sprintf("%+d", s.Report)
 		}
+
+		// Mode with signal report and CQ zone/grid annotation
+		commentSection := fmt.Sprintf("%s %s %s", s.Mode, reportStr, commentPayload)
 
 		// CRITICAL: Build the line so frequency ALWAYS ends at position 24
 		// 1. Start with "DX de " + spotter + ":"

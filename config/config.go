@@ -50,6 +50,7 @@ type TelnetConfig struct {
 	MaxConnections    int    `yaml:"max_connections"`
 	WelcomeMessage    string `yaml:"welcome_message"`
 	DuplicateLoginMsg string `yaml:"duplicate_login_message"`
+	LoginGreeting     string `yaml:"login_greeting"` // Supports <CALL> and <CLUSTER> substitution
 	BroadcastWorkers  int    `yaml:"broadcast_workers"`
 	BroadcastQueue    int    `yaml:"broadcast_queue_size"`
 	WorkerQueue       int    `yaml:"worker_queue_size"`
@@ -341,6 +342,9 @@ func Load(filename string) (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.Telnet.DuplicateLoginMsg) == "" {
 		cfg.Telnet.DuplicateLoginMsg = "Another login for your callsign connected. This session is being closed (multiple logins are not allowed)."
+	}
+	if strings.TrimSpace(cfg.Telnet.LoginGreeting) == "" {
+		cfg.Telnet.LoginGreeting = "Hello <CALL>, you are now connected to <CLUSTER>."
 	}
 
 	if cfg.Harmonics.RecencySeconds <= 0 {

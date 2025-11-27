@@ -59,14 +59,26 @@ BYE                  - Disconnect
 Filter commands (use from telnet session):
 	SET/FILTER BAND <band>[,<band>...] - Enable specific bands (comma/space separated, or ALL)
 	SET/FILTER MODE <mode>[,<mode>...] - Enable modes (comma or space separated, or ALL)
+	SET/FILTER DXCONT <cont>[,<cont>...] - Enable DX continents (AF, AN, AS, EU, NA, OC, SA or ALL)
+	SET/FILTER DECONT <cont>[,<cont>...] - Enable spotter continents (AF, AN, AS, EU, NA, OC, SA or ALL)
+	SET/FILTER DXZONE <zone>[,<zone>...] - Enable DX CQ zones (1-40 or ALL)
+	SET/FILTER DEZONE <zone>[,<zone>...] - Enable spotter CQ zones (1-40 or ALL)
 	SET/FILTER CONFIDENCE <symbol>[,<symbol>...] - Enable consensus glyphs (?,S,C,P,V,B or ALL). FT8/FT4 spots do not carry confidence glyphs and ignore this filter.
 	SET/FILTER BEACON - Deliver DX beacons (calls ending in /B)
 	UNSET/FILTER BAND <band>[,<band>...]      - Disable listed bands (use ALL to clear)
 	UNSET/FILTER MODE <mode>[,<mode>...]      - Disable listed modes (use ALL to clear)
+	UNSET/FILTER DXCONT <cont>[,<cont>...]    - Disable DX continents (use ALL to clear)
+	UNSET/FILTER DECONT <cont>[,<cont>...]    - Disable spotter continents (use ALL to clear)
+	UNSET/FILTER DXZONE <zone>[,<zone>...]    - Disable DX CQ zones (use ALL to clear)
+	UNSET/FILTER DEZONE <zone>[,<zone>...]    - Disable spotter CQ zones (use ALL to clear)
 	UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] - Disable listed glyphs (use ALL to clear)
 	UNSET/FILTER BEACON - Suppress DX beacons
 	SHOW/FILTER BANDS             - List supported bands
 	SHOW/FILTER MODES             - Show supported modes and enabled state
+	SHOW/FILTER DXCONT            - Show supported DX continents and enabled state
+	SHOW/FILTER DECONT            - Show supported DE continents and enabled state
+	SHOW/FILTER DXZONE            - Show supported DX CQ zones and enabled state
+	SHOW/FILTER DEZONE            - Show supported DE CQ zones and enabled state
 	SHOW/FILTER CONFIDENCE        - Show supported confidence glyphs and enabled state
 	SHOW/FILTER BEACON            - Show whether beacon spots are enabled
 

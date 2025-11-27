@@ -136,7 +136,8 @@ func (d *dashboard) appendLine(view *tview.TextView, hasText *bool, line string)
 	if d == nil || view == nil {
 		return
 	}
-	ts := time.Now().Format("2006/01/02 15:04:05 ")
+	// Dashboard timestamps use MM-DD-YYYY HH:MM:SS for readability.
+	ts := time.Now().Format("01-02-2006 15:04:05 ")
 	d.app.QueueUpdateDraw(func() {
 		if hasText != nil && *hasText {
 			fmt.Fprint(view, "\n")
@@ -174,11 +175,12 @@ func (w *paneWriter) Write(p []byte) (int, error) {
 	}
 	lines := strings.Split(text, "\n")
 	appendLines := func() {
+		ts := time.Now().Format("01-02-2006 15:04:05 ")
 		for _, line := range lines {
 			if w.hasText != nil && *w.hasText {
 				fmt.Fprint(w.view, "\n")
 			}
-			fmt.Fprint(w.view, line)
+			fmt.Fprint(w.view, ts+line)
 			if w.hasText != nil {
 				*w.hasText = true
 			}

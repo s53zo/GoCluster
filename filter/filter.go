@@ -39,6 +39,14 @@ var SupportedModes = []string{
 	"RTTY",
 }
 
+// SupportedContinents enumerates continent codes used in DX metadata.
+var SupportedContinents = []string{"AF", "AN", "AS", "EU", "NA", "OC", "SA"}
+
+const (
+	minCQZone = 1
+	maxCQZone = 40
+)
+
 // defaultModeSelection controls which modes are enabled when a new filter is created.
 // The initial values match the curated CW/USB/LSB/RTTY set, but can be overridden.
 var defaultModeSelection = []string{"CW", "LSB", "USB", "RTTY"}
@@ -47,6 +55,14 @@ var supportedModeSet = func() map[string]bool {
 	m := make(map[string]bool)
 	for _, s := range SupportedModes {
 		m[strings.ToUpper(strings.TrimSpace(s))] = true
+	}
+	return m
+}()
+
+var supportedContinentSet = func() map[string]bool {
+	m := make(map[string]bool, len(SupportedContinents))
+	for _, c := range SupportedContinents {
+		m[c] = true
 	}
 	return m
 }()
@@ -76,6 +92,27 @@ var confidenceSymbolScores = map[string]int{
 func IsSupportedMode(mode string) bool {
 	mode = strings.ToUpper(strings.TrimSpace(mode))
 	return supportedModeSet[mode]
+}
+
+// IsSupportedContinent returns true if the continent code is known.
+func IsSupportedContinent(cont string) bool {
+	cont = strings.ToUpper(strings.TrimSpace(cont))
+	return supportedContinentSet[cont]
+}
+
+// IsSupportedZone returns true when the CQ zone falls in the valid range.
+func IsSupportedZone(zone int) bool {
+	return zone >= minCQZone && zone <= maxCQZone
+}
+
+// MinCQZone exposes the lower bound for CQ zones.
+func MinCQZone() int {
+	return minCQZone
+}
+
+// MaxCQZone exposes the upper bound for CQ zones.
+func MaxCQZone() int {
+	return maxCQZone
 }
 
 // SetDefaultModeSelection replaces the modes that brand-new filters enable by default.
@@ -138,6 +175,7 @@ func LoadUserFilter(callsign string) (*Filter, error) {
 		return nil, err
 	}
 	f.migrateLegacyConfidence()
+	f.normalizeDefaults()
 	return &f, nil
 }
 
@@ -174,6 +212,14 @@ type Filter struct {
 	Confidence     map[string]bool // Enabled confidence glyphs (e.g., {"P": true, "V": true})
 	AllConfidence  bool            // If true, accept all confidence glyphs (Confidence map ignored)
 	IncludeBeacons *bool           `yaml:"include_beacons,omitempty"` // nil/true delivers beacons; false suppresses
+	DXContinents   map[string]bool // Enabled DX continents (e.g., "EU" = true)
+	DEContinents   map[string]bool // Enabled spotter continents
+	AllDXContinents bool           // If true, accept all DX continents
+	AllDEContinents bool           // If true, accept all DE continents
+	DXZones         map[int]bool   // Enabled DX CQ zones (1-40)
+	DEZones         map[int]bool   // Enabled DE CQ zones (1-40)
+	AllDXZones      bool           // If true, accept all DX CQ zones
+	AllDEZones      bool           // If true, accept all DE CQ zones
 
 	// LegacyMinConfidence captures the old percentage-based filter persisted to
 	// YAML so we can migrate user data to the new glyph-based approach.
@@ -190,13 +236,21 @@ type Filter struct {
 //	filter := filter.NewFilter()
 func NewFilter() *Filter {
 	f := &Filter{
-		Bands:         make(map[string]bool),
-		Modes:         make(map[string]bool),
-		Callsigns:     make([]string, 0),
-		Confidence:    make(map[string]bool),
-		AllBands:      true,  // Start with all bands enabled
-		AllModes:      false, // Default to the curated mode subset below
-		AllConfidence: true,  // Accept every confidence glyph until user sets one
+		Bands:           make(map[string]bool),
+		Modes:           make(map[string]bool),
+		Callsigns:       make([]string, 0),
+		Confidence:      make(map[string]bool),
+		DXContinents:    make(map[string]bool),
+		DEContinents:    make(map[string]bool),
+		DXZones:         make(map[int]bool),
+		DEZones:         make(map[int]bool),
+		AllBands:        true,  // Start with all bands enabled
+		AllModes:        false, // Default to the curated mode subset below
+		AllConfidence:   true,  // Accept every confidence glyph until user sets one
+		AllDXContinents: true,
+		AllDEContinents: true,
+		AllDXZones:      true,
+		AllDEZones:      true,
 	}
 	for _, mode := range defaultModeSelection {
 		f.Modes[mode] = true
@@ -286,6 +340,66 @@ func (f *Filter) SetMode(mode string, enabled bool) {
 func (f *Filter) AddCallsignPattern(pattern string) {
 	pattern = strings.ToUpper(pattern)
 	f.Callsigns = append(f.Callsigns, pattern)
+}
+
+// SetDXContinent enables or disables filtering for a specific DX continent.
+func (f *Filter) SetDXContinent(cont string, enabled bool) {
+	cont = strings.ToUpper(strings.TrimSpace(cont))
+	if !IsSupportedContinent(cont) {
+		return
+	}
+	if enabled {
+		f.DXContinents[cont] = true
+		f.AllDXContinents = false
+		return
+	}
+	delete(f.DXContinents, cont)
+}
+
+// SetDEContinent enables or disables filtering for a specific spotter continent.
+func (f *Filter) SetDEContinent(cont string, enabled bool) {
+	cont = strings.ToUpper(strings.TrimSpace(cont))
+	if !IsSupportedContinent(cont) {
+		return
+	}
+	if enabled {
+		f.DEContinents[cont] = true
+		f.AllDEContinents = false
+		return
+	}
+	delete(f.DEContinents, cont)
+}
+
+// SetDXZone enables or disables filtering for a specific DX CQ zone (1-40).
+func (f *Filter) SetDXZone(zone int, enabled bool) {
+	if !IsSupportedZone(zone) {
+		return
+	}
+	if enabled {
+		f.DXZones[zone] = true
+		f.AllDXZones = false
+		return
+	}
+	delete(f.DXZones, zone)
+	if len(f.DXZones) == 0 {
+		f.AllDXZones = true
+	}
+}
+
+// SetDEZone enables or disables filtering for a specific spotter CQ zone (1-40).
+func (f *Filter) SetDEZone(zone int, enabled bool) {
+	if !IsSupportedZone(zone) {
+		return
+	}
+	if enabled {
+		f.DEZones[zone] = true
+		f.AllDEZones = false
+		return
+	}
+	delete(f.DEZones, zone)
+	if len(f.DEZones) == 0 {
+		f.AllDEZones = true
+	}
 }
 
 // ClearCallsignPatterns removes all callsign filters.
@@ -417,7 +531,35 @@ func (f *Filter) Reset() {
 	f.ResetModes()
 	f.ClearCallsignPatterns()
 	f.ResetConfidence()
+	f.ResetDXContinents()
+	f.ResetDEContinents()
+	f.ResetDXZones()
+	f.ResetDEZones()
 	f.SetBeaconEnabled(true)
+}
+
+// ResetDXContinents clears DX continent filters and accepts all.
+func (f *Filter) ResetDXContinents() {
+	f.DXContinents = make(map[string]bool)
+	f.AllDXContinents = true
+}
+
+// ResetDEContinents clears spotter continent filters and accepts all.
+func (f *Filter) ResetDEContinents() {
+	f.DEContinents = make(map[string]bool)
+	f.AllDEContinents = true
+}
+
+// ResetDXZones clears DX CQ zone filters and accepts all.
+func (f *Filter) ResetDXZones() {
+	f.DXZones = make(map[int]bool)
+	f.AllDXZones = true
+}
+
+// ResetDEZones clears spotter CQ zone filters and accepts all.
+func (f *Filter) ResetDEZones() {
+	f.DEZones = make(map[int]bool)
+	f.AllDEZones = true
 }
 
 // Matches returns true if the spot passes all active filters.
@@ -459,6 +601,32 @@ func (f *Filter) Matches(s *spot.Spot) bool {
 	if !f.AllModes {
 		if !f.Modes[s.Mode] {
 			return false // Mode not in enabled list
+		}
+	}
+
+	// Check DX/DE continent filters
+	if !f.AllDXContinents {
+		cont := strings.ToUpper(strings.TrimSpace(s.DXMetadata.Continent))
+		if cont == "" || !f.DXContinents[cont] {
+			return false
+		}
+	}
+	if !f.AllDEContinents {
+		cont := strings.ToUpper(strings.TrimSpace(s.DEMetadata.Continent))
+		if cont == "" || !f.DEContinents[cont] {
+			return false
+		}
+	}
+
+	// Check DX/DE CQ zone filters
+	if !f.AllDXZones {
+		if s.DXMetadata.CQZone < minCQZone || s.DXMetadata.CQZone > maxCQZone || !f.DXZones[s.DXMetadata.CQZone] {
+			return false
+		}
+	}
+	if !f.AllDEZones {
+		if s.DEMetadata.CQZone < minCQZone || s.DEMetadata.CQZone > maxCQZone || !f.DEZones[s.DEMetadata.CQZone] {
+			return false
 		}
 	}
 
@@ -604,6 +772,30 @@ func (f *Filter) String() string {
 		parts = append(parts, "Callsigns: "+strings.Join(f.Callsigns, ", "))
 	}
 
+	// Describe continent filters
+	if f.AllDXContinents {
+		parts = append(parts, "DXCont: ALL")
+	} else {
+		parts = append(parts, "DXCont: "+strings.Join(enabledContinents(f.DXContinents), ", "))
+	}
+	if f.AllDEContinents {
+		parts = append(parts, "DECont: ALL")
+	} else {
+		parts = append(parts, "DECont: "+strings.Join(enabledContinents(f.DEContinents), ", "))
+	}
+
+	// Describe CQ zone filters
+	if f.AllDXZones {
+		parts = append(parts, "DXZone: ALL")
+	} else {
+		parts = append(parts, "DXZone: "+strings.Join(enabledZones(f.DXZones), ", "))
+	}
+	if f.AllDEZones {
+		parts = append(parts, "DEZone: ALL")
+	} else {
+		parts = append(parts, "DEZone: "+strings.Join(enabledZones(f.DEZones), ", "))
+	}
+
 	// Describe confidence glyph filter
 	if f.AllConfidence || len(f.Confidence) == 0 {
 		parts = append(parts, "Confidence: ALL")
@@ -660,6 +852,36 @@ func (f *Filter) ConfidenceSymbolEnabled(symbol string) bool {
 		return false
 	}
 	return f.Confidence[canonical]
+}
+
+// enabledContinents returns sorted continent labels from the provided map.
+func enabledContinents(m map[string]bool) []string {
+	if len(m) == 0 {
+		return []string{"NONE"}
+	}
+	out := make([]string, 0, len(m))
+	for cont := range m {
+		out = append(out, cont)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// enabledZones returns sorted CQ zone labels as strings.
+func enabledZones(m map[int]bool) []string {
+	if len(m) == 0 {
+		return []string{"NONE"}
+	}
+	out := make([]int, 0, len(m))
+	for zone := range m {
+		out = append(out, zone)
+	}
+	sort.Ints(out)
+	strs := make([]string, 0, len(out))
+	for _, z := range out {
+		strs = append(strs, strconv.Itoa(z))
+	}
+	return strs
 }
 
 // IsSupportedConfidenceSymbol returns true if the glyph is one of the known consensus indicators.
@@ -733,5 +955,56 @@ func (f *Filter) migrateLegacyConfidence() {
 	}
 	if len(f.Confidence) == 0 {
 		f.AllConfidence = true
+	}
+}
+
+// normalizeDefaults repairs zero-value filters loaded from disk so missing fields
+// revert to the permissive defaults instead of accidentally blocking traffic.
+func (f *Filter) normalizeDefaults() {
+	if f == nil {
+		return
+	}
+	if f.Bands == nil {
+		f.Bands = make(map[string]bool)
+	}
+	if f.Modes == nil {
+		f.Modes = make(map[string]bool)
+	}
+	if f.Confidence == nil {
+		f.Confidence = make(map[string]bool)
+	}
+	if f.DXContinents == nil {
+		f.DXContinents = make(map[string]bool)
+	}
+	if f.DEContinents == nil {
+		f.DEContinents = make(map[string]bool)
+	}
+	if f.DXZones == nil {
+		f.DXZones = make(map[int]bool)
+	}
+	if f.DEZones == nil {
+		f.DEZones = make(map[int]bool)
+	}
+
+	if len(f.Bands) == 0 && !f.AllBands {
+		f.AllBands = true
+	}
+	if len(f.Modes) == 0 && !f.AllModes {
+		f.AllModes = true
+	}
+	if len(f.Confidence) == 0 && !f.AllConfidence {
+		f.AllConfidence = true
+	}
+	if len(f.DXContinents) == 0 && !f.AllDXContinents {
+		f.AllDXContinents = true
+	}
+	if len(f.DEContinents) == 0 && !f.AllDEContinents {
+		f.AllDEContinents = true
+	}
+	if len(f.DXZones) == 0 && !f.AllDXZones {
+		f.AllDXZones = true
+	}
+	if len(f.DEZones) == 0 && !f.AllDEZones {
+		f.AllDEZones = true
 	}
 }
