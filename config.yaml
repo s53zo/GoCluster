@@ -119,6 +119,7 @@ fcc_uls:
   url: "https://data.fcc.gov/download/pub/uls/complete/l_amat.zip"  # FCC ULS amateur archive
   archive_path: "data/fcc/l_amat.zip"                               # Where to store the downloaded ZIP
   db_path: "data/fcc/fcc_uls.db"                                    # Where to write the built SQLite database
+  temp_dir: "data/fcc"                                              # SQLite temp/sort files for FCC build
   refresh_utc: "22:00"                                              # Daily download time in HH:MM UTC
 
 # Combined database for known calls + grids

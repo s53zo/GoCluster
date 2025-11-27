@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -248,6 +249,7 @@ type FCCULSConfig struct {
 	URL        string `yaml:"url"`
 	Archive    string `yaml:"archive_path"`
 	DBPath     string `yaml:"db_path"`
+	TempDir    string `yaml:"temp_dir"`
 	RefreshUTC string `yaml:"refresh_utc"`
 }
 
@@ -391,6 +393,9 @@ func Load(filename string) (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.FCCULS.DBPath) == "" {
 		cfg.FCCULS.DBPath = "data/fcc/fcc_uls.db"
+	}
+	if strings.TrimSpace(cfg.FCCULS.TempDir) == "" {
+		cfg.FCCULS.TempDir = filepath.Dir(cfg.FCCULS.DBPath)
 	}
 	if strings.TrimSpace(cfg.FCCULS.RefreshUTC) == "" {
 		cfg.FCCULS.RefreshUTC = "02:15"

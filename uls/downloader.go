@@ -42,7 +42,7 @@ func StartBackground(cfg config.FCCULSConfig) {
 		if updated, err := Refresh(cfg, false); err != nil {
 			log.Printf("Warning: FCC ULS refresh failed: %v", err)
 		} else if updated {
-			log.Printf("FCC ULS archive and database refreshed (db=%s)", cfg.DBPath)
+			log.Printf("FCC ULS database updated")
 		} else {
 			log.Printf("FCC ULS archive/database already up to date (db=%s)", cfg.DBPath)
 		}
@@ -57,6 +57,7 @@ func Refresh(cfg config.FCCULSConfig, force bool) (bool, error) {
 	url := strings.TrimSpace(cfg.URL)
 	dest := strings.TrimSpace(cfg.Archive)
 	dbPath := strings.TrimSpace(cfg.DBPath)
+	metaPath := dest + metadataSuffix
 	if url == "" {
 		return false, errors.New("fcc uls: URL is empty")
 	}
@@ -100,9 +101,11 @@ func Refresh(cfg config.FCCULSConfig, force bool) (bool, error) {
 	}
 	defer os.RemoveAll(extractDir)
 
-	if err := buildDatabase(extractDir, dbPath); err != nil {
+	if err := buildDatabase(extractDir, dbPath, cfg.TempDir); err != nil {
+		markMetadataBuildStatus(metaPath, false)
 		return false, err
 	}
+	markMetadataBuildStatus(metaPath, true)
 
 	// Clean up archive on success to save space
 	if err := os.Remove(dest); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -120,7 +123,7 @@ func startScheduler(cfg config.FCCULSConfig) {
 		if updated, err := Refresh(cfg, false); err != nil {
 			log.Printf("Warning: scheduled FCC ULS download failed: %v", err)
 		} else if updated {
-			log.Printf("Scheduled FCC ULS download complete (%s)", cfg.Archive)
+			log.Printf("FCC ULS database updated")
 		} else {
 			log.Printf("Scheduled FCC ULS download: up to date (%s)", cfg.Archive)
 		}
@@ -287,5 +290,22 @@ func cleanupLegacyMeta(metaSource, newPath, legacyPath string) {
 		if err := os.Remove(legacyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Printf("Warning: unable to remove legacy FCC ULS metadata %s: %v", legacyPath, err)
 		}
+	}
+}
+
+// markMetadataBuildStatus rewrites the metadata file to reflect whether the database build completed.
+// This prevents stale "up to date" markers when the download succeeded but SQLite creation failed.
+func markMetadataBuildStatus(metaPath string, success bool) {
+	if strings.TrimSpace(metaPath) == "" {
+		return
+	}
+	meta, _ := readMetadata(metaPath)
+	if meta == nil {
+		return
+	}
+	meta.CheckedAt = time.Now().UTC()
+	meta.UpToDate = success
+	if err := writeMetadata(metaPath, *meta); err != nil {
+		log.Printf("Warning: unable to update FCC ULS metadata %s: %v", metaPath, err)
 	}
 }

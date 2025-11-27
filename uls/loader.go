@@ -59,7 +59,7 @@ var tables = []tableSpec{
 	},
 }
 
-func buildDatabase(extractDir, dbPath string) error {
+func buildDatabase(extractDir, dbPath string, tempDir string) error {
 	dir := filepath.Dir(dbPath)
 	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -84,6 +84,15 @@ func buildDatabase(extractDir, dbPath string) error {
 
 	if _, err := db.Exec("PRAGMA foreign_keys=OFF;"); err != nil {
 		return fmt.Errorf("fcc uls: pragma foreign_keys: %w", err)
+	}
+	// Direct SQLite temp files to a caller-provided directory to avoid unwritable %TEMP%.
+	if strings.TrimSpace(tempDir) != "" {
+		if err := os.MkdirAll(tempDir, 0o755); err != nil {
+			return fmt.Errorf("fcc uls: ensure temp dir: %w", err)
+		}
+		if _, err := db.Exec(fmt.Sprintf("PRAGMA temp_store_directory='%s';", tempDir)); err != nil {
+			return fmt.Errorf("fcc uls: set temp_store_directory: %w", err)
+		}
 	}
 
 	activeIDs := make(map[uint64]struct{})

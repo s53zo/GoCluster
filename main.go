@@ -429,11 +429,9 @@ func main() {
 		}
 	}
 
-	fccSnap := loadFCCSnapshot(cfg.FCCULS.DBPath)
-
 	// Start stats display goroutine
 	statsInterval := time.Duration(cfg.Stats.DisplayIntervalSeconds) * time.Second
-	go displayStatsWithFCC(statsInterval, statsTracker, deduplicator, spotBuffer, ctyDB, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, fccSnap)
+	go displayStatsWithFCC(statsInterval, statsTracker, deduplicator, spotBuffer, ctyDB, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -495,7 +493,9 @@ func main() {
 }
 
 // displayStats prints statistics at the configured interval
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *dedup.Deduplicator, buf *buffer.RingBuffer, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash *dashboard, gridStats *gridMetrics, gridDB *gridstore.Store, fcc *fccSnapshot) {
+// displayStatsWithFCC prints statistics at the configured interval. FCC metadata is refreshed
+// from disk each tick so the dashboard reflects the latest download/build state.
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *dedup.Deduplicator, buf *buffer.RingBuffer, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash *dashboard, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -504,8 +504,12 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *
 
 	prevSourceCounts := make(map[string]uint64)
 	prevSourceModeCounts := make(map[string]uint64)
+	fccSnap := loadFCCSnapshot(fccDBPath)
 
 	for range ticker.C {
+		// Refresh FCC snapshot each interval to reflect completed downloads/builds.
+		fccSnap = loadFCCSnapshot(fccDBPath)
+
 		sourceTotals := tracker.GetSourceCounts()
 		sourceModeTotals := tracker.GetSourceModeCounts()
 
@@ -536,7 +540,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *
 		lines := []string{
 			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, ctyDB, knownPtr)), // 1
 			formatGridLineOrPlaceholder(gridStats, gridDB),                                                               // 2
-			formatFCCLineOrPlaceholder(fcc),                                                                              // 3
+			formatFCCLineOrPlaceholder(fccSnap),                                                                          // 3
 			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4),                              // 4
 			fmt.Sprintf("PSKReporter: %s TOTAL / %s CW / %s RTTY / %s FT8 / %s FT4",
 				humanize.Comma(int64(pskTotal)),
