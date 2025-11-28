@@ -204,30 +204,52 @@ func EnsureUserDataDir() error {
 //   - Each client has their own Filter instance (no sharing)
 //   - No internal locking needed (single-threaded per client)
 type Filter struct {
-	Bands           map[string]bool // Enabled bands (e.g., "20m" = true, "40m" = true)
-	Modes           map[string]bool // Enabled modes (e.g., "CW" = true, "FT8" = true)
-	Callsigns       []string        // Callsign patterns (e.g., ["W1*", "LZ5VV"])
-	AllBands        bool            // If true, accept all bands (Bands map ignored)
-	AllModes        bool            // If true, accept all modes (Modes map ignored)
-	Confidence      map[string]bool // Enabled confidence glyphs (e.g., {"P": true, "V": true})
-	AllConfidence   bool            // If true, accept all confidence glyphs (Confidence map ignored)
-	IncludeBeacons  *bool           `yaml:"include_beacons,omitempty"` // nil/true delivers beacons; false suppresses
-	DXContinents    map[string]bool // Enabled DX continents (e.g., "EU" = true)
-	DEContinents    map[string]bool // Enabled spotter continents
-	AllDXContinents bool            // If true, accept all DX continents
-	AllDEContinents bool            // If true, accept all DE continents
-	DXZones         map[int]bool    // Enabled DX CQ zones (1-40)
-	DEZones         map[int]bool    // Enabled DE CQ zones (1-40)
-	AllDXZones      bool            // If true, accept all DX CQ zones
-	AllDEZones      bool            // If true, accept all DE CQ zones
-	DXGrid2Prefixes map[string]bool // Enabled 2-character DX grids (whitelist when AllDXGrid2=false)
-	DEGrid2Prefixes map[string]bool // Enabled 2-character DE grids (whitelist when AllDEGrid2=false)
-	AllDXGrid2      bool            // If true, accept all DX 2-character grids
-	AllDEGrid2      bool            // If true, accept all DE 2-character grids
-	DXDXCC          map[int]bool    // Enabled DX ADIF/DXCC codes (whitelist when AllDXDXCC=false)
-	DEDXCC          map[int]bool    // Enabled DE ADIF/DXCC codes (whitelist when AllDEDXCC=false)
-	AllDXDXCC       bool            // If true, accept all DX ADIF codes
-	AllDEDXCC       bool            // If true, accept all DE ADIF codes
+	Bands                map[string]bool // Allowed bands (whitelist when non-empty)
+	BlockBands           map[string]bool // Blocked bands (deny wins over allow)
+	Modes                map[string]bool // Allowed modes
+	BlockModes           map[string]bool // Blocked modes
+	Callsigns            []string        // Callsign patterns (e.g., ["W1*", "LZ5VV"])
+	AllBands             bool            // If true, accept all bands (except blocked)
+	BlockAllBands        bool            // If true, reject all bands
+	AllModes             bool            // If true, accept all modes (except blocked)
+	BlockAllModes        bool            // If true, reject all modes
+	Confidence           map[string]bool // Allowed confidence glyphs (whitelist when non-empty)
+	BlockConfidence      map[string]bool // Blocked confidence glyphs
+	AllConfidence        bool            // If true, accept all confidence glyphs (except blocked)
+	BlockAllConfidence   bool            // If true, reject all confidence glyphs (except exempt modes)
+	IncludeBeacons       *bool           `yaml:"include_beacons,omitempty"` // nil/true delivers beacons; false suppresses
+	DXContinents         map[string]bool // Allowed DX continents
+	BlockDXContinents    map[string]bool // Blocked DX continents
+	DEContinents         map[string]bool // Allowed DE continents
+	BlockDEContinents    map[string]bool // Blocked DE continents
+	AllDXContinents      bool            // If true, accept all DX continents (except blocked)
+	BlockAllDXContinents bool            // If true, reject all DX continents
+	AllDEContinents      bool            // If true, accept all DE continents (except blocked)
+	BlockAllDEContinents bool            // If true, reject all DE continents
+	DXZones              map[int]bool    // Allowed DX CQ zones (1-40)
+	BlockDXZones         map[int]bool    // Blocked DX CQ zones
+	DEZones              map[int]bool    // Allowed DE CQ zones (1-40)
+	BlockDEZones         map[int]bool    // Blocked DE CQ zones
+	AllDXZones           bool            // If true, accept all DX CQ zones (except blocked)
+	BlockAllDXZones      bool            // If true, reject all DX CQ zones
+	AllDEZones           bool            // If true, accept all DE CQ zones (except blocked)
+	BlockAllDEZones      bool            // If true, reject all DE CQ zones
+	DXGrid2Prefixes      map[string]bool // Allowed 2-character DX grids
+	BlockDXGrid2         map[string]bool // Blocked 2-character DX grids
+	DEGrid2Prefixes      map[string]bool // Allowed 2-character DE grids
+	BlockDEGrid2         map[string]bool // Blocked 2-character DE grids
+	AllDXGrid2           bool            // If true, accept all DX 2-character grids (except blocked)
+	BlockAllDXGrid2      bool            // If true, reject all DX 2-character grids
+	AllDEGrid2           bool            // If true, accept all DE 2-character grids (except blocked)
+	BlockAllDEGrid2      bool            // If true, reject all DE 2-character grids
+	DXDXCC               map[int]bool    // Allowed DX ADIF/DXCC codes (whitelist when non-empty)
+	BlockDXDXCC          map[int]bool    // Blocked DX ADIF/DXCC codes
+	DEDXCC               map[int]bool    // Allowed DE ADIF/DXCC codes
+	BlockDEDXCC          map[int]bool    // Blocked DE ADIF/DXCC codes
+	AllDXDXCC            bool            // If true, accept all DX ADIF codes (except blocked)
+	BlockAllDXDXCC       bool            // If true, reject all DX ADIF codes
+	AllDEDXCC            bool            // If true, accept all DE ADIF codes (except blocked)
+	BlockAllDEDXCC       bool            // If true, reject all DE ADIF codes
 
 	// LegacyMinConfidence captures the old percentage-based filter persisted to
 	// YAML so we can migrate user data to the new glyph-based approach.
@@ -244,29 +266,51 @@ type Filter struct {
 //	filter := filter.NewFilter()
 func NewFilter() *Filter {
 	f := &Filter{
-		Bands:           make(map[string]bool),
-		Modes:           make(map[string]bool),
-		Callsigns:       make([]string, 0),
-		Confidence:      make(map[string]bool),
-		DXContinents:    make(map[string]bool),
-		DEContinents:    make(map[string]bool),
-		DXZones:         make(map[int]bool),
-		DEZones:         make(map[int]bool),
-		DXGrid2Prefixes: make(map[string]bool),
-		DEGrid2Prefixes: make(map[string]bool),
-		DXDXCC:          make(map[int]bool),
-		DEDXCC:          make(map[int]bool),
-		AllBands:        true,  // Start with all bands enabled
-		AllModes:        false, // Default to the curated mode subset below
-		AllConfidence:   true,  // Accept every confidence glyph until user sets one
-		AllDXContinents: true,
-		AllDEContinents: true,
-		AllDXZones:      true,
-		AllDEZones:      true,
-		AllDXGrid2:      true,
-		AllDEGrid2:      true,
-		AllDXDXCC:       true,
-		AllDEDXCC:       true,
+		Bands:                make(map[string]bool),
+		BlockBands:           make(map[string]bool),
+		Modes:                make(map[string]bool),
+		BlockModes:           make(map[string]bool),
+		Callsigns:            make([]string, 0),
+		Confidence:           make(map[string]bool),
+		BlockConfidence:      make(map[string]bool),
+		DXContinents:         make(map[string]bool),
+		BlockDXContinents:    make(map[string]bool),
+		DEContinents:         make(map[string]bool),
+		BlockDEContinents:    make(map[string]bool),
+		DXZones:              make(map[int]bool),
+		BlockDXZones:         make(map[int]bool),
+		DEZones:              make(map[int]bool),
+		BlockDEZones:         make(map[int]bool),
+		DXGrid2Prefixes:      make(map[string]bool),
+		BlockDXGrid2:         make(map[string]bool),
+		DEGrid2Prefixes:      make(map[string]bool),
+		BlockDEGrid2:         make(map[string]bool),
+		DXDXCC:               make(map[int]bool),
+		BlockDXDXCC:          make(map[int]bool),
+		DEDXCC:               make(map[int]bool),
+		BlockDEDXCC:          make(map[int]bool),
+		AllBands:             true,  // Start with all bands enabled
+		BlockAllBands:        false, // No band is globally blocked
+		AllModes:             false, // Default to the curated mode subset below
+		BlockAllModes:        false,
+		AllConfidence:        true, // Accept every confidence glyph until user sets one
+		BlockAllConfidence:   false,
+		AllDXContinents:      true,
+		BlockAllDXContinents: false,
+		AllDEContinents:      true,
+		BlockAllDEContinents: false,
+		AllDXZones:           true,
+		BlockAllDXZones:      false,
+		AllDEZones:           true,
+		BlockAllDEZones:      false,
+		AllDXGrid2:           true,
+		BlockAllDXGrid2:      false,
+		AllDEGrid2:           true,
+		BlockAllDEGrid2:      false,
+		AllDXDXCC:            true,
+		BlockAllDXDXCC:       false,
+		AllDEDXCC:            true,
+		BlockAllDEDXCC:       false,
 	}
 	for _, mode := range defaultModeSelection {
 		f.Modes[mode] = true
@@ -282,26 +326,36 @@ func NewFilter() *Filter {
 //   - enabled: true to accept this band, false to reject
 //
 // Behavior:
-//   - When enabling first band: Disables AllBands flag (switches to whitelist mode)
-//   - Multiple bands can be enabled (OR logic within bands)
-//   - Disabling a band removes it from the filter
+//   - When enabled: adds to the allowlist and removes it from the blocklist
+//   - When disabled: adds to the blocklist and removes it from the allowlist
+//   - Blocklist takes precedence over allowlist during matching
 //
 // Examples:
 //
-//	filter.SetBand("20M", true)  // Only accept 20m (disables all other bands)
-//	filter.SetBand("40m", true)  // Now accept 20m OR 40m
-//	filter.SetBand("20M", false) // Only accept 40m now
+//	filter.SetBand("20M", true)  // Allow 20m
+//	filter.SetBand("40m", false) // Explicitly block 40m
 func (f *Filter) SetBand(band string, enabled bool) {
 	normalized := spot.NormalizeBand(band)
 	if normalized == "" || !spot.IsValidBand(normalized) {
 		return
 	}
+	if f.Bands == nil {
+		f.Bands = make(map[string]bool)
+	}
+	if f.BlockBands == nil {
+		f.BlockBands = make(map[string]bool)
+	}
 	if enabled {
 		f.Bands[normalized] = true
-		f.AllBands = false // Once we set specific bands, we're not accepting all
-	} else {
-		delete(f.Bands, normalized)
+		delete(f.BlockBands, normalized)
+		f.BlockAllBands = false
+		f.AllBands = len(f.Bands) == 0
+		return
 	}
+	delete(f.Bands, normalized)
+	f.BlockBands[normalized] = true
+	f.BlockAllBands = false
+	f.AllBands = len(f.Bands) == 0
 }
 
 // SetMode enables or disables filtering for a specific mode.
@@ -322,16 +376,23 @@ func (f *Filter) SetBand(band string, enabled bool) {
 //	filter.SetMode("CW", false)  // Only accept FT8 now
 func (f *Filter) SetMode(mode string, enabled bool) {
 	mode = strings.ToUpper(mode)
+	if f.Modes == nil {
+		f.Modes = make(map[string]bool)
+	}
+	if f.BlockModes == nil {
+		f.BlockModes = make(map[string]bool)
+	}
 	if enabled {
 		f.Modes[mode] = true
-		f.AllModes = false // Once we set specific modes, we're not accepting all
-	} else {
-		delete(f.Modes, mode)
-		if len(f.Modes) == 0 {
-			// No specific modes remain; revert to "accept all" so users don't get wedged.
-			f.AllModes = true
-		}
+		delete(f.BlockModes, mode)
+		f.BlockAllModes = false
+		f.AllModes = len(f.Modes) == 0
+		return
 	}
+	delete(f.Modes, mode)
+	f.BlockModes[mode] = true
+	f.BlockAllModes = false
+	f.AllModes = len(f.Modes) == 0
 }
 
 // AddCallsignPattern adds a callsign pattern to the filter.
@@ -364,12 +425,23 @@ func (f *Filter) SetDXContinent(cont string, enabled bool) {
 	if !IsSupportedContinent(cont) {
 		return
 	}
+	if f.DXContinents == nil {
+		f.DXContinents = make(map[string]bool)
+	}
+	if f.BlockDXContinents == nil {
+		f.BlockDXContinents = make(map[string]bool)
+	}
 	if enabled {
 		f.DXContinents[cont] = true
-		f.AllDXContinents = false
+		delete(f.BlockDXContinents, cont)
+		f.BlockAllDXContinents = false
+		f.AllDXContinents = len(f.DXContinents) == 0
 		return
 	}
 	delete(f.DXContinents, cont)
+	f.BlockDXContinents[cont] = true
+	f.BlockAllDXContinents = false
+	f.AllDXContinents = len(f.DXContinents) == 0
 }
 
 // SetDEContinent enables or disables filtering for a specific spotter continent.
@@ -378,12 +450,23 @@ func (f *Filter) SetDEContinent(cont string, enabled bool) {
 	if !IsSupportedContinent(cont) {
 		return
 	}
+	if f.DEContinents == nil {
+		f.DEContinents = make(map[string]bool)
+	}
+	if f.BlockDEContinents == nil {
+		f.BlockDEContinents = make(map[string]bool)
+	}
 	if enabled {
 		f.DEContinents[cont] = true
-		f.AllDEContinents = false
+		delete(f.BlockDEContinents, cont)
+		f.BlockAllDEContinents = false
+		f.AllDEContinents = len(f.DEContinents) == 0
 		return
 	}
 	delete(f.DEContinents, cont)
+	f.BlockDEContinents[cont] = true
+	f.BlockAllDEContinents = false
+	f.AllDEContinents = len(f.DEContinents) == 0
 }
 
 // SetDXZone enables or disables filtering for a specific DX CQ zone (1-40).
@@ -391,15 +474,23 @@ func (f *Filter) SetDXZone(zone int, enabled bool) {
 	if !IsSupportedZone(zone) {
 		return
 	}
+	if f.DXZones == nil {
+		f.DXZones = make(map[int]bool)
+	}
+	if f.BlockDXZones == nil {
+		f.BlockDXZones = make(map[int]bool)
+	}
 	if enabled {
 		f.DXZones[zone] = true
-		f.AllDXZones = false
+		delete(f.BlockDXZones, zone)
+		f.BlockAllDXZones = false
+		f.AllDXZones = len(f.DXZones) == 0
 		return
 	}
 	delete(f.DXZones, zone)
-	if len(f.DXZones) == 0 {
-		f.AllDXZones = true
-	}
+	f.BlockDXZones[zone] = true
+	f.BlockAllDXZones = false
+	f.AllDXZones = len(f.DXZones) == 0
 }
 
 // SetDEZone enables or disables filtering for a specific spotter CQ zone (1-40).
@@ -407,15 +498,23 @@ func (f *Filter) SetDEZone(zone int, enabled bool) {
 	if !IsSupportedZone(zone) {
 		return
 	}
+	if f.DEZones == nil {
+		f.DEZones = make(map[int]bool)
+	}
+	if f.BlockDEZones == nil {
+		f.BlockDEZones = make(map[int]bool)
+	}
 	if enabled {
 		f.DEZones[zone] = true
-		f.AllDEZones = false
+		delete(f.BlockDEZones, zone)
+		f.BlockAllDEZones = false
+		f.AllDEZones = len(f.DEZones) == 0
 		return
 	}
 	delete(f.DEZones, zone)
-	if len(f.DEZones) == 0 {
-		f.AllDEZones = true
-	}
+	f.BlockDEZones[zone] = true
+	f.BlockAllDEZones = false
+	f.AllDEZones = len(f.DEZones) == 0
 }
 
 // SetDXDXCC enables or disables filtering for a specific DX ADIF/DXCC code.
@@ -423,15 +522,23 @@ func (f *Filter) SetDXDXCC(code int, enabled bool) {
 	if code <= 0 {
 		return
 	}
+	if f.DXDXCC == nil {
+		f.DXDXCC = make(map[int]bool)
+	}
+	if f.BlockDXDXCC == nil {
+		f.BlockDXDXCC = make(map[int]bool)
+	}
 	if enabled {
 		f.DXDXCC[code] = true
-		f.AllDXDXCC = false
+		delete(f.BlockDXDXCC, code)
+		f.BlockAllDXDXCC = false
+		f.AllDXDXCC = len(f.DXDXCC) == 0
 		return
 	}
 	delete(f.DXDXCC, code)
-	if len(f.DXDXCC) == 0 {
-		f.AllDXDXCC = true
-	}
+	f.BlockDXDXCC[code] = true
+	f.BlockAllDXDXCC = false
+	f.AllDXDXCC = len(f.DXDXCC) == 0
 }
 
 // SetDEDXCC enables or disables filtering for a specific DE ADIF/DXCC code.
@@ -439,15 +546,23 @@ func (f *Filter) SetDEDXCC(code int, enabled bool) {
 	if code <= 0 {
 		return
 	}
+	if f.DEDXCC == nil {
+		f.DEDXCC = make(map[int]bool)
+	}
+	if f.BlockDEDXCC == nil {
+		f.BlockDEDXCC = make(map[int]bool)
+	}
 	if enabled {
 		f.DEDXCC[code] = true
-		f.AllDEDXCC = false
+		delete(f.BlockDEDXCC, code)
+		f.BlockAllDEDXCC = false
+		f.AllDEDXCC = len(f.DEDXCC) == 0
 		return
 	}
 	delete(f.DEDXCC, code)
-	if len(f.DEDXCC) == 0 {
-		f.AllDEDXCC = true
-	}
+	f.BlockDEDXCC[code] = true
+	f.BlockAllDEDXCC = false
+	f.AllDEDXCC = len(f.DEDXCC) == 0
 }
 
 // ClearCallsignPatterns removes all callsign filters.
@@ -480,35 +595,31 @@ func (f *Filter) SetConfidenceSymbol(symbol string, enabled bool) {
 	if canonical == "" {
 		return
 	}
-	if enabled {
-		if f.Confidence == nil {
-			f.Confidence = make(map[string]bool)
-		}
-		f.Confidence[canonical] = true
-		f.AllConfidence = false
-		return
-	}
 	if f.Confidence == nil {
 		f.Confidence = make(map[string]bool)
 	}
-	// If we're transitioning from the default "accept everything" state,
-	// seed the whitelist with every glyph and then remove the requested one.
-	if f.AllConfidence {
-		for _, symbol := range SupportedConfidenceSymbols {
-			f.Confidence[symbol] = true
-		}
-		f.AllConfidence = false
+	if f.BlockConfidence == nil {
+		f.BlockConfidence = make(map[string]bool)
+	}
+	if enabled {
+		f.Confidence[canonical] = true
+		delete(f.BlockConfidence, canonical)
+		f.BlockAllConfidence = false
+		f.AllConfidence = len(f.Confidence) == 0
+		return
 	}
 	delete(f.Confidence, canonical)
-	if len(f.Confidence) == 0 {
-		f.AllConfidence = true
-	}
+	f.BlockConfidence[canonical] = true
+	f.BlockAllConfidence = false
+	f.AllConfidence = len(f.Confidence) == 0
 }
 
 // ResetConfidence disables confidence-based filtering.
 func (f *Filter) ResetConfidence() {
 	f.Confidence = make(map[string]bool)
+	f.BlockConfidence = make(map[string]bool)
 	f.AllConfidence = true
+	f.BlockAllConfidence = false
 	f.LegacyMinConfidence = 0
 }
 
@@ -543,6 +654,8 @@ func (f *Filter) BeaconsEnabled() bool {
 func (f *Filter) ResetBands() {
 	f.Bands = make(map[string]bool)
 	f.AllBands = true
+	f.BlockBands = make(map[string]bool)
+	f.BlockAllBands = false
 }
 
 // ResetModes clears all mode filters and accepts all modes.
@@ -559,6 +672,8 @@ func (f *Filter) ResetBands() {
 func (f *Filter) ResetModes() {
 	f.Modes = make(map[string]bool)
 	f.AllModes = true
+	f.BlockModes = make(map[string]bool)
+	f.BlockAllModes = false
 }
 
 // Reset clears all filters and returns to default state (accept everything).
@@ -594,36 +709,48 @@ func (f *Filter) Reset() {
 func (f *Filter) ResetDXContinents() {
 	f.DXContinents = make(map[string]bool)
 	f.AllDXContinents = true
+	f.BlockDXContinents = make(map[string]bool)
+	f.BlockAllDXContinents = false
 }
 
 // ResetDEContinents clears spotter continent filters and accepts all.
 func (f *Filter) ResetDEContinents() {
 	f.DEContinents = make(map[string]bool)
 	f.AllDEContinents = true
+	f.BlockDEContinents = make(map[string]bool)
+	f.BlockAllDEContinents = false
 }
 
 // ResetDXZones clears DX CQ zone filters and accepts all.
 func (f *Filter) ResetDXZones() {
 	f.DXZones = make(map[int]bool)
 	f.AllDXZones = true
+	f.BlockDXZones = make(map[int]bool)
+	f.BlockAllDXZones = false
 }
 
 // ResetDEZones clears spotter CQ zone filters and accepts all.
 func (f *Filter) ResetDEZones() {
 	f.DEZones = make(map[int]bool)
 	f.AllDEZones = true
+	f.BlockDEZones = make(map[int]bool)
+	f.BlockAllDEZones = false
 }
 
 // ResetDXDXCC clears DX ADIF/DXCC filters and accepts all.
 func (f *Filter) ResetDXDXCC() {
 	f.DXDXCC = make(map[int]bool)
+	f.BlockDXDXCC = make(map[int]bool)
 	f.AllDXDXCC = true
+	f.BlockAllDXDXCC = false
 }
 
 // ResetDEDXCC clears DE ADIF/DXCC filters and accepts all.
 func (f *Filter) ResetDEDXCC() {
 	f.DEDXCC = make(map[int]bool)
+	f.BlockDEDXCC = make(map[int]bool)
 	f.AllDEDXCC = true
+	f.BlockAllDEDXCC = false
 }
 
 // Matches returns true if the spot passes all active filters.
@@ -653,74 +780,44 @@ func (f *Filter) Matches(s *spot.Spot) bool {
 
 	modeUpper := strings.ToUpper(strings.TrimSpace(s.Mode))
 
-	// Check band filter
-	if !f.AllBands {
-		spotBand := spot.NormalizeBand(s.Band)
-		if spotBand == "" || !f.Bands[spotBand] {
-			return false // Band not in enabled list
-		}
+	// Band and mode filters: blocklist wins, allowlist optional.
+	if !passesStringFilter(spot.NormalizeBand(s.Band), f.Bands, f.BlockBands, f.AllBands, f.BlockAllBands) {
+		return false
+	}
+	if !passesStringFilter(modeUpper, f.Modes, f.BlockModes, f.AllModes, f.BlockAllModes) {
+		return false
 	}
 
-	// Check mode filter
-	if !f.AllModes {
-		if !f.Modes[s.Mode] {
-			return false // Mode not in enabled list
-		}
+	// DX/DE continent filters.
+	if !passesStringFilter(strings.ToUpper(strings.TrimSpace(s.DXMetadata.Continent)), f.DXContinents, f.BlockDXContinents, f.AllDXContinents, f.BlockAllDXContinents) {
+		return false
+	}
+	if !passesStringFilter(strings.ToUpper(strings.TrimSpace(s.DEMetadata.Continent)), f.DEContinents, f.BlockDEContinents, f.AllDEContinents, f.BlockAllDEContinents) {
+		return false
 	}
 
-	// Check DX/DE continent filters
-	if !f.AllDXContinents {
-		cont := strings.ToUpper(strings.TrimSpace(s.DXMetadata.Continent))
-		if cont == "" || !f.DXContinents[cont] {
-			return false
-		}
+	// DX/DE CQ zones.
+	if !passesIntFilter(s.DXMetadata.CQZone, f.DXZones, f.BlockDXZones, f.AllDXZones, f.BlockAllDXZones, IsSupportedZone) {
+		return false
 	}
-	if !f.AllDEContinents {
-		cont := strings.ToUpper(strings.TrimSpace(s.DEMetadata.Continent))
-		if cont == "" || !f.DEContinents[cont] {
-			return false
-		}
+	if !passesIntFilter(s.DEMetadata.CQZone, f.DEZones, f.BlockDEZones, f.AllDEZones, f.BlockAllDEZones, IsSupportedZone) {
+		return false
 	}
 
-	// Check DX/DE CQ zone filters
-	if !f.AllDXZones {
-		if s.DXMetadata.CQZone < minCQZone || s.DXMetadata.CQZone > maxCQZone || !f.DXZones[s.DXMetadata.CQZone] {
-			return false
-		}
+	// DX/DE ADIF (DXCC) filters.
+	if !passesIntFilter(s.DXMetadata.ADIF, f.DXDXCC, f.BlockDXDXCC, f.AllDXDXCC, f.BlockAllDXDXCC, nil) {
+		return false
 	}
-	if !f.AllDEZones {
-		if s.DEMetadata.CQZone < minCQZone || s.DEMetadata.CQZone > maxCQZone || !f.DEZones[s.DEMetadata.CQZone] {
-			return false
-		}
+	if !passesIntFilter(s.DEMetadata.ADIF, f.DEDXCC, f.BlockDEDXCC, f.AllDEDXCC, f.BlockAllDEDXCC, nil) {
+		return false
 	}
 
-	// Check DX/DE ADIF (DXCC) filters.
-	if !f.AllDXDXCC && len(f.DXDXCC) > 0 {
-		if s.DXMetadata.ADIF <= 0 || !f.DXDXCC[s.DXMetadata.ADIF] {
-			return false
-		}
+	// 2-character grid filters.
+	if !passesStringFilter(grid2Prefix(s.DXMetadata.Grid), f.DXGrid2Prefixes, f.BlockDXGrid2, f.AllDXGrid2, f.BlockAllDXGrid2) {
+		return false
 	}
-	if !f.AllDEDXCC && len(f.DEDXCC) > 0 {
-		if s.DEMetadata.ADIF <= 0 || !f.DEDXCC[s.DEMetadata.ADIF] {
-			return false
-		}
-	}
-
-	// Check 2-character grid whitelists. Each applies only to its respective
-	// DX/DE grid when that grid is exactly two characters long; longer grids
-	// are ignored by this filter.
-	if !f.AllDXGrid2 && len(f.DXGrid2Prefixes) > 0 {
-		dxPrefix := grid2Prefix(s.DXMetadata.Grid)
-		// If grid is missing or not whitelisted, drop the spot.
-		if dxPrefix == "" || !f.DXGrid2Prefixes[dxPrefix] {
-			return false
-		}
-	}
-	if !f.AllDEGrid2 && len(f.DEGrid2Prefixes) > 0 {
-		dePrefix := grid2Prefix(s.DEMetadata.Grid)
-		if dePrefix == "" || !f.DEGrid2Prefixes[dePrefix] {
-			return false
-		}
+	if !passesStringFilter(grid2Prefix(s.DEMetadata.Grid), f.DEGrid2Prefixes, f.BlockDEGrid2, f.AllDEGrid2, f.BlockAllDEGrid2) {
+		return false
 	}
 
 	// Check callsign patterns (if any are set)
@@ -737,14 +834,60 @@ func (f *Filter) Matches(s *spot.Spot) bool {
 		}
 	}
 
-	if !f.AllConfidence && len(f.Confidence) > 0 && !isConfidenceExemptMode(modeUpper) {
+	if !isConfidenceExemptMode(modeUpper) {
 		symbol := normalizeConfidenceSymbol(s.Confidence)
-		if symbol == "" || !f.Confidence[symbol] {
+		if !passesStringFilter(symbol, f.Confidence, f.BlockConfidence, f.AllConfidence, f.BlockAllConfidence) {
 			return false
 		}
 	}
 
 	return true // Passed all filters
+}
+
+// passesStringFilter evaluates a token against allow/block lists with deny-first semantics.
+func passesStringFilter(token string, allow map[string]bool, block map[string]bool, allowAll, blockAll bool) bool {
+	if blockAll {
+		return false
+	}
+	token = strings.ToUpper(strings.TrimSpace(token))
+	if len(block) > 0 && block[token] {
+		return false
+	}
+	if !allowAll && len(allow) == 0 {
+		return false
+	}
+	if len(allow) > 0 {
+		if token == "" || !allow[token] {
+			return false
+		}
+	}
+	return true
+}
+
+// passesIntFilter evaluates an integer token against allow/block lists with deny-first semantics.
+func passesIntFilter(token int, allow map[int]bool, block map[int]bool, allowAll, blockAll bool, validator func(int) bool) bool {
+	if blockAll {
+		return false
+	}
+	if len(block) > 0 && block[token] {
+		return false
+	}
+	if validator != nil && !validator(token) {
+		if len(allow) > 0 || !allowAll {
+			return false
+		}
+		// If allowlist is empty and allowAll is true, an unknown token passes unless explicitly blocked.
+		return true
+	}
+	if !allowAll && len(allow) == 0 {
+		return false
+	}
+	if len(allow) > 0 {
+		if !allow[token] {
+			return false
+		}
+	}
+	return true
 }
 
 // matchesCallsignPattern checks if a callsign matches a pattern with wildcards.
@@ -1111,68 +1254,101 @@ func (f *Filter) normalizeDefaults() {
 	if f.Bands == nil {
 		f.Bands = make(map[string]bool)
 	}
+	if f.BlockBands == nil {
+		f.BlockBands = make(map[string]bool)
+	}
 	if f.Modes == nil {
 		f.Modes = make(map[string]bool)
+	}
+	if f.BlockModes == nil {
+		f.BlockModes = make(map[string]bool)
 	}
 	if f.Confidence == nil {
 		f.Confidence = make(map[string]bool)
 	}
+	if f.BlockConfidence == nil {
+		f.BlockConfidence = make(map[string]bool)
+	}
 	if f.DXContinents == nil {
 		f.DXContinents = make(map[string]bool)
+	}
+	if f.BlockDXContinents == nil {
+		f.BlockDXContinents = make(map[string]bool)
 	}
 	if f.DEContinents == nil {
 		f.DEContinents = make(map[string]bool)
 	}
+	if f.BlockDEContinents == nil {
+		f.BlockDEContinents = make(map[string]bool)
+	}
 	if f.DXZones == nil {
 		f.DXZones = make(map[int]bool)
+	}
+	if f.BlockDXZones == nil {
+		f.BlockDXZones = make(map[int]bool)
 	}
 	if f.DEZones == nil {
 		f.DEZones = make(map[int]bool)
 	}
+	if f.BlockDEZones == nil {
+		f.BlockDEZones = make(map[int]bool)
+	}
 	if f.DXGrid2Prefixes == nil {
 		f.DXGrid2Prefixes = make(map[string]bool)
+	}
+	if f.BlockDXGrid2 == nil {
+		f.BlockDXGrid2 = make(map[string]bool)
 	}
 	if f.DEGrid2Prefixes == nil {
 		f.DEGrid2Prefixes = make(map[string]bool)
 	}
+	if f.BlockDEGrid2 == nil {
+		f.BlockDEGrid2 = make(map[string]bool)
+	}
 	if f.DXDXCC == nil {
 		f.DXDXCC = make(map[int]bool)
+	}
+	if f.BlockDXDXCC == nil {
+		f.BlockDXDXCC = make(map[int]bool)
 	}
 	if f.DEDXCC == nil {
 		f.DEDXCC = make(map[int]bool)
 	}
+	if f.BlockDEDXCC == nil {
+		f.BlockDEDXCC = make(map[int]bool)
+	}
 
-	if len(f.Bands) == 0 && !f.AllBands {
+	if len(f.Bands) == 0 {
 		f.AllBands = true
 	}
-	if len(f.Modes) == 0 && !f.AllModes {
+	if len(f.Modes) == 0 {
 		f.AllModes = true
 	}
-	if len(f.Confidence) == 0 && !f.AllConfidence {
+	if len(f.Confidence) == 0 {
 		f.AllConfidence = true
 	}
-	if len(f.DXContinents) == 0 && !f.AllDXContinents {
+	if len(f.DXContinents) == 0 {
 		f.AllDXContinents = true
 	}
-	if len(f.DEContinents) == 0 && !f.AllDEContinents {
+	if len(f.DEContinents) == 0 {
 		f.AllDEContinents = true
 	}
-	if len(f.DXZones) == 0 && !f.AllDXZones {
+	if len(f.DXZones) == 0 {
 		f.AllDXZones = true
 	}
-	if len(f.DEZones) == 0 && !f.AllDEZones {
+	if len(f.DEZones) == 0 {
 		f.AllDEZones = true
 	}
-	if len(f.DXGrid2Prefixes) == 0 && !f.AllDXGrid2 {
+	if len(f.DXGrid2Prefixes) == 0 {
 		f.AllDXGrid2 = true
 	}
-	if len(f.DEGrid2Prefixes) == 0 && !f.AllDEGrid2 {
+	if len(f.DEGrid2Prefixes) == 0 {
 		f.AllDEGrid2 = true
 	}
-	if len(f.DXDXCC) == 0 && !f.AllDXDXCC {
+	if len(f.DXDXCC) == 0 {
 		f.AllDXDXCC = true
 	}
-	if len(f.DEDXCC) == 0 && !f.AllDEDXCC {
+	if len(f.DEDXCC) == 0 {
 		f.AllDEDXCC = true
 	}
 }
@@ -1185,15 +1361,23 @@ func (f *Filter) SetDXGrid2Prefix(grid string, enabled bool) {
 	if token == "" {
 		return
 	}
+	if f.DXGrid2Prefixes == nil {
+		f.DXGrid2Prefixes = make(map[string]bool)
+	}
+	if f.BlockDXGrid2 == nil {
+		f.BlockDXGrid2 = make(map[string]bool)
+	}
 	if enabled {
 		f.DXGrid2Prefixes[token] = true
-		f.AllDXGrid2 = false
+		delete(f.BlockDXGrid2, token)
+		f.BlockAllDXGrid2 = false
+		f.AllDXGrid2 = len(f.DXGrid2Prefixes) == 0
 		return
 	}
 	delete(f.DXGrid2Prefixes, token)
-	if len(f.DXGrid2Prefixes) == 0 {
-		f.AllDXGrid2 = true
-	}
+	f.BlockDXGrid2[token] = true
+	f.BlockAllDXGrid2 = false
+	f.AllDXGrid2 = len(f.DXGrid2Prefixes) == 0
 }
 
 // SetDEGrid2Prefix enables or disables a specific 2-character DE grid prefix.
@@ -1202,27 +1386,39 @@ func (f *Filter) SetDEGrid2Prefix(grid string, enabled bool) {
 	if token == "" {
 		return
 	}
+	if f.DEGrid2Prefixes == nil {
+		f.DEGrid2Prefixes = make(map[string]bool)
+	}
+	if f.BlockDEGrid2 == nil {
+		f.BlockDEGrid2 = make(map[string]bool)
+	}
 	if enabled {
 		f.DEGrid2Prefixes[token] = true
-		f.AllDEGrid2 = false
+		delete(f.BlockDEGrid2, token)
+		f.BlockAllDEGrid2 = false
+		f.AllDEGrid2 = len(f.DEGrid2Prefixes) == 0
 		return
 	}
 	delete(f.DEGrid2Prefixes, token)
-	if len(f.DEGrid2Prefixes) == 0 {
-		f.AllDEGrid2 = true
-	}
+	f.BlockDEGrid2[token] = true
+	f.BlockAllDEGrid2 = false
+	f.AllDEGrid2 = len(f.DEGrid2Prefixes) == 0
 }
 
 // ResetDXGrid2 clears the DX 2-character grid whitelist and accepts all.
 func (f *Filter) ResetDXGrid2() {
 	f.DXGrid2Prefixes = make(map[string]bool)
 	f.AllDXGrid2 = true
+	f.BlockDXGrid2 = make(map[string]bool)
+	f.BlockAllDXGrid2 = false
 }
 
 // ResetDEGrid2 clears the DE 2-character grid whitelist and accepts all.
 func (f *Filter) ResetDEGrid2() {
 	f.DEGrid2Prefixes = make(map[string]bool)
 	f.AllDEGrid2 = true
+	f.BlockDEGrid2 = make(map[string]bool)
+	f.BlockAllDEGrid2 = false
 }
 
 func normalizeGrid2Token(grid string) string {

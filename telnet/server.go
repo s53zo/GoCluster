@@ -583,21 +583,21 @@ func (c *Client) handleFilterCommand(cmd string) string {
 				}
 				return fmt.Sprintf("Beacon spots: %s\n", status)
 			case "dxcont":
-				return fmt.Sprintf("DX continents: %s\n", formatContinentStates(c.filter.AllDXContinents, c.filter.DXContinents))
+				return fmt.Sprintf("DX continents: %s\n", formatAllowBlockStrings(c.filter.AllDXContinents, c.filter.BlockAllDXContinents, c.filter.DXContinents, c.filter.BlockDXContinents))
 			case "decont":
-				return fmt.Sprintf("DE continents: %s\n", formatContinentStates(c.filter.AllDEContinents, c.filter.DEContinents))
+				return fmt.Sprintf("DE continents: %s\n", formatAllowBlockStrings(c.filter.AllDEContinents, c.filter.BlockAllDEContinents, c.filter.DEContinents, c.filter.BlockDEContinents))
 			case "dxzone":
-				return fmt.Sprintf("DX zones: %s\n", formatZoneStates(c.filter.AllDXZones, c.filter.DXZones))
+				return fmt.Sprintf("DX zones: %s\n", formatAllowBlockInts(c.filter.AllDXZones, c.filter.BlockAllDXZones, c.filter.DXZones, c.filter.BlockDXZones))
 			case "dezone":
-				return fmt.Sprintf("DE zones: %s\n", formatZoneStates(c.filter.AllDEZones, c.filter.DEZones))
+				return fmt.Sprintf("DE zones: %s\n", formatAllowBlockInts(c.filter.AllDEZones, c.filter.BlockAllDEZones, c.filter.DEZones, c.filter.BlockDEZones))
 			case "dxgrid2":
-				return fmt.Sprintf("DX 2-character grids: %s\n", formatGrid2State(c.filter.AllDXGrid2, c.filter.DXGrid2Prefixes))
+				return fmt.Sprintf("DX 2-character grids: %s\n", formatAllowBlockStrings(c.filter.AllDXGrid2, c.filter.BlockAllDXGrid2, c.filter.DXGrid2Prefixes, c.filter.BlockDXGrid2))
 			case "degrid2":
-				return fmt.Sprintf("DE 2-character grids: %s\n", formatGrid2State(c.filter.AllDEGrid2, c.filter.DEGrid2Prefixes))
+				return fmt.Sprintf("DE 2-character grids: %s\n", formatAllowBlockStrings(c.filter.AllDEGrid2, c.filter.BlockAllDEGrid2, c.filter.DEGrid2Prefixes, c.filter.BlockDEGrid2))
 			case "dxdxcc":
-				return fmt.Sprintf("DX DXCC: %s\n", formatDXCCStates(c.filter.AllDXDXCC, c.filter.DXDXCC))
+				return fmt.Sprintf("DX DXCC: %s\n", formatAllowBlockInts(c.filter.AllDXDXCC, c.filter.BlockAllDXDXCC, c.filter.DXDXCC, c.filter.BlockDXDXCC))
 			case "dedxcc":
-				return fmt.Sprintf("DE DXCC: %s\n", formatDXCCStates(c.filter.AllDEDXCC, c.filter.DEDXCC))
+				return fmt.Sprintf("DE DXCC: %s\n", formatAllowBlockInts(c.filter.AllDEDXCC, c.filter.BlockAllDEDXCC, c.filter.DEDXCC, c.filter.BlockDEDXCC))
 			}
 		}
 
@@ -906,8 +906,10 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			if strings.EqualFold(bandArgs, "ALL") {
 				c.filter.ResetBands()
+				c.filter.BlockAllBands = true
+				c.filter.AllBands = false
 				c.saveFilter()
-				return "Band filters cleared\n"
+				return "All bands blocked\n"
 			}
 			bands := parseBandList(bandArgs)
 			if len(bands) == 0 {
@@ -945,8 +947,10 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			if strings.EqualFold(modeArgs, "ALL") {
 				c.filter.ResetModes()
+				c.filter.BlockAllModes = true
+				c.filter.AllModes = false
 				c.saveFilter()
-				return "Mode filters cleared\n"
+				return "All modes blocked\n"
 			}
 			modes := parseModeList(modeArgs)
 			if len(modes) == 0 {
@@ -972,8 +976,10 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetConfidence()
+				c.filter.BlockAllConfidence = true
+				c.filter.AllConfidence = false
 				c.saveFilter()
-				return "Confidence filter cleared\n"
+				return "All confidence symbols blocked (non-exempt modes)\n"
 			}
 			symbols := parseConfidenceList(value)
 			if len(symbols) == 0 {
@@ -999,8 +1005,10 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDXContinents()
+				c.filter.BlockAllDXContinents = true
+				c.filter.AllDXContinents = false
 				c.saveFilter()
-				return "DX continent filters cleared\n"
+				return "All DX continents blocked\n"
 			}
 			continents := parseContinentList(value)
 			if len(continents) == 0 {
@@ -1021,8 +1029,10 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDEContinents()
+				c.filter.BlockAllDEContinents = true
+				c.filter.AllDEContinents = false
 				c.saveFilter()
-				return "DE continent filters cleared\n"
+				return "All DE continents blocked\n"
 			}
 			continents := parseContinentList(value)
 			if len(continents) == 0 {
@@ -1043,8 +1053,10 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDXZones()
+				c.filter.BlockAllDXZones = true
+				c.filter.AllDXZones = false
 				c.saveFilter()
-				return "DX zone filters cleared\n"
+				return "All DX zones blocked\n"
 			}
 			zones := parseZoneList(value)
 			if len(zones) == 0 {
@@ -1065,8 +1077,10 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDEZones()
+				c.filter.BlockAllDEZones = true
+				c.filter.AllDEZones = false
 				c.saveFilter()
-				return "DE zone filters cleared\n"
+				return "All DE zones blocked\n"
 			}
 			zones := parseZoneList(value)
 			if len(zones) == 0 {
@@ -1087,8 +1101,10 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDXDXCC()
+				c.filter.BlockAllDXDXCC = true
+				c.filter.AllDXDXCC = false
 				c.saveFilter()
-				return "DX DXCC filters cleared\n"
+				return "All DX DXCCs blocked\n"
 			}
 			codes, invalid := parseDXCCList(value)
 			if len(codes) == 0 {
@@ -1109,8 +1125,10 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDEDXCC()
+				c.filter.BlockAllDEDXCC = true
+				c.filter.AllDEDXCC = false
 				c.saveFilter()
-				return "DE DXCC filters cleared\n"
+				return "All DE DXCCs blocked\n"
 			}
 			codes, invalid := parseDXCCList(value)
 			if len(codes) == 0 {
@@ -1131,8 +1149,10 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDXGrid2()
+				c.filter.BlockAllDXGrid2 = true
+				c.filter.AllDXGrid2 = false
 				c.saveFilter()
-				return "DX 2-character grid filters cleared\n"
+				return "All DX 2-character grids blocked\n"
 			}
 			gridList, invalidTokens := parseGrid2List(value)
 			if len(gridList) == 0 {
@@ -1153,8 +1173,10 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDEGrid2()
+				c.filter.BlockAllDEGrid2 = true
+				c.filter.AllDEGrid2 = false
 				c.saveFilter()
-				return "DE 2-character grid filters cleared\n"
+				return "All DE 2-character grids blocked\n"
 			}
 			gridList, invalidTokens := parseGrid2List(value)
 			if len(gridList) == 0 {
@@ -1427,6 +1449,62 @@ func formatDXCCStates(all bool, enabled map[int]bool) string {
 		parts = append(parts, fmt.Sprintf("%d", code))
 	}
 	return strings.Join(parts, ", ")
+}
+
+func keysString(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func keysInt(m map[int]bool) []string {
+	vals := make([]int, 0, len(m))
+	for k := range m {
+		vals = append(vals, k)
+	}
+	sort.Ints(vals)
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		out = append(out, fmt.Sprintf("%d", v))
+	}
+	return out
+}
+
+func formatAllowBlockStrings(allowAll, blockAll bool, allow, block map[string]bool) string {
+	if blockAll {
+		return "BLOCK ALL"
+	}
+	allowStr := "ALL"
+	if len(allow) > 0 {
+		allowStr = strings.Join(keysString(allow), ", ")
+	} else if !allowAll {
+		allowStr = "NONE"
+	}
+	blockStr := "NONE"
+	if len(block) > 0 {
+		blockStr = strings.Join(keysString(block), ", ")
+	}
+	return fmt.Sprintf("allow=%s block=%s", allowStr, blockStr)
+}
+
+func formatAllowBlockInts(allowAll, blockAll bool, allow, block map[int]bool) string {
+	if blockAll {
+		return "BLOCK ALL"
+	}
+	allowStr := "ALL"
+	if len(allow) > 0 {
+		allowStr = strings.Join(keysInt(allow), ", ")
+	} else if !allowAll {
+		allowStr = "NONE"
+	}
+	blockStr := "NONE"
+	if len(block) > 0 {
+		blockStr = strings.Join(keysInt(block), ", ")
+	}
+	return fmt.Sprintf("allow=%s block=%s", allowStr, blockStr)
 }
 
 func joinZones(zones []int) string {
