@@ -108,6 +108,7 @@ type Client struct {
 	address   string          // Client's IP address
 	spotChan  chan *spot.Spot // Buffered channel for spot delivery (configurable capacity)
 	filter    *filter.Filter  // Personal spot filter (band, mode, callsign)
+	dropCount uint64          // Count of spots dropped for this client due to backpressure
 }
 
 func (c *Client) saveFilter() error {
@@ -368,7 +369,10 @@ func (s *Server) deliverJob(job *broadcastJob) {
 		case client.spotChan <- job.spot:
 		default:
 			drops := atomic.AddUint64(&s.metrics.clientDrops, 1)
-			log.Printf("Client %s spot channel full, dropping spot (total client drops=%d)", client.callsign, drops)
+			clientDrops := atomic.AddUint64(&client.dropCount, 1)
+			if shouldLogQueueDrop(drops) {
+				log.Printf("Client %s spot channel full, dropping spot (client drops=%d total=%d)", client.callsign, clientDrops, drops)
+			}
 		}
 	}
 }
