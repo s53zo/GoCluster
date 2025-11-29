@@ -447,7 +447,7 @@ func (s *Server) handleClient(conn net.Conn) {
 
 	// Send welcome message
 	client.Send(s.welcomeMessage)
-	client.Send("Enter your callsign: ")
+	client.Send("Enter your callsign:\r\n")
 
 	// Read callsign
 	callsign, err := client.ReadLine()
