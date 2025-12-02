@@ -1,6 +1,7 @@
 package spot
 
 import (
+	"dxcluster/bandmap"
 	"log"
 	"math"
 	"strings"
@@ -24,6 +25,9 @@ type CorrectionSettings struct {
 	DebugLog bool
 	// DebugLogger writes debug lines; falls back to standard log when nil.
 	DebugLogger *log.Logger
+	// Frequency guard to avoid merging nearby strong signals.
+	FreqGuardMinSeparationKHz float64
+	FreqGuardRunnerUpRatio    float64
 	// Quality-based anchors (frequency-binned call scores).
 	QualityBinHz            int
 	QualityGoodThreshold    int
@@ -193,7 +197,7 @@ func SetFrequencyToleranceHz(hz float64) {
 //
 // Parameters:
 //   - subject: the spot we are evaluating.
-//   - others: a slice of other recent spots (e.g., from a ring buffer or stat tracker).
+//   - others: a slice of other recent spots (e.g., from a spatial index). Frequencies are in Hz.
 //   - settings: consensus thresholds (min reporters, freshness).
 //   - now: the time reference used to evaluate recency. Passing it as an argument
 //     rather than calling time.Now() simplifies deterministic testing.
@@ -202,7 +206,7 @@ func SetFrequencyToleranceHz(hz float64) {
 //   - correctedCall: the most likely callsign if consensus is met.
 //   - supporters: how many unique spotters contributed to the correction.
 //   - ok: true if a correction is recommended, false otherwise.
-func SuggestCallCorrection(subject *Spot, others []*Spot, settings CorrectionSettings, now time.Time) (correctedCall string, supporters int, correctedConfidence int, subjectConfidence int, totalReporters int, ok bool) {
+func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings CorrectionSettings, now time.Time) (correctedCall string, supporters int, correctedConfidence int, subjectConfidence int, totalReporters int, ok bool) {
 	if subject == nil {
 		return "", 0, 0, 0, 0, false
 	}
@@ -214,12 +218,20 @@ func SuggestCallCorrection(subject *Spot, others []*Spot, settings CorrectionSet
 	}
 	subjectReporter := strings.ToUpper(strings.TrimSpace(subject.DECall))
 	allReporters := map[string]struct{}{}
-	clusterSpots := make([]*Spot, 0, len(others)+1)
-	clusterSpots = append(clusterSpots, subject)
+	clusterSpots := make([]bandmap.SpotEntry, 0, len(others)+1)
+	clusterSpots = append(clusterSpots, bandmap.SpotEntry{
+		Call:    subject.DXCall,
+		Spotter: subject.DECall,
+		Mode:    subject.Mode,
+		FreqHz:  uint32(subject.Frequency*1000 + 0.5),
+		Time:    subject.Time.Unix(),
+		SNR:     subject.Report,
+	})
 
 	type callAggregate struct {
 		reporters map[string]struct{}
 		lastSeen  time.Time
+		lastFreq  float64
 	}
 
 	callStats := make(map[string]*callAggregate)
@@ -231,55 +243,58 @@ func SuggestCallCorrection(subject *Spot, others []*Spot, settings CorrectionSet
 		}
 		return entry
 	}
-	addReporter := func(call, reporter string, seenAt time.Time) {
+	addReporter := func(call, reporter string, seenAt time.Time, freqKHz float64) {
 		entry := ensureCallEntry(call)
 		entry.reporters[reporter] = struct{}{}
 		if seenAt.After(entry.lastSeen) {
 			entry.lastSeen = seenAt
 		}
+		entry.lastFreq = freqKHz
 	}
 
 	subjectAgg := ensureCallEntry(subjectCall)
 	if subjectReporter != "" && passesSNRThreshold(subject, cfg) {
-		addReporter(subjectCall, subjectReporter, subject.Time)
+		addReporter(subjectCall, subjectReporter, subject.Time, subject.Frequency)
 		allReporters[subjectReporter] = struct{}{}
 	}
 	if subjectAgg.lastSeen.IsZero() {
 		subjectAgg.lastSeen = subject.Time
+		subjectAgg.lastFreq = subject.Frequency
 	}
 
-	for _, other := range others {
-		if other == nil {
-			continue
-		}
-		otherCall := strings.ToUpper(strings.TrimSpace(other.DXCall))
+	for _, entry := range others {
+		otherCall := strings.ToUpper(strings.TrimSpace(entry.Call))
 		if otherCall == "" {
 			continue
 		}
-		reporter := strings.ToUpper(strings.TrimSpace(other.DECall))
+		reporter := strings.ToUpper(strings.TrimSpace(entry.Spotter))
 		if reporter == "" {
 			continue
 		}
-		if !passesSNRThreshold(other, cfg) {
+		if !passesSNREntry(entry, cfg) {
 			continue
 		}
-		if math.Abs(other.Frequency-subject.Frequency) > frequencyToleranceKHz {
+		entryFreqKHz := float64(entry.FreqHz) / 1000.0
+		if math.Abs(entryFreqKHz-subject.Frequency) > frequencyToleranceKHz {
 			continue
 		}
-		if now.Sub(other.Time) > cfg.RecencyWindow {
+		seenAt := time.Unix(entry.Time, 0)
+		if now.Sub(seenAt) > cfg.RecencyWindow {
 			continue
 		}
-		// Keep the subject reporter from voting for alternates so a single skimmer cannot outweigh others.
 		if reporter == subjectReporter {
 			if otherCall == subjectCall {
 				allReporters[reporter] = struct{}{}
-				addReporter(otherCall, reporter, other.Time)
+				addReporter(otherCall, reporter, seenAt, entryFreqKHz)
 			}
 			continue
 		}
+		if !strings.EqualFold(entry.Mode, subject.Mode) {
+			continue
+		}
 		allReporters[reporter] = struct{}{}
-		addReporter(otherCall, reporter, other.Time)
-		clusterSpots = append(clusterSpots, other)
+		addReporter(otherCall, reporter, seenAt, entryFreqKHz)
+		clusterSpots = append(clusterSpots, entry)
 	}
 
 	totalReporters = len(allReporters)
@@ -358,7 +373,9 @@ func SuggestCallCorrection(subject *Spot, others []*Spot, settings CorrectionSet
 	bestCount := 0
 	bestConfidence := 0
 	var bestTime time.Time
+	bestFreq := 0.0
 	runnerUp := 0
+	runnerUpFreq := 0.0
 	for _, candidateCall := range callKeys {
 		agg := callStats[candidateCall]
 		if agg == nil {
@@ -368,10 +385,12 @@ func SuggestCallCorrection(subject *Spot, others []*Spot, settings CorrectionSet
 		confidence := count * 100 / totalReporters
 		if count > bestCount || (count == bestCount && agg.lastSeen.After(bestTime)) {
 			runnerUp = bestCount
+			runnerUpFreq = bestFreq
 			bestCall = candidateCall
 			bestCount = count
 			bestConfidence = confidence
 			bestTime = agg.lastSeen
+			bestFreq = agg.lastFreq
 		}
 	}
 
@@ -401,6 +420,14 @@ func SuggestCallCorrection(subject *Spot, others []*Spot, settings CorrectionSet
 	}
 	if bestConfidence < minConf {
 		return "", 0, 0, subjectConfidence, totalReporters, false
+	}
+
+	// Frequency-aware guard: if a nearby runner-up has comparable support, skip correction to avoid merging distinct signals.
+	if runnerUp > 0 {
+		freqSeparation := math.Abs(bestFreq - runnerUpFreq)
+		if freqSeparation >= cfg.FreqGuardMinSeparationKHz && float64(runnerUp) >= cfg.FreqGuardRunnerUpRatio*float64(bestCount) {
+			return "", 0, 0, subjectConfidence, totalReporters, false
+		}
 	}
 
 	updateCallQualityForCluster(bestCall, freqHz, &cfg, clusterSpots)
@@ -444,7 +471,7 @@ func findAnchorForCall(bustedCall string, freqHz float64, mode string, candidate
 }
 
 // updateCallQualityForCluster updates the quality store after a resolved cluster.
-func updateCallQualityForCluster(winnerCall string, freqHz float64, cfg *CorrectionSettings, clusterSpots []*Spot) {
+func updateCallQualityForCluster(winnerCall string, freqHz float64, cfg *CorrectionSettings, clusterSpots []bandmap.SpotEntry) {
 	if cfg == nil || winnerCall == "" || len(clusterSpots) == 0 {
 		return
 	}
@@ -452,10 +479,7 @@ func updateCallQualityForCluster(winnerCall string, freqHz float64, cfg *Correct
 
 	distinct := make(map[string]struct{})
 	for _, s := range clusterSpots {
-		if s == nil {
-			continue
-		}
-		call := strings.ToUpper(strings.TrimSpace(s.DXCall))
+		call := strings.ToUpper(strings.TrimSpace(s.Call))
 		if call == "" {
 			continue
 		}
@@ -525,6 +549,12 @@ func normalizeCorrectionSettings(settings CorrectionSettings) CorrectionSettings
 		cfg.Strategy = strings.ToLower(strings.TrimSpace(cfg.Strategy))
 	default:
 		cfg.Strategy = "majority"
+	}
+	if cfg.FreqGuardMinSeparationKHz <= 0 {
+		cfg.FreqGuardMinSeparationKHz = 0.1
+	}
+	if cfg.FreqGuardRunnerUpRatio <= 0 {
+		cfg.FreqGuardRunnerUpRatio = 0.5
 	}
 	if cfg.QualityBinHz <= 0 {
 		cfg.QualityBinHz = 1000
@@ -603,6 +633,14 @@ func passesSNRThreshold(s *Spot, cfg CorrectionSettings) bool {
 		return true
 	}
 	return s.Report >= required
+}
+
+func passesSNREntry(e bandmap.SpotEntry, cfg CorrectionSettings) bool {
+	required := minSNRThresholdForMode(e.Mode, cfg)
+	if required <= 0 {
+		return true
+	}
+	return e.SNR >= required
 }
 
 // CorrectionIndex maintains a time-bounded, frequency-bucketed view of recent

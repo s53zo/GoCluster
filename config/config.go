@@ -212,6 +212,10 @@ type CallCorrectionConfig struct {
 	// are compared repeatedly during bursts.
 	DistanceCacheSize       int `yaml:"distance_cache_size"`
 	DistanceCacheTTLSeconds int `yaml:"distance_cache_ttl_seconds"`
+	// Frequency guard: skip corrections when a strong runner-up exists at a different frequency.
+	FreqGuardMinSeparationKHz float64 `yaml:"freq_guard_min_separation_khz"`
+	// Ratio (0-1): runner-up supporters must be at least this fraction of winner supporters to trigger the guard.
+	FreqGuardRunnerUpRatio float64 `yaml:"freq_guard_runnerup_ratio"`
 }
 
 // HarmonicConfig controls detection and suppression of harmonic spots.
@@ -317,6 +321,12 @@ func Load(filename string) (*Config, error) {
 	}
 	if cfg.CallCorrection.FrequencyToleranceHz <= 0 {
 		cfg.CallCorrection.FrequencyToleranceHz = 0.5
+	}
+	if cfg.CallCorrection.FreqGuardMinSeparationKHz <= 0 {
+		cfg.CallCorrection.FreqGuardMinSeparationKHz = 0.1
+	}
+	if cfg.CallCorrection.FreqGuardRunnerUpRatio <= 0 {
+		cfg.CallCorrection.FreqGuardRunnerUpRatio = 0.5
 	}
 	if cfg.CallCorrection.QualityBinHz <= 0 {
 		cfg.CallCorrection.QualityBinHz = 1000

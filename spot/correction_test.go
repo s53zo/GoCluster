@@ -3,6 +3,8 @@ package spot
 import (
 	"testing"
 	"time"
+
+	"dxcluster/bandmap"
 )
 
 func TestSuggestCallCorrectionRequiresConsensus(t *testing.T) {
@@ -15,7 +17,7 @@ func TestSuggestCallCorrectionRequiresConsensus(t *testing.T) {
 		{DXCall: "K1A8C", DECall: "W4DDD", Frequency: 14074.0, Time: now.Add(-10 * time.Second)},
 	}
 
-	call, supporters, confidence, subjectConfidence, total, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+	call, supporters, confidence, subjectConfidence, total, ok := SuggestCallCorrection(subject, toEntries(others), CorrectionSettings{
 		Strategy:             "majority",
 		MinConsensusReports:  3,
 		MinAdvantage:         1,
@@ -49,7 +51,7 @@ func TestSuggestCallCorrectionRespectsRecency(t *testing.T) {
 		{DXCall: "K1A8C", DECall: "W3CCC", Frequency: 14074.0, Time: stale},
 		{DXCall: "K1A8C", DECall: "W4DDD", Frequency: 14074.0, Time: stale},
 	}
-	if call, _, _, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+	if call, _, _, _, _, ok := SuggestCallCorrection(subject, toEntries(others), CorrectionSettings{
 		Strategy:             "majority",
 		MinConsensusReports:  3,
 		MinAdvantage:         1,
@@ -69,7 +71,7 @@ func TestSuggestCallCorrectionRequiresUniqueSpotters(t *testing.T) {
 		{DXCall: "K1XYZ", DECall: "W2BBB", Frequency: 14074.0, Time: now}, // duplicate reporter
 		{DXCall: "K1XYZ", DECall: "W2BBB", Frequency: 14074.0, Time: now},
 	}
-	if call, _, _, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+	if call, _, _, _, _, ok := SuggestCallCorrection(subject, toEntries(others), CorrectionSettings{
 		Strategy:             "majority",
 		MinConsensusReports:  3,
 		MinAdvantage:         1,
@@ -89,7 +91,7 @@ func TestSuggestCallCorrectionSkipsSameCall(t *testing.T) {
 		{DXCall: "K1ABC", DECall: "W3CCC", Frequency: 14074.0, Time: now},
 		{DXCall: "K1ABC", DECall: "W4DDD", Frequency: 14074.0, Time: now},
 	}
-	if call, _, _, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+	if call, _, _, _, _, ok := SuggestCallCorrection(subject, toEntries(others), CorrectionSettings{
 		Strategy:             "majority",
 		MinConsensusReports:  3,
 		MinAdvantage:         1,
@@ -109,7 +111,7 @@ func TestSuggestCallCorrectionRequiresAdvantage(t *testing.T) {
 		{DXCall: "K1XYZ", DECall: "W3CCC", Frequency: 14074.0, Time: now},
 		{DXCall: "K1XYZ", DECall: "W4DDD", Frequency: 14074.0, Time: now},
 	}
-	if call, _, _, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+	if call, _, _, _, _, ok := SuggestCallCorrection(subject, toEntries(others), CorrectionSettings{
 		Strategy:             "majority",
 		MinConsensusReports:  2,
 		MinAdvantage:         2,
@@ -129,7 +131,7 @@ func TestSuggestCallCorrectionRequiresConfidence(t *testing.T) {
 		{DXCall: "K1XYZ", DECall: "W3CCC", Frequency: 14074.0, Time: now},
 		{DXCall: "K1XYZ", DECall: "W4DDD", Frequency: 14074.0, Time: now},
 	}
-	if call, _, _, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+	if call, _, _, _, _, ok := SuggestCallCorrection(subject, toEntries(others), CorrectionSettings{
 		Strategy:             "majority",
 		MinConsensusReports:  2,
 		MinAdvantage:         1,
@@ -148,7 +150,7 @@ func TestSuggestCallCorrectionIgnoresOutOfWindowReporters(t *testing.T) {
 		{DXCall: "K1ABD", DECall: "W2BBB", Frequency: 14074.0, Time: now},
 		{DXCall: "K9ZZZ", DECall: "W3CCC", Frequency: 18000.0, Time: now.Add(-2 * time.Minute)}, // off-frequency and stale; should not dilute confidence
 	}
-	call, supporters, confidence, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+	call, supporters, confidence, _, _, ok := SuggestCallCorrection(subject, toEntries(others), CorrectionSettings{
 		Strategy:             "majority",
 		MinConsensusReports:  1,
 		MinAdvantage:         1,
@@ -178,7 +180,7 @@ func TestSuggestCallCorrectionRequiresEditDistance(t *testing.T) {
 		{DXCall: "ZZ9ZZA", DECall: "W3CCC", Frequency: 14074.0, Time: now},
 		{DXCall: "ZZ9ZZA", DECall: "W4DDD", Frequency: 14074.0, Time: now},
 	}
-	if call, _, _, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+	if call, _, _, _, _, ok := SuggestCallCorrection(subject, toEntries(others), CorrectionSettings{
 		Strategy:             "majority",
 		MinConsensusReports:  3,
 		MinAdvantage:         1,
@@ -198,7 +200,7 @@ func TestSuggestCallCorrectionMajorityStrategy(t *testing.T) {
 		{DXCall: "GOOD1", DECall: "W3CCC", Frequency: 14074.0, Time: now},
 		{DXCall: "GOOD2", DECall: "W4DDD", Frequency: 14074.0, Time: now}, // tie-breaker stays with lastSeen
 	}
-	call, supporters, confidence, subjectConfidence, total, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+	call, supporters, confidence, subjectConfidence, total, ok := SuggestCallCorrection(subject, toEntries(others), CorrectionSettings{
 		Strategy:             "majority",
 		MinConsensusReports:  2,
 		MinAdvantage:         1,
@@ -241,4 +243,22 @@ func TestCallDistanceRTTYUsesBaudot(t *testing.T) {
 	if baudot <= plain {
 		t.Fatalf("expected baudot distance (%d) to exceed plain (%d)", baudot, plain)
 	}
+}
+
+func toEntries(spots []*Spot) []bandmap.SpotEntry {
+	out := make([]bandmap.SpotEntry, 0, len(spots))
+	for _, s := range spots {
+		if s == nil {
+			continue
+		}
+		out = append(out, bandmap.SpotEntry{
+			Call:    s.DXCall,
+			Spotter: s.DECall,
+			Mode:    s.Mode,
+			FreqHz:  uint32(s.Frequency*1000 + 0.5),
+			Time:    s.Time.Unix(),
+			SNR:     s.Report,
+		})
+	}
+	return out
 }

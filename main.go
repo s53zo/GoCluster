@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"dxcluster/bandmap"
 	"dxcluster/buffer"
 	"dxcluster/commands"
 	"dxcluster/config"
@@ -850,7 +851,8 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 		QualityBustedDecrement:   cfg.QualityBustedDecrement,
 	}
 	others := idx.Candidates(spotEntry, now, window)
-	corrected, supporters, correctedConfidence, subjectConfidence, totalReporters, ok := spot.SuggestCallCorrection(spotEntry, others, settings, now)
+	entries := spotsToEntries(others)
+	corrected, supporters, correctedConfidence, subjectConfidence, totalReporters, ok := spot.SuggestCallCorrection(spotEntry, entries, settings, now)
 
 	var knownCall bool
 	if knownPtr != nil {
@@ -938,6 +940,28 @@ func frequencyAverageTolerance(policy config.SpotPolicy) float64 {
 		toleranceHz = 300
 	}
 	return toleranceHz / 1000.0
+}
+
+// spotsToEntries converts []*spot.Spot to bandmap.SpotEntry using Hz units for frequency.
+func spotsToEntries(spots []*spot.Spot) []bandmap.SpotEntry {
+	if len(spots) == 0 {
+		return nil
+	}
+	entries := make([]bandmap.SpotEntry, 0, len(spots))
+	for _, s := range spots {
+		if s == nil {
+			continue
+		}
+		entries = append(entries, bandmap.SpotEntry{
+			Call:    s.DXCall,
+			Spotter: s.DECall,
+			Mode:    s.Mode,
+			FreqHz:  uint32(s.Frequency*1000 + 0.5),
+			Time:    s.Time.Unix(),
+			SNR:     s.Report,
+		})
+	}
+	return entries
 }
 
 func formatConfidence(percent int, totalReporters int, known bool, ctyMatch bool) string {
