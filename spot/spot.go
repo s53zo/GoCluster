@@ -4,12 +4,14 @@
 package spot
 
 import (
+	"encoding/binary"
 	"fmt"
-	"hash/fnv"
 	"math"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zeebo/xxh3"
 )
 
 // SourceType identifies where a spot came from
@@ -81,23 +83,44 @@ func roundFrequencyTo100Hz(freqKHz float64) float64 {
 	return math.Round(freqKHz*10) / 10
 }
 
-// Hash32 returns a 32-bit hash for deduplication
-// Hash includes: DXCall|DECall|FreqKHz|TimeMinute
-// This allows different spotters to report the same DX station
+// Hash32 returns a 32-bit hash for deduplication using a fixed-layout,
+// zero-allocation buffer. The hash covers:
+//   - Time truncated to the minute (Unix seconds)
+//   - Frequency truncated to whole kHz
+//   - DE and DX calls normalized, uppercased, fixed-width 12 bytes each
+// Little-endian encoding keeps the byte order deterministic across platforms.
 func (s *Spot) Hash32() uint32 {
-	// Normalize components
-	dxCall := strings.ToUpper(strings.TrimSpace(s.DXCall))
-	deCall := strings.ToUpper(strings.TrimSpace(s.DECall))
-	freqKHz := int64(s.Frequency) // Truncate to 1 kHz resolution
-	timeMin := s.Time.Truncate(time.Minute).Unix()
+	var buf [36]byte
+	// Time (bytes 0-7): Unix seconds, truncated to the minute.
+	t := s.Time.Truncate(time.Minute).Unix()
+	binary.LittleEndian.PutUint64(buf[0:8], uint64(t))
+	// Frequency (bytes 8-11): whole kHz.
+	freq := uint32(s.Frequency)
+	binary.LittleEndian.PutUint32(buf[8:12], freq)
+	// DE and DX calls (bytes 12-23, 24-35).
+	writeFixedCall(buf[12:24], s.DECall)
+	writeFixedCall(buf[24:36], s.DXCall)
+	// Use xxh3 for speed; fold to 32 bits for existing dedup map.
+	return uint32(xxh3.Hash(buf[:]))
+}
 
-	// Create composite string WITH spotter
-	composite := fmt.Sprintf("%s|%s|%d|%d", dxCall, deCall, freqKHz, timeMin)
-
-	// Hash it
-	h := fnv.New32a()
-	h.Write([]byte(composite))
-	return h.Sum32()
+// writeFixedCall uppercases, truncates/pads the input into a 12-byte slot.
+func writeFixedCall(dst []byte, call string) {
+	const maxLen = 12
+	call = NormalizeCallsign(call)
+	n := 0
+	for i := 0; i < len(call) && n < maxLen; i++ {
+		ch := call[i]
+		if ch >= 'a' && ch <= 'z' {
+			ch = ch - ('a' - 'A')
+		}
+		dst[n] = ch
+		n++
+	}
+	for n < maxLen {
+		dst[n] = 0
+		n++
+	}
 }
 
 // FormatDXCluster formats the spot in standard DX cluster format with exact column positions

@@ -1,0 +1,74 @@
+package spot
+
+import (
+	"strings"
+	"sync"
+)
+
+// callFreqKey scopes a call to a frequency bin.
+type callFreqKey struct {
+	Call string
+	Bin  int
+}
+
+// CallQualityStore tracks per-call, per-bin quality scores used as anchors.
+type CallQualityStore struct {
+	mu   sync.Mutex
+	data map[callFreqKey]int
+}
+
+// NewCallQualityStore constructs an empty quality store.
+func NewCallQualityStore() *CallQualityStore {
+	return &CallQualityStore{
+		data: make(map[callFreqKey]int),
+	}
+}
+
+// freqBinHz returns the integer bin for a given frequency in Hz and bin size.
+func freqBinHz(freqHz float64, binSizeHz int) int {
+	if binSizeHz <= 0 {
+		binSizeHz = 1000
+	}
+	return int(freqHz) / binSizeHz
+}
+
+// Get returns the quality score for a call in the given bin.
+func (s *CallQualityStore) Get(call string, freqHz float64, binSizeHz int) int {
+	if s == nil {
+		return 0
+	}
+	call = strings.ToUpper(strings.TrimSpace(call))
+	if call == "" {
+		return 0
+	}
+	key := callFreqKey{Call: call, Bin: freqBinHz(freqHz, binSizeHz)}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.data[key]
+}
+
+// Add adjusts the quality score for a call/bin by delta.
+func (s *CallQualityStore) Add(call string, freqHz float64, binSizeHz int, delta int) {
+	if s == nil {
+		return
+	}
+	call = strings.ToUpper(strings.TrimSpace(call))
+	if call == "" || delta == 0 {
+		return
+	}
+	key := callFreqKey{Call: call, Bin: freqBinHz(freqHz, binSizeHz)}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[key] = s.data[key] + delta
+}
+
+// IsGood reports whether the call meets the configured quality threshold in the bin.
+func (s *CallQualityStore) IsGood(call string, freqHz float64, cfg *CorrectionSettings) bool {
+	if cfg == nil {
+		return false
+	}
+	return s.Get(call, freqHz, cfg.QualityBinHz) >= cfg.QualityGoodThreshold
+}
+
+// callQuality is the shared store used by correction anchors.
+var callQuality = NewCallQualityStore()

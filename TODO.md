@@ -20,6 +20,13 @@ Remaining opportunities:
   * Fast-path when filters are "all enabled" to bypass per-spot checks.
   * Optional: cache per-spot band/mode/confidence pre-check results in the broadcast loop to reduce per-client cost when many clients connect.
 
+- Call correction recall/precision:
+  * Switch to cluster-center (median) consensus so the subject call is not the only anchor; score the best center with mode-aware distance and then compare to the subject with a safety cap.
+  * Consider soft scoring (distance as cost, not just a gate) with SNR/recency weighting and a relative advantage threshold.
+  * Add grid/band gating: reject corrections whose DXCC conflicts with observed grid or band-plan privileges.
+  * Add token-aware Damerau (transpositions) for suffix/prefix tokens (/P, /MM, /QRP, -#) to reduce misses on common variants.
+  * Optional mode: majority-of-unique-spotters on-frequency (no distance checks) to maximize recall with only CTY validation as the guard.
+
 - Grid lookups (startGridWriter lookupFn):
   * Add a short-TTL negative cache for calls with no grid record to avoid repeated SQLite misses on every spot lacking grid info.
 
@@ -53,3 +60,5 @@ Notes:
 - Callsign normalization: add a tiny LRU/sync.Pool for normalized calls (including "-#" decorations) to reduce repeated string munging for hot skimmers.
 - PSK ingest: if JSON remains hot, consider buffer reuse in MQTT handler to avoid copying payloads per message.
 - Telnet filters: add fast-path when filters are effectively "all" to bypass per-spot map lookups for broadcast.
+- Broadcast filtering optimizations: add fast paths for no-clients/all-allow filters, global drops when all clients disallow (e.g., beacons), and consider grouping clients by identical filter state to evaluate Matches once per group; measure CPU impact under load.
+- Ring buffer improvements: prevent PSKReporter volume from evicting everything—consider per-source/per-mode rings, lower PSKReporter retention, or source-aware SHOW/DX filtering so CW/RTTY/human spots remain visible.

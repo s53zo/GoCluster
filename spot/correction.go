@@ -1,6 +1,7 @@
 package spot
 
 import (
+	"log"
 	"math"
 	"strings"
 	"sync"
@@ -14,6 +15,20 @@ import (
 // but the struct is deliberately defined here so the algorithm can be unit-tested
 // without importing the config package (which would create a cycle).
 type CorrectionSettings struct {
+	// Strategy controls how consensus is computed:
+	//   - "center": pick a cluster center (median-like) and compare to subject
+	//   - "classic": subject vs. alternate comparisons (legacy behavior)
+	//   - "majority": most-reported call on-frequency (unique spotters), distance as safety cap only
+	Strategy string
+	// DebugLog enables per-subject diagnostic logging of decisions.
+	DebugLog bool
+	// DebugLogger writes debug lines; falls back to standard log when nil.
+	DebugLogger *log.Logger
+	// Quality-based anchors (frequency-binned call scores).
+	QualityBinHz            int
+	QualityGoodThreshold    int
+	QualityNewCallIncrement int
+	QualityBustedDecrement  int
 	// MinConsensusReports is the number of *other* unique spotters that must
 	// agree on the same DX call before we consider overriding the subject spot.
 	MinConsensusReports int
@@ -161,8 +176,6 @@ func (dc *distanceCache) evictOldest() {
 	}
 }
 
-var sharedDistanceCache distanceCache
-
 // SetFrequencyToleranceHz updates the frequency similarity window in Hz.
 func SetFrequencyToleranceHz(hz float64) {
 	if hz <= 0 {
@@ -200,19 +213,40 @@ func SuggestCallCorrection(subject *Spot, others []*Spot, settings CorrectionSet
 		return "", 0, 0, 0, 0, false
 	}
 	subjectReporter := strings.ToUpper(strings.TrimSpace(subject.DECall))
-	subjectVotes := map[string]struct{}{}
 	allReporters := map[string]struct{}{}
-	if subjectReporter != "" && passesSNRThreshold(subject, cfg) {
-		subjectVotes[subjectReporter] = struct{}{}
-		allReporters[subjectReporter] = struct{}{}
-	}
+	clusterSpots := make([]*Spot, 0, len(others)+1)
+	clusterSpots = append(clusterSpots, subject)
 
-	type candidate struct {
+	type callAggregate struct {
 		reporters map[string]struct{}
 		lastSeen  time.Time
 	}
 
-	candidates := make(map[string]*candidate)
+	callStats := make(map[string]*callAggregate)
+	ensureCallEntry := func(call string) *callAggregate {
+		entry, ok := callStats[call]
+		if !ok {
+			entry = &callAggregate{reporters: make(map[string]struct{})}
+			callStats[call] = entry
+		}
+		return entry
+	}
+	addReporter := func(call, reporter string, seenAt time.Time) {
+		entry := ensureCallEntry(call)
+		entry.reporters[reporter] = struct{}{}
+		if seenAt.After(entry.lastSeen) {
+			entry.lastSeen = seenAt
+		}
+	}
+
+	subjectAgg := ensureCallEntry(subjectCall)
+	if subjectReporter != "" && passesSNRThreshold(subject, cfg) {
+		addReporter(subjectCall, subjectReporter, subject.Time)
+		allReporters[subjectReporter] = struct{}{}
+	}
+	if subjectAgg.lastSeen.IsZero() {
+		subjectAgg.lastSeen = subject.Time
+	}
 
 	for _, other := range others {
 		if other == nil {
@@ -222,7 +256,6 @@ func SuggestCallCorrection(subject *Spot, others []*Spot, settings CorrectionSet
 		if otherCall == "" {
 			continue
 		}
-		// Normalize spotter identifier.
 		reporter := strings.ToUpper(strings.TrimSpace(other.DECall))
 		if reporter == "" {
 			continue
@@ -230,109 +263,281 @@ func SuggestCallCorrection(subject *Spot, others []*Spot, settings CorrectionSet
 		if !passesSNRThreshold(other, cfg) {
 			continue
 		}
-		allReporters[reporter] = struct{}{}
-		if reporter == subjectReporter {
-			if otherCall == subjectCall {
-				subjectVotes[reporter] = struct{}{}
-			}
-			continue
-		}
-		// Require frequency overlap within the tolerance window.
 		if math.Abs(other.Frequency-subject.Frequency) > frequencyToleranceKHz {
 			continue
 		}
-		// Enforce recency: the supporting spot must be newer than (now - recency window).
 		if now.Sub(other.Time) > cfg.RecencyWindow {
 			continue
 		}
-
-		if otherCall == subjectCall {
-			subjectVotes[reporter] = struct{}{}
+		// Keep the subject reporter from voting for alternates so a single skimmer cannot outweigh others.
+		if reporter == subjectReporter {
+			if otherCall == subjectCall {
+				allReporters[reporter] = struct{}{}
+				addReporter(otherCall, reporter, other.Time)
+			}
 			continue
 		}
-
-		stats, exists := candidates[otherCall]
-		if !exists {
-			stats = &candidate{
-				reporters: make(map[string]struct{}),
-			}
-			candidates[otherCall] = stats
-		}
-		stats.reporters[reporter] = struct{}{}
-		if other.Time.After(stats.lastSeen) {
-			stats.lastSeen = other.Time
-		}
+		allReporters[reporter] = struct{}{}
+		addReporter(otherCall, reporter, other.Time)
+		clusterSpots = append(clusterSpots, other)
 	}
 
-	var (
-		bestCall       string
-		bestCount      int
-		bestTime       time.Time
-		bestConfidence int
-	)
-	subjectCount := len(subjectVotes)
 	totalReporters = len(allReporters)
 	if totalReporters == 0 {
 		return "", 0, 0, 0, 0, false
 	}
-	subjectConfidence = len(subjectVotes) * 100 / totalReporters
 
-	for call, stats := range candidates {
-		count := len(stats.reporters)
-		if count < cfg.MinConsensusReports {
-			continue
+	cacheCfg := distanceCacheConfig{
+		size: cfg.DistanceCacheSize,
+		ttl:  cfg.DistanceCacheTTL,
+	}
+	localCache := &distanceCache{}
+	localCache.configure(cacheCfg.size, cacheCfg.ttl)
+	freqHz := subject.Frequency * 1000.0
+
+	// Majority-of-unique-spotters: pick the call with the most unique reporters
+	// on-frequency (within recency/SNR gates). Distance is only a safety cap.
+	callKeys := make([]string, 0, len(callStats))
+	for call := range callStats {
+		callKeys = append(callKeys, call)
+	}
+	if len(callKeys) == 0 {
+		return "", 0, 0, 0, 0, false
+	}
+
+	subjectCount := len(subjectAgg.reporters)
+	if totalReporters > 0 {
+		subjectConfidence = subjectCount * 100 / totalReporters
+	}
+
+	// Anchor path: use existing good calls in this bin to snap busted calls quickly.
+	allCalls := make([]string, 0, len(callKeys)+1)
+	allCalls = append(allCalls, subjectCall)
+	seen := map[string]struct{}{subjectCall: {}}
+	for _, c := range callKeys {
+		if _, ok := seen[c]; !ok {
+			allCalls = append(allCalls, c)
+			seen[c] = struct{}{}
 		}
-		if count < subjectCount+cfg.MinAdvantage {
-			continue
+	}
+	hasGoodAnchor := false
+	for _, c := range allCalls {
+		if callQuality.IsGood(c, freqHz, &cfg) {
+			hasGoodAnchor = true
+			break
 		}
-		cacheCfg := distanceCacheConfig{
-			size: cfg.DistanceCacheSize,
-			ttl:  cfg.DistanceCacheTTL,
-		}
-		distance := cachedCallDistance(subjectCall, call, subject.Mode, cfg.DistanceModelCW, cfg.DistanceModelRTTY, cacheCfg, now)
-		if cfg.MaxEditDistance >= 0 && distance > cfg.MaxEditDistance {
-			continue
-		}
-		// Apply stricter consensus requirements for more distant corrections so we
-		// don't accept a larger edit with the same evidence as a near edit.
-		minReports := cfg.MinConsensusReports
-		minAdvantage := cfg.MinAdvantage
-		minConf := cfg.MinConfidencePercent
-		if distance >= 3 {
-			minReports += cfg.Distance3ExtraReports     // require more unique supporters
-			minAdvantage += cfg.Distance3ExtraAdvantage // require a larger lead over the subject call
-			minConf += cfg.Distance3ExtraConfidence     // require a higher share of total reporters
-		}
-		if count < minReports {
-			continue
-		}
-		if count < subjectCount+minAdvantage {
-			continue
-		}
-		confidence := count * 100 / totalReporters
-		if confidence < minConf {
-			continue
-		}
-		// Prefer the candidate with the most unique spotters. In a tie, take the
-		// most recent one so we gravitate toward the freshest consensus.
-		if count > bestCount || (count == bestCount && stats.lastSeen.After(bestTime)) {
-			bestCall = call
-			bestCount = count
-			bestTime = stats.lastSeen
-			bestConfidence = confidence
+	}
+	if hasGoodAnchor {
+		if anchor, okAnchor := findAnchorForCall(subjectCall, freqHz, subject.Mode, allCalls, &cfg); okAnchor {
+			anchorSupport := 0
+			if agg := callStats[anchor]; agg != nil {
+				anchorSupport = len(agg.reporters)
+			}
+			anchorConfidence := 0
+			if totalReporters > 0 {
+				anchorConfidence = anchorSupport * 100 / totalReporters
+			}
+			anchorRunner := 0
+			for call, agg := range callStats {
+				if call == anchor || agg == nil {
+					continue
+				}
+				if len(agg.reporters) > anchorRunner {
+					anchorRunner = len(agg.reporters)
+				}
+			}
+			updateCallQualityForCluster(anchor, freqHz, &cfg, clusterSpots)
+			if cfg.DebugLog {
+				logDecision(subject, anchor, subjectCount, anchorSupport, anchorRunner, cachedCallDistance(subjectCall, anchor, subject.Mode, cfg.DistanceModelCW, cfg.DistanceModelRTTY, cacheCfg, localCache, now), cfg, totalReporters, anchorConfidence, subjectConfidence)
+			}
+			return anchor, anchorSupport, anchorConfidence, subjectConfidence, totalReporters, true
 		}
 	}
 
-	if bestCall == "" {
+	bestCall := ""
+	bestCount := 0
+	bestConfidence := 0
+	var bestTime time.Time
+	runnerUp := 0
+	for _, candidateCall := range callKeys {
+		agg := callStats[candidateCall]
+		if agg == nil {
+			continue
+		}
+		count := len(agg.reporters)
+		confidence := count * 100 / totalReporters
+		if count > bestCount || (count == bestCount && agg.lastSeen.After(bestTime)) {
+			runnerUp = bestCount
+			bestCall = candidateCall
+			bestCount = count
+			bestConfidence = confidence
+			bestTime = agg.lastSeen
+		}
+	}
+
+	if bestCall == "" || bestCall == subjectCall {
 		return "", 0, 0, subjectConfidence, totalReporters, false
 	}
+
+	centerDistance := cachedCallDistance(subjectCall, bestCall, subject.Mode, cfg.DistanceModelCW, cfg.DistanceModelRTTY, cacheCfg, localCache, now)
+	if cfg.MaxEditDistance >= 0 && centerDistance > cfg.MaxEditDistance {
+		return "", 0, 0, subjectConfidence, totalReporters, false
+	}
+
+	// Apply consensus thresholds anchored on the majority winner.
+	minReports := cfg.MinConsensusReports
+	minAdvantage := cfg.MinAdvantage
+	minConf := cfg.MinConfidencePercent
+	if centerDistance >= 3 {
+		minReports += cfg.Distance3ExtraReports
+		minAdvantage += cfg.Distance3ExtraAdvantage
+		minConf += cfg.Distance3ExtraConfidence
+	}
+	if bestCount < minReports {
+		return "", 0, 0, subjectConfidence, totalReporters, false
+	}
+	if bestCount < subjectCount+minAdvantage {
+		return "", 0, 0, subjectConfidence, totalReporters, false
+	}
+	if bestConfidence < minConf {
+		return "", 0, 0, subjectConfidence, totalReporters, false
+	}
+
+	updateCallQualityForCluster(bestCall, freqHz, &cfg, clusterSpots)
+	if cfg.DebugLog {
+		logDecision(subject, bestCall, subjectCount, bestCount, runnerUp, centerDistance, cfg, totalReporters, bestConfidence, subjectConfidence)
+	}
+
 	return bestCall, bestCount, bestConfidence, subjectConfidence, totalReporters, true
+}
+
+// findAnchorForCall selects the closest good anchor (by mode-aware distance) for a busted call.
+func findAnchorForCall(bustedCall string, freqHz float64, mode string, candidates []string, cfg *CorrectionSettings) (string, bool) {
+	busted := strings.ToUpper(strings.TrimSpace(bustedCall))
+	if busted == "" || cfg == nil {
+		return "", false
+	}
+	modeKey := strings.ToUpper(strings.TrimSpace(mode))
+	best := ""
+	bestDist := math.MaxInt
+	for _, c := range candidates {
+		c = strings.ToUpper(strings.TrimSpace(c))
+		if c == "" || c == busted {
+			continue
+		}
+		if !callQuality.IsGood(c, freqHz, cfg) {
+			continue
+		}
+		dist := callDistance(busted, c, modeKey, cfg.DistanceModelCW, cfg.DistanceModelRTTY)
+		if cfg.MaxEditDistance >= 0 && dist > cfg.MaxEditDistance {
+			continue
+		}
+		if dist < bestDist {
+			bestDist = dist
+			best = c
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	return best, true
+}
+
+// updateCallQualityForCluster updates the quality store after a resolved cluster.
+func updateCallQualityForCluster(winnerCall string, freqHz float64, cfg *CorrectionSettings, clusterSpots []*Spot) {
+	if cfg == nil || winnerCall == "" || len(clusterSpots) == 0 {
+		return
+	}
+	callQuality.Add(winnerCall, freqHz, cfg.QualityBinHz, cfg.QualityNewCallIncrement)
+
+	distinct := make(map[string]struct{})
+	for _, s := range clusterSpots {
+		if s == nil {
+			continue
+		}
+		call := strings.ToUpper(strings.TrimSpace(s.DXCall))
+		if call == "" {
+			continue
+		}
+		distinct[call] = struct{}{}
+	}
+	for call := range distinct {
+		if call == strings.ToUpper(strings.TrimSpace(winnerCall)) {
+			continue
+		}
+		callQuality.Add(call, freqHz, cfg.QualityBinHz, -cfg.QualityBustedDecrement)
+	}
+}
+
+// logDecision emits a structured diagnostic line for tuning/compare.
+func logDecision(subject *Spot, winner string, subjectCount, winnerCount, runnerUpCount int, distance int, cfg CorrectionSettings, totalReporters int, winnerConfidence int, subjectConfidence int) {
+	if subject == nil {
+		return
+	}
+	strategy := strings.ToLower(strings.TrimSpace(cfg.Strategy))
+	if strategy == "" {
+		strategy = "majority"
+	}
+	decision := "applied"
+	if winner == "" {
+		decision = "no_winner"
+	} else {
+		// Decision is determined by caller; this helper only logs. Keep "applied" for consistency.
+	}
+	freq := subject.Frequency
+	source := strings.ToUpper(strings.TrimSpace(subject.SourceNode))
+	logger := cfg.DebugLogger
+	if logger == nil {
+		logger = log.Default()
+	}
+	logger.Printf("callcorr decision strategy=%s freq_khz=%.1f subject=%s winner=%s subj_support=%d win_support=%d runner_up_support=%d dist=%d min_reports=%d min_adv=%d min_conf=%d max_dist=%d recency_s=%d freq_tol_hz=%.0f min_snr_cw=%d min_snr_rtty=%d total_reporters=%d win_conf=%d subj_conf=%d decision=%s source=%s",
+		strategy,
+		freq,
+		strings.ToUpper(strings.TrimSpace(subject.DXCall)),
+		strings.ToUpper(strings.TrimSpace(winner)),
+		subjectCount,
+		winnerCount,
+		runnerUpCount,
+		distance,
+		cfg.MinConsensusReports,
+		cfg.MinAdvantage,
+		cfg.MinConfidencePercent,
+		cfg.MaxEditDistance,
+		int(cfg.RecencyWindow.Seconds()),
+		frequencyToleranceKHz*1000,
+		cfg.MinSNRCW,
+		cfg.MinSNRRTTY,
+		totalReporters,
+		winnerConfidence,
+		subjectConfidence,
+		decision,
+		source,
+	)
 }
 
 // normalizeCorrectionSettings fills in safe defaults so callers can omit config
 // while unit tests can deliberately pass tiny values.
 func normalizeCorrectionSettings(settings CorrectionSettings) CorrectionSettings {
 	cfg := settings
+	// Honor configured strategy; fallback to majority when blank/invalid.
+	switch strings.ToLower(strings.TrimSpace(cfg.Strategy)) {
+	case "center", "classic", "majority":
+		cfg.Strategy = strings.ToLower(strings.TrimSpace(cfg.Strategy))
+	default:
+		cfg.Strategy = "majority"
+	}
+	if cfg.QualityBinHz <= 0 {
+		cfg.QualityBinHz = 1000
+	}
+	if cfg.QualityGoodThreshold <= 0 {
+		cfg.QualityGoodThreshold = 2
+	}
+	if cfg.QualityNewCallIncrement == 0 {
+		cfg.QualityNewCallIncrement = 1
+	}
+	if cfg.QualityBustedDecrement == 0 {
+		cfg.QualityBustedDecrement = 1
+	}
 	if cfg.MinConsensusReports <= 0 {
 		cfg.MinConsensusReports = 4
 	}
@@ -569,21 +774,21 @@ func normalizeRTTYDistanceModel(model string) string {
 	}
 }
 
-// cachedCallDistance wraps callDistanceCore with an optional memoization layer
-// controlled by size/ttl. It normalizes mode/models before building the cache key.
-func cachedCallDistance(subject, candidate, mode, cwModel, rttyModel string, cacheCfg distanceCacheConfig, now time.Time) int {
+// cachedCallDistance wraps callDistanceCore with an optional memoization layer.
+// A preconfigured cache is supplied by the caller so we avoid reconfiguring
+// shared state on every distance call.
+func cachedCallDistance(subject, candidate, mode, cwModel, rttyModel string, cacheCfg distanceCacheConfig, cache *distanceCache, now time.Time) int {
 	modeKey := strings.ToUpper(strings.TrimSpace(mode))
 	cwModelNorm := normalizeCWDistanceModel(cwModel)
 	rttyModelNorm := normalizeRTTYDistanceModel(rttyModel)
 
-	if cacheCfg.size > 0 && cacheCfg.ttl > 0 {
-		sharedDistanceCache.configure(cacheCfg.size, cacheCfg.ttl)
+	if cacheCfg.size > 0 && cacheCfg.ttl > 0 && cache != nil {
 		key := distanceCacheKey(subject, candidate, modeKey, cwModelNorm, rttyModelNorm)
-		if dist, ok := sharedDistanceCache.get(key, now); ok {
+		if dist, ok := cache.get(key, now); ok {
 			return dist
 		}
 		dist := callDistanceCore(subject, candidate, modeKey, cwModelNorm, rttyModelNorm)
-		sharedDistanceCache.put(key, dist, now)
+		cache.put(key, dist, now)
 		return dist
 	}
 	return callDistanceCore(subject, candidate, modeKey, cwModelNorm, rttyModelNorm)

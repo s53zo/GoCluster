@@ -27,6 +27,12 @@ const (
 	maxRBNDialFrequencyKHz = 3000000.0
 )
 
+var (
+	rbnCallCacheSize  = 4096
+	rbnCallCacheTTL   = 10 * time.Minute
+	rbnNormalizeCache = spot.NewCallCache(rbnCallCacheSize, rbnCallCacheTTL)
+)
+
 // Client represents an RBN telnet client
 type Client struct {
 	host      string
@@ -44,6 +50,19 @@ type Client struct {
 	reconnect chan struct{}
 	stopOnce  sync.Once
 	keepSSID  bool
+}
+
+// ConfigureCallCache allows callers to tune the normalization cache used for RBN spotters.
+func ConfigureCallCache(size int, ttl time.Duration) {
+	if size <= 0 {
+		size = 4096
+	}
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	rbnCallCacheSize = size
+	rbnCallCacheTTL = ttl
+	rbnNormalizeCache = spot.NewCallCache(rbnCallCacheSize, rbnCallCacheTTL)
 }
 
 // NewClient creates a new RBN client
@@ -202,9 +221,14 @@ func (c *Client) readLoop() {
 // normalizeRBNCallsign removes the SSID portion from RBN skimmer callsigns. Example:
 // "W3LPL-1-#" becomes "W3LPL-#".
 func normalizeRBNCallsign(call string) string {
+	if cached, ok := rbnNormalizeCache.Get(call); ok {
+		return cached
+	}
 	// Check if it ends with -# (RBN skimmer indicator)
 	if !strings.HasSuffix(call, "-#") {
-		return spot.NormalizeCallsign(call)
+		normalized := spot.NormalizeCallsign(call)
+		rbnNormalizeCache.Add(call, normalized)
+		return normalized
 	}
 
 	// Remove the -# suffix temporarily
@@ -218,10 +242,13 @@ func normalizeRBNCallsign(call string) string {
 	if len(parts) > 1 {
 		// Take all parts except the last (which is the SSID)
 		basecall := strings.Join(parts[:len(parts)-1], "-")
-		return basecall + "-#"
+		normalized := basecall + "-#"
+		rbnNormalizeCache.Add(call, normalized)
+		return normalized
 	}
 
 	// If no SSID, return as-is with -# back
+	rbnNormalizeCache.Add(call, call)
 	return call
 }
 

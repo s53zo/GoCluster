@@ -16,6 +16,7 @@ func TestSuggestCallCorrectionRequiresConsensus(t *testing.T) {
 	}
 
 	call, supporters, confidence, subjectConfidence, total, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+		Strategy:             "majority",
 		MinConsensusReports:  3,
 		MinAdvantage:         1,
 		MinConfidencePercent: 50,
@@ -49,6 +50,7 @@ func TestSuggestCallCorrectionRespectsRecency(t *testing.T) {
 		{DXCall: "K1A8C", DECall: "W4DDD", Frequency: 14074.0, Time: stale},
 	}
 	if call, _, _, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+		Strategy:             "majority",
 		MinConsensusReports:  3,
 		MinAdvantage:         1,
 		MinConfidencePercent: 60,
@@ -68,6 +70,7 @@ func TestSuggestCallCorrectionRequiresUniqueSpotters(t *testing.T) {
 		{DXCall: "K1XYZ", DECall: "W2BBB", Frequency: 14074.0, Time: now},
 	}
 	if call, _, _, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+		Strategy:             "majority",
 		MinConsensusReports:  3,
 		MinAdvantage:         1,
 		MinConfidencePercent: 60,
@@ -87,6 +90,7 @@ func TestSuggestCallCorrectionSkipsSameCall(t *testing.T) {
 		{DXCall: "K1ABC", DECall: "W4DDD", Frequency: 14074.0, Time: now},
 	}
 	if call, _, _, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+		Strategy:             "majority",
 		MinConsensusReports:  3,
 		MinAdvantage:         1,
 		MinConfidencePercent: 60,
@@ -106,8 +110,9 @@ func TestSuggestCallCorrectionRequiresAdvantage(t *testing.T) {
 		{DXCall: "K1XYZ", DECall: "W4DDD", Frequency: 14074.0, Time: now},
 	}
 	if call, _, _, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+		Strategy:             "majority",
 		MinConsensusReports:  2,
-		MinAdvantage:         1,
+		MinAdvantage:         2,
 		MinConfidencePercent: 60,
 		MaxEditDistance:      2,
 		RecencyWindow:        30 * time.Second,
@@ -125,6 +130,7 @@ func TestSuggestCallCorrectionRequiresConfidence(t *testing.T) {
 		{DXCall: "K1XYZ", DECall: "W4DDD", Frequency: 14074.0, Time: now},
 	}
 	if call, _, _, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+		Strategy:             "majority",
 		MinConsensusReports:  2,
 		MinAdvantage:         1,
 		MinConfidencePercent: 70,
@@ -132,6 +138,35 @@ func TestSuggestCallCorrectionRequiresConfidence(t *testing.T) {
 		RecencyWindow:        30 * time.Second,
 	}, now); ok {
 		t.Fatalf("expected no correction (confidence too low), got %s", call)
+	}
+}
+
+func TestSuggestCallCorrectionIgnoresOutOfWindowReporters(t *testing.T) {
+	now := time.Now().UTC()
+	subject := &Spot{DXCall: "K1ABC", Frequency: 14074.0, Time: now}
+	others := []*Spot{
+		{DXCall: "K1ABD", DECall: "W2BBB", Frequency: 14074.0, Time: now},
+		{DXCall: "K9ZZZ", DECall: "W3CCC", Frequency: 18000.0, Time: now.Add(-2 * time.Minute)}, // off-frequency and stale; should not dilute confidence
+	}
+	call, supporters, confidence, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+		Strategy:             "majority",
+		MinConsensusReports:  1,
+		MinAdvantage:         1,
+		MinConfidencePercent: 60,
+		MaxEditDistance:      2,
+		RecencyWindow:        30 * time.Second,
+	}, now)
+	if !ok {
+		t.Fatalf("expected correction suggestion")
+	}
+	if call != "K1ABD" {
+		t.Fatalf("expected K1ABD, got %s", call)
+	}
+	if supporters != 1 {
+		t.Fatalf("expected 1 supporter, got %d", supporters)
+	}
+	if confidence != 100 {
+		t.Fatalf("expected confidence to ignore stale/off-frequency reporters, got %d", confidence)
 	}
 }
 
@@ -144,6 +179,7 @@ func TestSuggestCallCorrectionRequiresEditDistance(t *testing.T) {
 		{DXCall: "ZZ9ZZA", DECall: "W4DDD", Frequency: 14074.0, Time: now},
 	}
 	if call, _, _, _, _, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+		Strategy:             "majority",
 		MinConsensusReports:  3,
 		MinAdvantage:         1,
 		MinConfidencePercent: 60,
@@ -151,6 +187,36 @@ func TestSuggestCallCorrectionRequiresEditDistance(t *testing.T) {
 		RecencyWindow:        30 * time.Second,
 	}, now); ok {
 		t.Fatalf("expected no correction due to distance, got %s", call)
+	}
+}
+
+func TestSuggestCallCorrectionMajorityStrategy(t *testing.T) {
+	now := time.Now().UTC()
+	subject := &Spot{DXCall: "BADCALL", DECall: "W1AAA", Frequency: 14074.0, Time: now}
+	others := []*Spot{
+		{DXCall: "GOOD1", DECall: "W2BBB", Frequency: 14074.0, Time: now},
+		{DXCall: "GOOD1", DECall: "W3CCC", Frequency: 14074.0, Time: now},
+		{DXCall: "GOOD2", DECall: "W4DDD", Frequency: 14074.0, Time: now}, // tie-breaker stays with lastSeen
+	}
+	call, supporters, confidence, subjectConfidence, total, ok := SuggestCallCorrection(subject, others, CorrectionSettings{
+		Strategy:             "majority",
+		MinConsensusReports:  2,
+		MinAdvantage:         1,
+		MinConfidencePercent: 40,
+		MaxEditDistance:      10,
+		RecencyWindow:        30 * time.Second,
+	}, now)
+	if !ok {
+		t.Fatalf("expected majority correction")
+	}
+	if call != "GOOD1" {
+		t.Fatalf("expected GOOD1, got %s", call)
+	}
+	if supporters != 2 {
+		t.Fatalf("expected 2 supporters, got %d", supporters)
+	}
+	if confidence <= 0 || subjectConfidence < 0 || total != 4 {
+		t.Fatalf("unexpected confidence/total values")
 	}
 }
 

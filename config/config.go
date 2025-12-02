@@ -5,9 +5,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
-	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -27,6 +27,7 @@ type Config struct {
 	Logging         LoggingConfig        `yaml:"logging"`
 	Stats           StatsConfig          `yaml:"stats"`
 	CallCorrection  CallCorrectionConfig `yaml:"call_correction"`
+	CallCache       CallCacheConfig      `yaml:"call_cache"`
 	Harmonics       HarmonicConfig       `yaml:"harmonics"`
 	SpotPolicy      SpotPolicy           `yaml:"spot_policy"`
 	CTY             CTYConfig            `yaml:"cty"`
@@ -144,6 +145,12 @@ type StatsConfig struct {
 	DisplayIntervalSeconds int `yaml:"display_interval_seconds"`
 }
 
+// CallCacheConfig controls the normalization cache used for callsigns and spotters.
+type CallCacheConfig struct {
+	Size       int `yaml:"size"`        // max entries retained
+	TTLSeconds int `yaml:"ttl_seconds"` // >0 expires cached entries after this many seconds
+}
+
 // CallCorrectionConfig controls consensus-based DX call corrections.
 type CallCorrectionConfig struct {
 	Enabled bool `yaml:"enabled"`
@@ -164,6 +171,19 @@ type CallCorrectionConfig struct {
 	// FrequencyToleranceHz defines how close two frequencies must be to be considered
 	// the same signal when running consensus.
 	FrequencyToleranceHz float64 `yaml:"frequency_tolerance_hz"`
+	// DebugLog, when true, emits a per-subject diagnostic line for call correction decisions.
+	DebugLog bool `yaml:"debug_log"`
+	// DebugLogFile, when set, writes debug lines to this file (appended).
+	DebugLogFile string `yaml:"debug_log_file"`
+	// Quality-based anchors: optional per-frequency-bin confidence store.
+	QualityBinHz            int `yaml:"quality_bin_hz"`
+	QualityGoodThreshold    int `yaml:"quality_good_threshold"`
+	QualityNewCallIncrement int `yaml:"quality_newcall_increment"`
+	QualityBustedDecrement  int `yaml:"quality_busted_decrement"`
+	// Strategy selects how consensus is computed:
+	//   - "majority": pick the most-reported call on-frequency (unique spotters); distance is only a safety cap.
+	//     Other values are accepted for compatibility but currently coerced to majority.
+	Strategy string `yaml:"strategy"`
 	// MinSNRCW/RTTY allow discarding marginal decodes from the corroborator set.
 	MinSNRCW   int `yaml:"min_snr_cw"`
 	MinSNRRTTY int `yaml:"min_snr_rtty"`
@@ -298,6 +318,29 @@ func Load(filename string) (*Config, error) {
 	if cfg.CallCorrection.FrequencyToleranceHz <= 0 {
 		cfg.CallCorrection.FrequencyToleranceHz = 0.5
 	}
+	if cfg.CallCorrection.QualityBinHz <= 0 {
+		cfg.CallCorrection.QualityBinHz = 1000
+	}
+	if cfg.CallCorrection.QualityGoodThreshold <= 0 {
+		cfg.CallCorrection.QualityGoodThreshold = 2
+	}
+	if cfg.CallCorrection.QualityNewCallIncrement == 0 {
+		cfg.CallCorrection.QualityNewCallIncrement = 1
+	}
+	if cfg.CallCorrection.QualityBustedDecrement == 0 {
+		cfg.CallCorrection.QualityBustedDecrement = 1
+	}
+	if strings.TrimSpace(cfg.CallCorrection.Strategy) == "" {
+		cfg.CallCorrection.Strategy = "center"
+	} else {
+		strategy := strings.ToLower(strings.TrimSpace(cfg.CallCorrection.Strategy))
+		switch strategy {
+		case "center", "classic", "majority":
+			cfg.CallCorrection.Strategy = strategy
+		default:
+			cfg.CallCorrection.Strategy = "center"
+		}
+	}
 	if cfg.CallCorrection.InvalidAction == "" {
 		cfg.CallCorrection.InvalidAction = "broadcast"
 	}
@@ -342,6 +385,12 @@ func Load(filename string) (*Config, error) {
 		if cfg.CallCorrection.DistanceCacheTTLSeconds <= 0 {
 			cfg.CallCorrection.DistanceCacheTTLSeconds = 120
 		}
+	}
+	if cfg.CallCache.Size <= 0 {
+		cfg.CallCache.Size = 4096
+	}
+	if cfg.CallCache.TTLSeconds <= 0 {
+		cfg.CallCache.TTLSeconds = 600
 	}
 	if cfg.Telnet.BroadcastQueue <= 0 {
 		cfg.Telnet.BroadcastQueue = 2048

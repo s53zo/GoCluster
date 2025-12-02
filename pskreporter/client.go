@@ -20,19 +20,20 @@ import (
 
 // Client represents a PSKReporter MQTT client
 type Client struct {
-	broker     string
-	port       int
-	topics     []string
-	name       string
-	client     mqtt.Client
-	spotChan   chan *spot.Spot
-	shutdown   chan struct{}
-	workers    int
-	lookup     *cty.CTYDatabase
-	processing chan []byte
-	workerWg   sync.WaitGroup
-	skewStore  *skew.Store
-	appendSSID bool
+	broker       string
+	port         int
+	topics       []string
+	name         string
+	client       mqtt.Client
+	spotChan     chan *spot.Spot
+	shutdown     chan struct{}
+	workers      int
+	lookup       *cty.CTYDatabase
+	processing   chan []byte
+	workerWg     sync.WaitGroup
+	skewStore    *skew.Store
+	appendSSID   bool
+	spotterCache *spot.CallCache
 }
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
@@ -57,19 +58,37 @@ const (
 	pskReporterQueuePerWorker = 256
 )
 
+var (
+	callCacheSize = 4096
+	callCacheTTL  = 10 * time.Minute
+)
+
+// ConfigureCallCache tunes the normalization cache used for PSKReporter spotters.
+func ConfigureCallCache(size int, ttl time.Duration) {
+	if size <= 0 {
+		size = 4096
+	}
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	callCacheSize = size
+	callCacheTTL = ttl
+}
+
 // NewClient creates a new PSKReporter MQTT client
 func NewClient(broker string, port int, topics []string, name string, workers int, lookup *cty.CTYDatabase, skewStore *skew.Store, appendSSID bool) *Client {
 	return &Client{
-		broker:     broker,
-		port:       port,
-		topics:     append([]string{}, topics...),
-		name:       name,
-		spotChan:   make(chan *spot.Spot, 5000), // Buffered ingest to absorb bursts
-		shutdown:   make(chan struct{}),
-		workers:    workers,
-		lookup:     lookup,
-		skewStore:  skewStore,
-		appendSSID: appendSSID,
+		broker:       broker,
+		port:         port,
+		topics:       append([]string{}, topics...),
+		name:         name,
+		spotChan:     make(chan *spot.Spot, 5000), // Buffered ingest to absorb bursts
+		shutdown:     make(chan struct{}),
+		workers:      workers,
+		lookup:       lookup,
+		skewStore:    skewStore,
+		appendSSID:   appendSSID,
+		spotterCache: spot.NewCallCache(callCacheSize, callCacheTTL),
 	}
 }
 
@@ -317,21 +336,36 @@ func isCWorRTTY(mode string) bool {
 }
 
 func (c *Client) decorateSpotterCall(raw string) string {
+	cacheKey := raw
+	if c.appendSSID {
+		cacheKey = "1|" + raw
+	} else {
+		cacheKey = "0|" + raw
+	}
+	if cached, ok := c.spotterCache.Get(cacheKey); ok {
+		return cached
+	}
 	normalized := spot.NormalizeCallsign(raw)
 	if !c.appendSSID {
+		c.spotterCache.Add(cacheKey, normalized)
 		return normalized
 	}
 	if normalized == "" {
+		c.spotterCache.Add(cacheKey, normalized)
 		return normalized
 	}
 	if strings.Contains(normalized, "-") {
+		c.spotterCache.Add(cacheKey, normalized)
 		return normalized
 	}
 	// Appending "-#" increases length by 2. Skip if it would violate validation limits.
 	if len(normalized)+2 > 10 {
+		c.spotterCache.Add(cacheKey, normalized)
 		return normalized
 	}
-	return normalized + "-#"
+	normalized = normalized + "-#"
+	c.spotterCache.Add(cacheKey, normalized)
+	return normalized
 }
 
 func (c *Client) fetchCallsignInfo(call string) (*cty.PrefixInfo, bool) {

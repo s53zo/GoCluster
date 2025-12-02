@@ -208,6 +208,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error loading config: %v", err)
 	}
+	callCacheTTL := time.Duration(cfg.CallCache.TTLSeconds) * time.Second
+	spot.ConfigureNormalizeCallCache(cfg.CallCache.Size, callCacheTTL)
+	rbn.ConfigureCallCache(cfg.CallCache.Size, callCacheTTL)
+	pskreporter.ConfigureCallCache(cfg.CallCache.Size, callCacheTTL)
 	filter.SetDefaultModeSelection(cfg.Filter.DefaultModes)
 	if err := filter.EnsureUserDataDir(); err != nil {
 		log.Printf("Warning: unable to initialize filter directory: %v", err)
@@ -218,6 +222,22 @@ func main() {
 		cfg.Print()
 	} else {
 		log.Printf("Configuration loaded for %s (%s)", cfg.Server.Name, cfg.Server.NodeID)
+	}
+
+	// Optional dedicated call-correction debug logger
+	var corrDebugFile *os.File
+	var corrDebugLogger *log.Logger
+	if cfg.CallCorrection.DebugLog {
+		path := strings.TrimSpace(cfg.CallCorrection.DebugLogFile)
+		if path != "" {
+			if f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err != nil {
+				log.Printf("Warning: unable to open call correction debug log file %s: %v", path, err)
+			} else {
+				corrDebugFile = f
+				corrDebugLogger = log.New(f, "", log.LstdFlags)
+				log.Printf("Call correction debug logging to %s", path)
+			}
+		}
 	}
 
 	// Start the FCC ULS downloader in the background (does not block spot processing)
@@ -387,7 +407,7 @@ func main() {
 	}
 
 	// Start the unified output processor once the telnet server is ready
-	go processOutputSpots(deduplicator, spotBuffer, telnetServer, statsTracker, correctionIndex, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, spotRecorder)
+	go processOutputSpots(deduplicator, spotBuffer, telnetServer, statsTracker, correctionIndex, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, spotRecorder, corrDebugLogger)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
 	// RBN spots go INTO the deduplicator input channel
@@ -495,6 +515,10 @@ func main() {
 	// Stop the telnet server
 	telnetServer.Stop()
 
+	if corrDebugFile != nil {
+		corrDebugFile.Close()
+	}
+
 	log.Println("Cluster stopped")
 }
 
@@ -538,8 +562,10 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *
 		totalHarmonics := tracker.HarmonicSuppressions()
 
 		var queueDrops, clientDrops uint64
+		var clientCount int
 		if telnetSrv != nil {
 			queueDrops, clientDrops = telnetSrv.BroadcastMetricSnapshot()
+			clientCount = telnetSrv.GetClientCount()
 		}
 
 		combinedRBN := rbnTotal + rbnFTTotal
@@ -556,7 +582,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *
 				humanize.Comma(int64(pskFT4)),
 			), // 5
 			fmt.Sprintf("Corrected calls: %d (C) / %d (F) / %d (H)", totalCorrections, totalFreqCorrections, totalHarmonics), // 6
-			fmt.Sprintf("Telnet drops: %d (Q) / %d (C)", queueDrops, clientDrops),                                            // 7
+			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C)", clientCount, queueDrops, clientDrops),                  // 7
 		}
 
 		prevSourceCounts = sourceTotals
@@ -634,6 +660,7 @@ func processOutputSpots(
 	gridUpdate func(call, grid string),
 	gridLookup func(call string) (string, bool),
 	rec *recorder.Recorder,
+	corrDebugLogger *log.Logger,
 ) {
 	outputChan := deduplicator.GetOutputChannel()
 
@@ -691,7 +718,7 @@ func processOutputSpots(
 
 			var suppress bool
 			if telnet != nil && !s.IsBeacon {
-				suppress = maybeApplyCallCorrection(s, correctionIdx, correctionCfg, ctyDB, knownCalls, tracker, dash)
+				suppress = maybeApplyCallCorrectionWithLogger(s, correctionIdx, correctionCfg, ctyDB, knownCalls, tracker, dash, corrDebugLogger)
 				if suppress {
 					return
 				}
@@ -779,6 +806,10 @@ func processOutputSpots(
 }
 
 func maybeApplyCallCorrection(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash *dashboard) bool {
+	return maybeApplyCallCorrectionWithLogger(spotEntry, idx, cfg, ctyDB, knownPtr, tracker, dash, nil)
+}
+
+func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash *dashboard, dbg *log.Logger) bool {
 	if spotEntry == nil {
 		return false
 	}
@@ -801,6 +832,7 @@ func maybeApplyCallCorrection(spotEntry *spot.Spot, idx *spot.CorrectionIndex, c
 		MinConfidencePercent:     cfg.MinConfidencePercent,
 		MaxEditDistance:          cfg.MaxEditDistance,
 		RecencyWindow:            window,
+		Strategy:                 cfg.Strategy,
 		MinSNRCW:                 cfg.MinSNRCW,
 		MinSNRRTTY:               cfg.MinSNRRTTY,
 		DistanceModelCW:          cfg.DistanceModelCW,
@@ -810,6 +842,12 @@ func maybeApplyCallCorrection(spotEntry *spot.Spot, idx *spot.CorrectionIndex, c
 		Distance3ExtraConfidence: cfg.Distance3ExtraConfidence,
 		DistanceCacheSize:        cfg.DistanceCacheSize,
 		DistanceCacheTTL:         time.Duration(cfg.DistanceCacheTTLSeconds) * time.Second,
+		DebugLog:                 cfg.DebugLog,
+		DebugLogger:              dbg,
+		QualityBinHz:             cfg.QualityBinHz,
+		QualityGoodThreshold:     cfg.QualityGoodThreshold,
+		QualityNewCallIncrement:  cfg.QualityNewCallIncrement,
+		QualityBustedDecrement:   cfg.QualityBustedDecrement,
 	}
 	others := idx.Candidates(spotEntry, now, window)
 	corrected, supporters, correctedConfidence, subjectConfidence, totalReporters, ok := spot.SuggestCallCorrection(spotEntry, others, settings, now)
