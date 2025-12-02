@@ -249,6 +249,9 @@ func main() {
 	if err != nil {
 		log.Printf("Warning: failed to load CTY database: %v", err)
 	}
+	if strings.TrimSpace(cfg.FCCULS.DBPath) != "" {
+		uls.SetLicenseDBPath(cfg.FCCULS.DBPath)
+	}
 
 	// Create stats tracker
 	statsTracker := stats.NewTracker()

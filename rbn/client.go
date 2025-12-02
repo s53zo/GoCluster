@@ -17,6 +17,7 @@ import (
 	"dxcluster/cty"
 	"dxcluster/skew"
 	"dxcluster/spot"
+	"dxcluster/uls"
 )
 
 // precompiled regex avoids the per-line allocation/compile cost when normalizing RBN lines
@@ -464,6 +465,18 @@ func (c *Client) parseSpot(line string) {
 	deInfo, ok := c.fetchCallsignInfo(deCall)
 	if !ok {
 		return
+	}
+	// US license check for DX/DE when ADIF indicates USA (291). Skip if DB unavailable.
+	// This gate ensures unlicensed US calls are dropped as early as possible.
+	if dxInfo != nil && dxInfo.ADIF == 291 {
+		if !uls.IsLicensedUS(dxCall) {
+			return
+		}
+	}
+	if deInfo != nil && deInfo.ADIF == 291 {
+		if !uls.IsLicensedUS(deCall) {
+			return
+		}
 	}
 
 	// Create spot

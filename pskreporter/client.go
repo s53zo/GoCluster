@@ -13,6 +13,7 @@ import (
 	"dxcluster/cty"
 	"dxcluster/skew"
 	"dxcluster/spot"
+	"dxcluster/uls"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	jsoniter "github.com/json-iterator/go"
@@ -281,6 +282,18 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 	deInfo, ok := c.fetchCallsignInfo(deCall)
 	if !ok {
 		return nil
+	}
+	// US license check for DX/DE when ADIF indicates USA (291). Skip if DB unavailable.
+	// Dropping unlicensed US calls here keeps the downstream pipeline clean.
+	if dxInfo != nil && dxInfo.ADIF == 291 {
+		if !uls.IsLicensedUS(dxCall) {
+			return nil
+		}
+	}
+	if deInfo != nil && deInfo.ADIF == 291 {
+		if !uls.IsLicensedUS(deCall) {
+			return nil
+		}
 	}
 
 	// Create spot
