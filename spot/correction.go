@@ -212,11 +212,11 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 	}
 
 	cfg := normalizeCorrectionSettings(settings)
-	subjectCall := strings.ToUpper(strings.TrimSpace(subject.DXCall))
+	subjectCall := strings.TrimSpace(subject.DXCall)
 	if subjectCall == "" {
 		return "", 0, 0, 0, 0, false
 	}
-	subjectReporter := strings.ToUpper(strings.TrimSpace(subject.DECall))
+	subjectReporter := strings.TrimSpace(subject.DECall)
 	allReporters := map[string]struct{}{}
 	clusterSpots := make([]bandmap.SpotEntry, 0, len(others)+1)
 	clusterSpots = append(clusterSpots, bandmap.SpotEntry{
@@ -263,11 +263,11 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 	}
 
 	for _, entry := range others {
-		otherCall := strings.ToUpper(strings.TrimSpace(entry.Call))
+		otherCall := strings.TrimSpace(entry.Call)
 		if otherCall == "" {
 			continue
 		}
-		reporter := strings.ToUpper(strings.TrimSpace(entry.Spotter))
+		reporter := strings.TrimSpace(entry.Spotter)
 		if reporter == "" {
 			continue
 		}
@@ -440,15 +440,15 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 
 // findAnchorForCall selects the closest good anchor (by mode-aware distance) for a busted call.
 func findAnchorForCall(bustedCall string, freqHz float64, mode string, candidates []string, cfg *CorrectionSettings) (string, bool) {
-	busted := strings.ToUpper(strings.TrimSpace(bustedCall))
+	busted := strings.TrimSpace(bustedCall)
 	if busted == "" || cfg == nil {
 		return "", false
 	}
-	modeKey := strings.ToUpper(strings.TrimSpace(mode))
+	modeKey := strings.TrimSpace(mode)
 	best := ""
 	bestDist := math.MaxInt
 	for _, c := range candidates {
-		c = strings.ToUpper(strings.TrimSpace(c))
+		c = strings.TrimSpace(c)
 		if c == "" || c == busted {
 			continue
 		}
@@ -479,7 +479,7 @@ func updateCallQualityForCluster(winnerCall string, freqHz float64, cfg *Correct
 
 	distinct := make(map[string]struct{})
 	for _, s := range clusterSpots {
-		call := strings.ToUpper(strings.TrimSpace(s.Call))
+		call := strings.TrimSpace(s.Call)
 		if call == "" {
 			continue
 		}

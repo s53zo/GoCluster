@@ -124,12 +124,12 @@ Band, mode, confidence, and DXGRID2/DEGRID2 commands share identical semantics: 
 
 Confidence indicator legend in telnet output:
 
-- `?` - 25% consensus or less
-- `S` - 25% or less but spotted callsign is in `MASTER.SCP`
-- `B` - consensus suggested a correction but CTY validation failed (busted call retained)
-- `P` - 25-75% consensus
-- `V` - more than 75% consensus
-- `C` - callsign was corrected by consensus
+- `?` - Unknown/low support
+- `S` - Single-reporter spot that matches `MASTER.SCP`
+- `P` - 25-50% consensus for the subject call (no correction applied)
+- `V` - More than 50% consensus for the subject call (no correction applied)
+- `B` - Correction was suggested but CTY validation failed (call left unchanged)
+- `C` - Callsign was corrected and CTY-validated
 
 Use `SET/FILTER CONFIDENCE` with the glyphs above to whitelist the consensus levels you want to see (for example, `SET/FILTER CONFIDENCE P,V` keeps strong/very strong reports while dropping `?`/`S`/`B` entries).
 
@@ -345,3 +345,4 @@ C:\src\gocluster\
 - `go run cmd/rbnskewfetch -out data/skm_correction/rbnskew.json` forces an immediate skew-table refresh (the server still performs automatic downloads at 00:30 UTC daily).
 
 Let me know if you want diagrams, sample logs, or scripted deployment steps added next.
+

@@ -17,7 +17,7 @@ stats:
 
 # Telnet server (user-facing interface)
 telnet:
-  port: 7300
+  port: 8300
   tls_enabled: false
   max_connections: 100
   welcome_message: "\r\nExperimental DX Cluster\r\n"
@@ -59,7 +59,7 @@ call_correction:
   debug_log_file: "data/logs/callcorr_debug_modified.log"              # Optional file path to append correction debug lines (uses main log when empty)
   min_consensus_reports: 3        # Minimum number of corroborating spotters
   min_advantage: 1                # Candidate must exceed the original by this many spotters
-  min_confidence_percent: 70      # Candidate supporters must represent at least this percent of unique spotters
+  min_confidence_percent: 60      # Candidate supporters must represent at least this percent of unique spotters
   recency_seconds: 300            # Supporting spots must be this recent
   max_edit_distance: 3            # Max allowed Levenshtein distance between original and replacement
   frequency_tolerance_hz: 500     # Spots within this frequency window are considered the same signal
@@ -74,7 +74,7 @@ call_correction:
   invalid_action: "broadcast"     # "broadcast" original if correction fails CTY, or "suppress" to drop spot
   min_snr_cw: 4                   # Ignore CW corroborators weaker than this many dB
   min_snr_rtty: 3                 # Ignore RTTY corroborators weaker than this many dB
-  distance3_extra_reports: 2      # Extra unique supporters required when suggested call is distance 3
+  distance3_extra_reports: 1      # Extra unique supporters required when suggested call is distance 3
   distance3_extra_advantage: 1    # Extra advantage over the subject required when distance 3
   distance3_extra_confidence: 5   # Extra confidence percentage points required when distance 3
   distance_cache_size: 8192       # Memoize call distance calculations (entries)
@@ -91,7 +91,7 @@ harmonics:
 
 spot_policy:
   max_age_seconds: 300                   # Drop spots older than this many seconds (based on spot timestamp)
-  frequency_averaging_seconds: 60        # Look-back window for CW/RTTY frequency averaging
+  frequency_averaging_seconds: 120        # Look-back window for CW/RTTY frequency averaging
   frequency_averaging_tolerance_hz: 500  # Max deviation between reports when averaging
   frequency_averaging_min_reports: 5     # Minimum corroborating reports needed to adjust frequency
 

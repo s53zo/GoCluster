@@ -898,9 +898,7 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 				log.Printf("Call correction suppression engaged: dropping spot from %s at %.1f kHz", spotEntry.DXCall, spotEntry.Frequency)
 				return true
 			}
-			if !knownCall {
-				spotEntry.Confidence = "B"
-			}
+			spotEntry.Confidence = "B"
 		}
 		return false
 	}
@@ -981,12 +979,12 @@ func formatConfidence(percent int, totalReporters int, known bool, ctyMatch bool
 	}
 
 	switch {
-	case value <= 25:
-		return "?"
-	case value <= 75:
+	case value >= 51:
+		return "V"
+	case value >= 25:
 		return "P"
 	default:
-		return "V"
+		return "?"
 	}
 }
 
