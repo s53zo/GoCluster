@@ -2,6 +2,7 @@ package spot
 
 import (
 	"dxcluster/bandmap"
+	"encoding/json"
 	"log"
 	"math"
 	"strings"
@@ -80,6 +81,36 @@ var correctionEligibleModes = map[string]struct{}{
 	"CW":   {},
 	"RTTY": {},
 	"SSB":  {},
+}
+
+// CorrectionTrace captures the inputs and outcome of a correction decision for audit/comparison.
+type CorrectionTrace struct {
+	Timestamp                 time.Time `json:"ts"`
+	Strategy                  string    `json:"strategy"`
+	FrequencyKHz              float64   `json:"freq_khz"`
+	SubjectCall               string    `json:"subject"`
+	WinnerCall                string    `json:"winner"`
+	Mode                      string    `json:"mode"`
+	Source                    string    `json:"source"`
+	TotalReporters            int       `json:"total_reporters"`
+	SubjectSupport            int       `json:"subject_support"`
+	WinnerSupport             int       `json:"winner_support"`
+	RunnerUpSupport           int       `json:"runner_up_support"`
+	SubjectConfidence         int       `json:"subject_confidence"`
+	WinnerConfidence          int       `json:"winner_confidence"`
+	Distance                  int       `json:"distance"`
+	DistanceModel             string    `json:"distance_model"`
+	MaxEditDistance           int       `json:"max_edit_distance"`
+	MinReports                int       `json:"min_reports"`
+	MinAdvantage              int       `json:"min_advantage"`
+	MinConfidence             int       `json:"min_confidence"`
+	Distance3ExtraReports     int       `json:"d3_extra_reports"`
+	Distance3ExtraAdvantage   int       `json:"d3_extra_advantage"`
+	Distance3ExtraConfidence  int       `json:"d3_extra_confidence"`
+	FreqGuardMinSeparationKHz float64   `json:"freq_guard_min_separation_khz"`
+	FreqGuardRunnerUpRatio    float64   `json:"freq_guard_runner_ratio"`
+	Decision                  string    `json:"decision"`
+	Reason                    string    `json:"reason,omitempty"`
 }
 
 // IsCallCorrectionCandidate returns true if the given mode is eligible for
@@ -270,6 +301,30 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 		return "", 0, 0, 0, 0, false
 	}
 	subjectReporter := strings.TrimSpace(subject.DECall)
+
+	trace := CorrectionTrace{
+		Timestamp:                 now,
+		Strategy:                  strings.ToLower(strings.TrimSpace(cfg.Strategy)),
+		FrequencyKHz:              subject.Frequency,
+		SubjectCall:               strings.ToUpper(subjectCall),
+		Mode:                      strings.ToUpper(strings.TrimSpace(subject.Mode)),
+		Source:                    strings.ToUpper(strings.TrimSpace(subject.SourceNode)),
+		MaxEditDistance:           cfg.MaxEditDistance,
+		MinReports:                cfg.MinConsensusReports,
+		MinAdvantage:              cfg.MinAdvantage,
+		MinConfidence:             cfg.MinConfidencePercent,
+		Distance3ExtraReports:     cfg.Distance3ExtraReports,
+		Distance3ExtraAdvantage:   cfg.Distance3ExtraAdvantage,
+		Distance3ExtraConfidence:  cfg.Distance3ExtraConfidence,
+		FreqGuardMinSeparationKHz: cfg.FreqGuardMinSeparationKHz,
+		FreqGuardRunnerUpRatio:    cfg.FreqGuardRunnerUpRatio,
+		DistanceModel:             distanceModelPlain,
+	}
+	if trace.Mode == "CW" {
+		trace.DistanceModel = normalizeCWDistanceModel(cfg.DistanceModelCW)
+	} else if trace.Mode == "RTTY" {
+		trace.DistanceModel = normalizeRTTYDistanceModel(cfg.DistanceModelRTTY)
+	}
 	allReporters := map[string]struct{}{}
 	clusterSpots := make([]bandmap.SpotEntry, 0, len(others)+1)
 	clusterSpots = append(clusterSpots, bandmap.SpotEntry{
@@ -351,7 +406,11 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 	}
 
 	totalReporters = len(allReporters)
+	trace.TotalReporters = totalReporters
 	if totalReporters == 0 {
+		trace.Decision = "rejected"
+		trace.Reason = "no_reporters"
+		logCorrectionTrace(cfg, trace)
 		return "", 0, 0, 0, 0, false
 	}
 
@@ -374,9 +433,11 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 	}
 
 	subjectCount := len(subjectAgg.reporters)
+	trace.SubjectSupport = subjectCount
 	if totalReporters > 0 {
 		subjectConfidence = subjectCount * 100 / totalReporters
 	}
+	trace.SubjectConfidence = subjectConfidence
 
 	// Anchor path: use existing good calls in this bin to snap busted calls quickly.
 	allCalls := make([]string, 0, len(callKeys)+1)
@@ -405,6 +466,7 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 			if totalReporters > 0 {
 				anchorConfidence = anchorSupport * 100 / totalReporters
 			}
+			anchorDistance := cachedCallDistance(subjectCall, anchor, subject.Mode, cfg.DistanceModelCW, cfg.DistanceModelRTTY, cacheCfg, localCache, now)
 			anchorRunner := 0
 			for call, agg := range callStats {
 				if call == anchor || agg == nil {
@@ -415,9 +477,13 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 				}
 			}
 			updateCallQualityForCluster(anchor, freqHz, &cfg, clusterSpots)
-			if cfg.DebugLog {
-				logDecision(subject, anchor, subjectCount, anchorSupport, anchorRunner, cachedCallDistance(subjectCall, anchor, subject.Mode, cfg.DistanceModelCW, cfg.DistanceModelRTTY, cacheCfg, localCache, now), cfg, totalReporters, anchorConfidence, subjectConfidence)
-			}
+			trace.WinnerCall = strings.ToUpper(anchor)
+			trace.WinnerSupport = anchorSupport
+			trace.RunnerUpSupport = anchorRunner
+			trace.WinnerConfidence = anchorConfidence
+			trace.Distance = anchorDistance
+			trace.Decision = "applied"
+			logCorrectionTrace(cfg, trace)
 			return anchor, anchorSupport, anchorConfidence, subjectConfidence, totalReporters, true
 		}
 	}
@@ -448,11 +514,23 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 	}
 
 	if bestCall == "" || bestCall == subjectCall {
+		trace.Decision = "rejected"
+		trace.Reason = "no_winner"
+		logCorrectionTrace(cfg, trace)
 		return "", 0, 0, subjectConfidence, totalReporters, false
 	}
 
 	centerDistance := cachedCallDistance(subjectCall, bestCall, subject.Mode, cfg.DistanceModelCW, cfg.DistanceModelRTTY, cacheCfg, localCache, now)
+	trace.Distance = centerDistance
+	trace.WinnerCall = strings.ToUpper(bestCall)
+	trace.WinnerSupport = bestCount
+	trace.WinnerConfidence = bestConfidence
+	trace.RunnerUpSupport = runnerUp
+
 	if cfg.MaxEditDistance >= 0 && centerDistance > cfg.MaxEditDistance {
+		trace.Decision = "rejected"
+		trace.Reason = "max_edit_distance"
+		logCorrectionTrace(cfg, trace)
 		return "", 0, 0, subjectConfidence, totalReporters, false
 	}
 
@@ -466,12 +544,24 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 		minConf += cfg.Distance3ExtraConfidence
 	}
 	if bestCount < minReports {
+		trace.Decision = "rejected"
+		trace.Reason = "min_reports"
+		trace.MinReports = minReports
+		logCorrectionTrace(cfg, trace)
 		return "", 0, 0, subjectConfidence, totalReporters, false
 	}
 	if bestCount < subjectCount+minAdvantage {
+		trace.Decision = "rejected"
+		trace.Reason = "advantage"
+		trace.MinAdvantage = minAdvantage
+		logCorrectionTrace(cfg, trace)
 		return "", 0, 0, subjectConfidence, totalReporters, false
 	}
 	if bestConfidence < minConf {
+		trace.Decision = "rejected"
+		trace.Reason = "confidence"
+		trace.MinConfidence = minConf
+		logCorrectionTrace(cfg, trace)
 		return "", 0, 0, subjectConfidence, totalReporters, false
 	}
 
@@ -479,14 +569,16 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 	if runnerUp > 0 {
 		freqSeparation := math.Abs(bestFreq - runnerUpFreq)
 		if freqSeparation >= cfg.FreqGuardMinSeparationKHz && float64(runnerUp) >= cfg.FreqGuardRunnerUpRatio*float64(bestCount) {
+			trace.Decision = "rejected"
+			trace.Reason = "freq_guard"
+			logCorrectionTrace(cfg, trace)
 			return "", 0, 0, subjectConfidence, totalReporters, false
 		}
 	}
 
 	updateCallQualityForCluster(bestCall, freqHz, &cfg, clusterSpots)
-	if cfg.DebugLog {
-		logDecision(subject, bestCall, subjectCount, bestCount, runnerUp, centerDistance, cfg, totalReporters, bestConfidence, subjectConfidence)
-	}
+	trace.Decision = "applied"
+	logCorrectionTrace(cfg, trace)
 
 	return bestCall, bestCount, bestConfidence, subjectConfidence, totalReporters, true
 }
@@ -546,50 +638,20 @@ func updateCallQualityForCluster(winnerCall string, freqHz float64, cfg *Correct
 	}
 }
 
-// logDecision emits a structured diagnostic line for tuning/compare.
-func logDecision(subject *Spot, winner string, subjectCount, winnerCount, runnerUpCount int, distance int, cfg CorrectionSettings, totalReporters int, winnerConfidence int, subjectConfidence int) {
-	if subject == nil {
+func logCorrectionTrace(cfg CorrectionSettings, tr CorrectionTrace) {
+	if !cfg.DebugLog {
 		return
 	}
-	strategy := strings.ToLower(strings.TrimSpace(cfg.Strategy))
-	if strategy == "" {
-		strategy = "majority"
-	}
-	decision := "applied"
-	if winner == "" {
-		decision = "no_winner"
-	} else {
-		// Decision is determined by caller; this helper only logs. Keep "applied" for consistency.
-	}
-	freq := subject.Frequency
-	source := strings.ToUpper(strings.TrimSpace(subject.SourceNode))
 	logger := cfg.DebugLogger
 	if logger == nil {
 		logger = log.Default()
 	}
-	logger.Printf("callcorr decision strategy=%s freq_khz=%.1f subject=%s winner=%s subj_support=%d win_support=%d runner_up_support=%d dist=%d min_reports=%d min_adv=%d min_conf=%d max_dist=%d recency_s=%d freq_tol_hz=%.0f min_snr_cw=%d min_snr_rtty=%d total_reporters=%d win_conf=%d subj_conf=%d decision=%s source=%s",
-		strategy,
-		freq,
-		strings.ToUpper(strings.TrimSpace(subject.DXCall)),
-		strings.ToUpper(strings.TrimSpace(winner)),
-		subjectCount,
-		winnerCount,
-		runnerUpCount,
-		distance,
-		cfg.MinConsensusReports,
-		cfg.MinAdvantage,
-		cfg.MinConfidencePercent,
-		cfg.MaxEditDistance,
-		int(cfg.RecencyWindow.Seconds()),
-		frequencyToleranceKHz*1000,
-		cfg.MinSNRCW,
-		cfg.MinSNRRTTY,
-		totalReporters,
-		winnerConfidence,
-		subjectConfidence,
-		decision,
-		source,
-	)
+	data, err := json.Marshal(tr)
+	if err != nil {
+		logger.Printf("callcorr trace marshal error: %v", err)
+		return
+	}
+	logger.Println(string(data))
 }
 
 // normalizeCorrectionSettings fills in safe defaults so callers can omit config

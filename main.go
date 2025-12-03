@@ -533,10 +533,11 @@ func makeUnlicensedReporter(dash *dashboard, tracker *stats.Tracker) func(source
 
 		message := fmt.Sprintf("Unlicensed US %s %s dropped from %s %s @ %.1f kHz", role, call, source, mode, freq)
 		if dash != nil {
-			dash.AppendUnlicensed(message)
-		} else {
-			log.Println(message)
+			colored := fmt.Sprintf("Unlicensed US %s [red]%s[-] dropped from %s %s @ %.1f kHz", role, call, source, mode, freq)
+			dash.AppendUnlicensed(colored)
+			return
 		}
+		log.Println(message)
 	}
 }
 
