@@ -52,9 +52,11 @@ call_correction:
   min_consensus_reports: 3        # Minimum number of corroborating spotters
   min_advantage: 1                # Candidate must exceed the original by this many spotters
   min_confidence_percent: 60      # Candidate supporters must represent at least this percent of unique spotters
-  recency_seconds: 300            # Supporting spots must be this recent
+  recency_seconds: 360            # Supporting spots must be this recent (default for all modes)
+  recency_seconds_cw: 0           # Optional override for CW (0 = inherit recency_seconds)
+  recency_seconds_rtty: 0         # Optional override for RTTY (0 = inherit recency_seconds)
   max_edit_distance: 3            # Max allowed Levenshtein distance between original and replacement
-  frequency_tolerance_hz: 500     # Spots within this frequency window are considered the same signal
+  frequency_tolerance_hz: 1000    # Spots within this frequency window are considered the same signal
   freq_guard_min_separation_khz: 0.1 # Skip corrections when winner/runner-up are separated by at least this kHz
   freq_guard_runnerup_ratio: 0.5  # Runner-up must have at least this fraction of winner supporters to block correction
   quality_bin_hz: 500             # Frequency bin size for quality anchors (Hz)
@@ -81,6 +83,15 @@ call_correction:
     delete: 1                     # Cost to delete a bit in ITA2 patterns
     sub: 2                        # Cost to flip a bit in ITA2 patterns
     scale: 2                      # Multiplier for normalized ITA2 cost before rounding
+  adaptive_refresh:
+    busy_threshold_per_min: 500   # Enter busy when the 10m average exceeds this rate
+    quiet_threshold_per_min: 300  # Exit busy after two windows below this rate
+    quiet_consecutive_windows: 2  # Windows below quiet threshold required to leave busy
+    busy_interval_minutes: 15     # Refresh cadence during busy periods
+    quiet_interval_minutes: 45    # Refresh cadence during quiet periods
+    min_spots_since_last_refresh: 1000 # Skip refresh when volume since last run is below this
+    window_minutes_for_rate: 10   # Window size for computing average rate
+    evaluation_period_seconds: 30 # How often to evaluate the rate/state machine
 
 # Harmonic suppression for CW/USB/LSB/RTTY signals
 harmonics:
@@ -93,7 +104,7 @@ harmonics:
 
 spot_policy:
   max_age_seconds: 300                   # Drop spots older than this many seconds (based on spot timestamp)
-  frequency_averaging_seconds: 120        # Look-back window for CW/RTTY frequency averaging
+  frequency_averaging_seconds: 120       # Look-back window for CW/RTTY frequency averaging
   frequency_averaging_tolerance_hz: 500  # Max deviation between reports when averaging
   frequency_averaging_min_reports: 5     # Minimum corroborating reports needed to adjust frequency
 

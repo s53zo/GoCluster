@@ -1,0 +1,137 @@
+package main
+
+import (
+	"log"
+	"sync"
+	"time"
+
+	"dxcluster/config"
+)
+
+// activityMonitor tracks recent spot rates to choose between "busy" and "quiet" cadences.
+// It keeps 1-minute buckets over a sliding window and logs state transitions.
+type activityMonitor struct {
+	cfg         config.AdaptiveRefreshConfig
+	logger      *log.Logger
+	mu          sync.Mutex
+	buckets     []bucket
+	state       string
+	quietStreak int
+	lastEval    time.Time
+	lastRefresh time.Time
+	stopCh      chan struct{}
+}
+
+type bucket struct {
+	start time.Time
+	count int
+}
+
+func newActivityMonitor(cfg config.AdaptiveRefreshConfig, logger *log.Logger) *activityMonitor {
+	if cfg.WindowMinutesForRate <= 0 {
+		return nil
+	}
+	if logger == nil {
+		logger = log.Default()
+	}
+	buckets := make([]bucket, cfg.WindowMinutesForRate)
+	return &activityMonitor{
+		cfg:     cfg,
+		logger:  logger,
+		state:   "quiet",
+		buckets: buckets,
+		stopCh:  make(chan struct{}),
+	}
+}
+
+func (m *activityMonitor) Start() {
+	if m == nil {
+		return
+	}
+	period := time.Duration(m.cfg.EvaluationPeriodSeconds) * time.Second
+	if period <= 0 {
+		period = 30 * time.Second
+	}
+	ticker := time.NewTicker(period)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				m.evaluate(time.Now())
+			case <-m.stopCh:
+				return
+			}
+		}
+	}()
+}
+
+func (m *activityMonitor) Stop() {
+	if m == nil {
+		return
+	}
+	close(m.stopCh)
+}
+
+// Increment records a spot at the given time.
+func (m *activityMonitor) Increment(now time.Time) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rotateBuckets(now)
+	idx := m.bucketIndex(now)
+	m.buckets[idx].count++
+}
+
+func (m *activityMonitor) bucketIndex(t time.Time) int {
+	minutes := int(t.Unix()/60) % len(m.buckets)
+	return minutes
+}
+
+func (m *activityMonitor) rotateBuckets(now time.Time) {
+	for i := range m.buckets {
+		if now.Sub(m.buckets[i].start) >= time.Duration(len(m.buckets))*time.Minute {
+			m.buckets[i].start = now.Truncate(time.Minute)
+			m.buckets[i].count = 0
+		}
+	}
+}
+
+func (m *activityMonitor) evaluate(now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rotateBuckets(now)
+
+	var total int
+	for _, b := range m.buckets {
+		// Only include buckets within window
+		if now.Sub(b.start) < time.Duration(len(m.buckets))*time.Minute {
+			total += b.count
+		}
+	}
+	windowMinutes := len(m.buckets)
+	rate := float64(total) / float64(windowMinutes)
+
+	switch m.state {
+	case "quiet":
+		if rate > float64(m.cfg.BusyThresholdPerMin) {
+			m.state = "busy"
+			m.quietStreak = 0
+			m.logger.Printf("activity: busy (rate=%.1f/min)", rate)
+		}
+	case "busy":
+		if rate < float64(m.cfg.QuietThresholdPerMin) {
+			m.quietStreak++
+			if m.quietStreak >= m.cfg.QuietConsecutiveWindows {
+				m.state = "quiet"
+				m.quietStreak = 0
+				m.logger.Printf("activity: quiet (rate=%.1f/min)", rate)
+			}
+		} else {
+			m.quietStreak = 0
+		}
+	}
+	m.lastEval = now
+}

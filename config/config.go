@@ -148,8 +148,11 @@ type CallCorrectionConfig struct {
 	// MinConfidencePercent defines the minimum percentage (0-100) of total
 	// unique spotters on that frequency that must agree with the alternate call.
 	MinConfidencePercent int `yaml:"min_confidence_percent"`
-	// RecencySeconds defines how old the supporting spots can be.
+	// RecencySeconds defines how old the supporting spots can be for all modes when no override is set.
 	RecencySeconds int `yaml:"recency_seconds"`
+	// RecencySecondsCW/RecencySecondsRTTY override the base recency for those modes when >0.
+	RecencySecondsCW   int `yaml:"recency_seconds_cw"`
+	RecencySecondsRTTY int `yaml:"recency_seconds_rtty"`
 	// MaxEditDistance bounds how different the alternate call can be from the
 	// original (Levenshtein distance). Prevents wildly different corrections.
 	MaxEditDistance int `yaml:"max_edit_distance"`
@@ -205,6 +208,8 @@ type CallCorrectionConfig struct {
 	MorseWeights MorseWeightConfig `yaml:"morse_weights"`
 	// BaudotWeights tunes the ITA2 edit weights for RTTY distance calculations.
 	BaudotWeights BaudotWeightConfig `yaml:"baudot_weights"`
+	// AdaptiveRefresh tunes the activity-based refresh cadence for trust sets.
+	AdaptiveRefresh AdaptiveRefreshConfig `yaml:"adaptive_refresh"`
 }
 
 // MorseWeightConfig tunes the Morse-aware edit costs used for CW distance.
@@ -227,10 +232,22 @@ type BaudotWeightConfig struct {
 	Scale  int `yaml:"scale"`
 }
 
+// AdaptiveRefreshConfig controls how often trust/quality sets should be rebuilt based on activity.
+type AdaptiveRefreshConfig struct {
+	BusyThresholdPerMin      int `yaml:"busy_threshold_per_min"`
+	QuietThresholdPerMin     int `yaml:"quiet_threshold_per_min"`
+	QuietConsecutiveWindows  int `yaml:"quiet_consecutive_windows"`
+	BusyIntervalMinutes      int `yaml:"busy_interval_minutes"`
+	QuietIntervalMinutes     int `yaml:"quiet_interval_minutes"`
+	MinSpotsSinceLastRefresh int `yaml:"min_spots_since_last_refresh"`
+	WindowMinutesForRate     int `yaml:"window_minutes_for_rate"`
+	EvaluationPeriodSeconds  int `yaml:"evaluation_period_seconds"`
+}
+
 // HarmonicConfig controls detection and suppression of harmonic spots.
 type HarmonicConfig struct {
 	Enabled              bool    `yaml:"enabled"`
-	RecencySeconds       int     `yaml:"recency_seconds"`
+	RecencySeconds       int     `yaml:"recency_seconds"` // look-back window for harmonic correlation
 	MaxHarmonicMultiple  int     `yaml:"max_harmonic_multiple"`
 	FrequencyToleranceHz float64 `yaml:"frequency_tolerance_hz"`
 	MinReportDelta       int     `yaml:"min_report_delta"`
@@ -321,6 +338,12 @@ func Load(filename string) (*Config, error) {
 	if cfg.CallCorrection.RecencySeconds <= 0 {
 		cfg.CallCorrection.RecencySeconds = 45
 	}
+	if cfg.CallCorrection.RecencySecondsCW <= 0 {
+		cfg.CallCorrection.RecencySecondsCW = cfg.CallCorrection.RecencySeconds
+	}
+	if cfg.CallCorrection.RecencySecondsRTTY <= 0 {
+		cfg.CallCorrection.RecencySecondsRTTY = cfg.CallCorrection.RecencySeconds
+	}
 	if cfg.CallCorrection.FrequencyToleranceHz <= 0 {
 		cfg.CallCorrection.FrequencyToleranceHz = 0.5
 	}
@@ -403,6 +426,30 @@ func Load(filename string) (*Config, error) {
 	}
 	if cfg.CallCorrection.MorseWeights.Scale <= 0 {
 		cfg.CallCorrection.MorseWeights.Scale = 2
+	}
+	if cfg.CallCorrection.AdaptiveRefresh.WindowMinutesForRate <= 0 {
+		cfg.CallCorrection.AdaptiveRefresh.WindowMinutesForRate = 10
+	}
+	if cfg.CallCorrection.AdaptiveRefresh.EvaluationPeriodSeconds <= 0 {
+		cfg.CallCorrection.AdaptiveRefresh.EvaluationPeriodSeconds = 30
+	}
+	if cfg.CallCorrection.AdaptiveRefresh.BusyThresholdPerMin <= 0 {
+		cfg.CallCorrection.AdaptiveRefresh.BusyThresholdPerMin = 500
+	}
+	if cfg.CallCorrection.AdaptiveRefresh.QuietThresholdPerMin <= 0 {
+		cfg.CallCorrection.AdaptiveRefresh.QuietThresholdPerMin = 300
+	}
+	if cfg.CallCorrection.AdaptiveRefresh.QuietConsecutiveWindows <= 0 {
+		cfg.CallCorrection.AdaptiveRefresh.QuietConsecutiveWindows = 2
+	}
+	if cfg.CallCorrection.AdaptiveRefresh.BusyIntervalMinutes <= 0 {
+		cfg.CallCorrection.AdaptiveRefresh.BusyIntervalMinutes = 15
+	}
+	if cfg.CallCorrection.AdaptiveRefresh.QuietIntervalMinutes <= 0 {
+		cfg.CallCorrection.AdaptiveRefresh.QuietIntervalMinutes = 45
+	}
+	if cfg.CallCorrection.AdaptiveRefresh.MinSpotsSinceLastRefresh <= 0 {
+		cfg.CallCorrection.AdaptiveRefresh.MinSpotsSinceLastRefresh = 1000
 	}
 	if cfg.CallCorrection.BaudotWeights.Insert <= 0 {
 		cfg.CallCorrection.BaudotWeights.Insert = 1

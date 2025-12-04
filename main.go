@@ -250,6 +250,11 @@ func main() {
 	}
 	spot.ConfigureMorseWeights(cfg.CallCorrection.MorseWeights.Insert, cfg.CallCorrection.MorseWeights.Delete, cfg.CallCorrection.MorseWeights.Sub, cfg.CallCorrection.MorseWeights.Scale)
 	spot.ConfigureBaudotWeights(cfg.CallCorrection.BaudotWeights.Insert, cfg.CallCorrection.BaudotWeights.Delete, cfg.CallCorrection.BaudotWeights.Sub, cfg.CallCorrection.BaudotWeights.Scale)
+	activity := newActivityMonitor(cfg.CallCorrection.AdaptiveRefresh, log.Default())
+	if activity != nil {
+		activity.Start()
+		defer activity.Stop()
+	}
 	if strings.TrimSpace(cfg.FCCULS.DBPath) != "" {
 		uls.SetLicenseDBPath(cfg.FCCULS.DBPath)
 	}
@@ -402,7 +407,7 @@ func main() {
 	}
 
 	// Start the unified output processor once the telnet server is ready
-	go processOutputSpots(deduplicator, spotBuffer, telnetServer, statsTracker, correctionIndex, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrDebugLogger)
+	go processOutputSpots(deduplicator, spotBuffer, telnetServer, statsTracker, correctionIndex, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrDebugLogger, activity)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
 	// RBN spots go INTO the deduplicator input channel
@@ -681,6 +686,7 @@ func processOutputSpots(
 	gridLookup func(call string) (string, bool),
 	unlicensedReporter func(source, role, call, mode string, freq float64),
 	corrDebugLogger *log.Logger,
+	activity *activityMonitor,
 ) {
 	outputChan := deduplicator.GetOutputChannel()
 
@@ -694,6 +700,11 @@ func processOutputSpots(
 
 			if s == nil {
 				return
+			}
+			modeUpper := strings.ToUpper(strings.TrimSpace(s.Mode))
+
+			if activity != nil && (modeUpper == "CW" || modeUpper == "RTTY") {
+				activity.Increment(time.Now())
 			}
 
 			s.RefreshBeaconFlag()
@@ -799,7 +810,7 @@ func processOutputSpots(
 			}
 
 			if tracker != nil {
-				modeKey := strings.ToUpper(strings.TrimSpace(s.Mode))
+				modeKey := modeUpper
 				if modeKey == "" {
 					modeKey = string(s.SourceType)
 				}

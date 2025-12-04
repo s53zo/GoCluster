@@ -60,4 +60,11 @@ Notes:
 - PSK ingest: if JSON remains hot, consider buffer reuse in MQTT handler to avoid copying payloads per message.
 - Telnet filters: add fast-path when filters are effectively "all" to bypass per-spot map lookups for broadcast.
 - Broadcast filtering optimizations: add fast paths for no-clients/all-allow filters, global drops when all clients disallow (e.g., beacons), and consider grouping clients by identical filter state to evaluate Matches once per group; measure CPU impact under load.
-- Ring buffer improvements: prevent PSKReporter volume from evicting everything—consider per-source/per-mode rings, lower PSKReporter retention, or source-aware SHOW/DX filtering so CW/RTTY/human spots remain visible.
+- Ring buffer improvements: prevent PSKReporter volume from evicting everything-consider per-source/per-mode rings, lower PSKReporter retention, or source-aware SHOW/DX filtering so CW/RTTY/human spots remain visible.
+- Adaptive activity monitor: currently only logs busy/quiet transitions. To make it useful:
+  * Add a periodic refresher (trusted/quality set) driven by the monitor state: busy interval vs quiet interval.
+  * Enforce `min_spots_since_last_refresh` before running the refresher to avoid noisy rebuilds at low volume.
+  * Swap refreshed data atomically so the hot path remains read-only.
+  * Expose current state/rate and refresh runs (duration, size, skipped/ran) in logs/stats/dashboard.
+  * Tune thresholds/intervals after observing busy/quiet logs during a contest weekend.
+  * Emit a one-time initial state log on startup so quiet stays are visible.
