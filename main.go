@@ -208,6 +208,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error loading config: %v", err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	callCacheTTL := time.Duration(cfg.CallCache.TTLSeconds) * time.Second
 	spot.ConfigureNormalizeCallCache(cfg.CallCache.Size, callCacheTTL)
 	rbn.ConfigureCallCache(cfg.CallCache.Size, callCacheTTL)
@@ -238,7 +240,7 @@ func main() {
 	}
 
 	// Start the FCC ULS downloader in the background (does not block spot processing)
-	uls.StartBackground(cfg.FCCULS)
+	uls.StartBackground(ctx, cfg.FCCULS)
 
 	// Load CTY database for callsign validation
 	ctyDB, err := cty.LoadCTYDatabase(cfg.CTY.File)
@@ -341,7 +343,7 @@ func main() {
 
 	if cfg.KnownCalls.Enabled && knownCallsURL != "" && knownCallsPath != "" {
 		if knownCalls.Load() != nil {
-			startKnownCallScheduler(cfg.KnownCalls, &knownCalls, gridStore)
+			startKnownCallScheduler(ctx, cfg.KnownCalls, &knownCalls, gridStore)
 		} else {
 			log.Printf("Warning: known calls scheduler disabled (no initial data); ensure %s is reachable", cfg.KnownCalls.URL)
 		}
@@ -366,7 +368,7 @@ func main() {
 			}
 		}
 		if skewStore.Count() > 0 {
-			startSkewScheduler(cfg.Skew, skewStore)
+			startSkewScheduler(ctx, cfg.Skew, skewStore)
 		} else {
 			log.Printf("Warning: RBN skew scheduler disabled (no initial data); ensure %s is reachable", cfg.Skew.URL)
 			skewStore = nil
@@ -1165,7 +1167,7 @@ func refreshSkewTable(cfg config.SkewConfig, store *skew.Store) (int, error) {
 	return table.Count(), nil
 }
 
-func startSkewScheduler(cfg config.SkewConfig, store *skew.Store) {
+func startSkewScheduler(ctx context.Context, cfg config.SkewConfig, store *skew.Store) {
 	if store == nil {
 		return
 	}
@@ -1173,7 +1175,12 @@ func startSkewScheduler(cfg config.SkewConfig, store *skew.Store) {
 		for {
 			delay := nextSkewRefreshDelay(cfg, time.Now().UTC())
 			timer := time.NewTimer(delay)
-			<-timer.C
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 			if count, err := refreshSkewTable(cfg, store); err != nil {
 				log.Printf("Warning: scheduled RBN skew download failed: %v", err)
 			} else {
@@ -1205,7 +1212,7 @@ func skewRefreshHourMinute(cfg config.SkewConfig) (int, int) {
 
 // startKnownCallScheduler downloads the known-calls file at the configured UTC
 // time every day and updates the in-memory cache pointer after each refresh.
-func startKnownCallScheduler(cfg config.KnownCallsConfig, knownPtr *atomic.Pointer[spot.KnownCallsigns], store *gridstore.Store) {
+func startKnownCallScheduler(ctx context.Context, cfg config.KnownCallsConfig, knownPtr *atomic.Pointer[spot.KnownCallsigns], store *gridstore.Store) {
 	if knownPtr == nil {
 		return
 	}
@@ -1213,7 +1220,12 @@ func startKnownCallScheduler(cfg config.KnownCallsConfig, knownPtr *atomic.Point
 		for {
 			delay := nextKnownCallRefreshDelay(cfg, time.Now().UTC())
 			timer := time.NewTimer(delay)
-			<-timer.C
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 			if fresh, err := refreshKnownCallsigns(cfg); err != nil {
 				log.Printf("Warning: scheduled known calls download failed: %v", err)
 			} else {

@@ -35,8 +35,8 @@ type metadata struct {
 
 // StartBackground kicks off an immediate refresh (non-blocking) followed by
 // a daily scheduler at the configured UTC time. It is safe to call when
-// disabled; no work will be performed.
-func StartBackground(cfg config.FCCULSConfig) {
+// disabled; no work will be performed. Caller controls lifetime via ctx.
+func StartBackground(ctx context.Context, cfg config.FCCULSConfig) {
 	if !cfg.Enabled {
 		return
 	}
@@ -48,7 +48,7 @@ func StartBackground(cfg config.FCCULSConfig) {
 		} else {
 			log.Printf("FCC ULS archive/database already up to date (db=%s)", cfg.DBPath)
 		}
-		startScheduler(cfg)
+		startScheduler(ctx, cfg)
 	}()
 }
 
@@ -117,11 +117,16 @@ func Refresh(cfg config.FCCULSConfig, force bool) (bool, error) {
 	return true, nil
 }
 
-func startScheduler(cfg config.FCCULSConfig) {
+func startScheduler(ctx context.Context, cfg config.FCCULSConfig) {
 	for {
 		delay := nextRefreshDelay(cfg, time.Now().UTC())
 		timer := time.NewTimer(delay)
-		<-timer.C
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 		if updated, err := Refresh(cfg, false); err != nil {
 			log.Printf("Warning: scheduled FCC ULS download failed: %v", err)
 		} else if updated {

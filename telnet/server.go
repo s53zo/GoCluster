@@ -85,6 +85,8 @@ type Server struct {
 	workerQueues      []chan *broadcastJob // Per-worker job queues
 	workerQueueSize   int                  // Capacity of each worker's queue
 	metrics           broadcastMetrics     // Broadcast metrics counters
+	clientShards      [][]*Client          // Cached shard layout for broadcasts
+	shardsDirty       atomic.Bool          // Flag to rebuild shards on client add/remove
 	processor         *commands.Processor  // Command processor for user commands
 	skipHandshake     bool                 // When true, omit Telnet IAC negotiation
 	clientBufferSize  int                  // Per-client spot channel capacity
@@ -287,7 +289,7 @@ func (s *Server) BroadcastSpot(spot *spot.Spot) {
 
 // broadcastSpot segments clients into shards and enqueues jobs for workers
 func (s *Server) broadcastSpot(spot *spot.Spot) {
-	shards := s.snapshotClientShards()
+	shards := s.cachedClientShards()
 	s.dispatchSpotToWorkers(spot, shards)
 }
 
@@ -326,20 +328,28 @@ func (s *Server) dispatchSpotToWorkers(spot *spot.Spot, shards [][]*Client) {
 	}
 }
 
-func (s *Server) snapshotClientShards() [][]*Client {
+// cachedClientShards returns the shard snapshot, rebuilding only when marked dirty.
+func (s *Server) cachedClientShards() [][]*Client {
+	if !s.shardsDirty.Load() && len(s.clientShards) > 0 {
+		return s.clientShards
+	}
+
+	s.clientsMutex.RLock()
+	defer s.clientsMutex.RUnlock()
+
 	workers := s.broadcastWorkers
 	if workers <= 0 {
 		workers = 1
 	}
 	shards := make([][]*Client, workers)
-	s.clientsMutex.RLock()
-	defer s.clientsMutex.RUnlock()
 	idx := 0
 	for _, client := range s.clients {
 		shard := idx % workers
 		shards[shard] = append(shards[shard], client)
 		idx++
 	}
+	s.clientShards = shards
+	s.shardsDirty.Store(false)
 	return shards
 }
 
@@ -1585,6 +1595,7 @@ func (s *Server) registerClient(client *Client) {
 	}
 	s.clients[client.callsign] = client
 	total := len(s.clients)
+	s.shardsDirty.Store(true)
 	s.clientsMutex.Unlock()
 
 	if evicted != nil {
@@ -1610,6 +1621,7 @@ func (s *Server) unregisterClient(client *Client) {
 		delete(s.clients, client.callsign)
 	}
 	total := len(s.clients)
+	s.shardsDirty.Store(true)
 	s.clientsMutex.Unlock()
 
 	client.saveFilter()
