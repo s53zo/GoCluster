@@ -17,6 +17,7 @@ import (
 	"dxcluster/cty"
 	"dxcluster/skew"
 	"dxcluster/spot"
+	"dxcluster/uls"
 )
 
 // precompiled regex avoids the per-line allocation/compile cost when normalizing RBN lines
@@ -532,6 +533,11 @@ func (c *Client) parseSpot(line string) {
 	}
 	deInfo, ok := c.fetchCallsignInfo(deCall)
 	if !ok {
+		return
+	}
+	// Drop US spotters without an active FCC license before building the spot to avoid downstream work.
+	if deInfo != nil && deInfo.ADIF == 291 && !uls.IsLicensedUS(deCall) {
+		c.dispatchUnlicensed("DE", deCall, strings.ToUpper(mode), freq)
 		return
 	}
 	// Create spot
