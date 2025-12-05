@@ -433,7 +433,7 @@ func main() {
 	}
 
 	// Start the unified output processor once the telnet server is ready
-	go processOutputSpots(deduplicator, secondaryDeduper, spotBuffer, telnetServer, statsTracker, correctionIndex, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, adaptiveMinReports, refresher, spotterReliability)
+	go processOutputSpots(deduplicator, secondaryDeduper, spotBuffer, telnetServer, statsTracker, correctionIndex, cfg.CallCorrection, ctyDB, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
 	// RBN spots go INTO the deduplicator input channel
@@ -734,6 +734,7 @@ func processOutputSpots(
 	adaptiveMinReports *spot.AdaptiveMinReports,
 	refresher *adaptiveRefresher,
 	spotterReliability spot.SpotterReliability,
+	broadcastKeepSSID bool,
 ) {
 	outputChan := deduplicator.GetOutputChannel()
 
@@ -813,32 +814,19 @@ func processOutputSpots(
 			if !s.IsBeacon && freqAvg != nil && shouldAverageFrequency(s) {
 				window := frequencyAverageWindow(spotPolicy)
 				tolerance := frequencyAverageTolerance(spotPolicy)
-				avg, corroborators, totalReports := freqAvg.Average(s.DXCall, s.Frequency, time.Now().UTC(), window, tolerance)
+				avg, corroborators, _ := freqAvg.Average(s.DXCall, s.Frequency, time.Now().UTC(), window, tolerance)
 				rounded := math.Round(avg*10) / 10
-				confidence := 0
-				if totalReports > 0 {
-					confidence = corroborators * 100 / totalReports
-				}
 				// Apply the averaged frequency when we have enough corroborators and the rounded
 				// value actually differs from the reported frequency. We deliberately decouple
 				// this apply threshold from the inclusion tolerance so sub-500 Hz shifts are
 				// preserved instead of being discarded by the same 0.5 kHz gate.
 				delta := math.Abs(rounded - s.Frequency)
 				if corroborators >= spotPolicy.FrequencyAveragingMinReports && delta >= 0.05 {
-					message := fmt.Sprintf("Frequency corrected: %s %.1f -> %.1f kHz (%d / %d%%)", s.DXCall, s.Frequency, rounded, corroborators, confidence)
-					messageDash := message
-					if dash != nil {
-						messageDash = fmt.Sprintf("Frequency corrected: %s [red]%.1f[-] -> [green]%.1f[-] kHz (%d / %d%%)", s.DXCall, s.Frequency, rounded, corroborators, confidence)
-					}
 					s.Frequency = rounded
 					if tracker != nil {
 						tracker.IncrementFrequencyCorrections()
 					}
-					if dash != nil {
-						dash.AppendFrequency(messageDash)
-					} else {
-						log.Println(message)
-					}
+					// Frequency corrections are applied silently (no dedicated dashboard pane).
 				}
 			}
 
@@ -899,10 +887,33 @@ func processOutputSpots(
 			}
 
 			if telnet != nil {
-				telnet.BroadcastSpot(s)
+				toSend := s
+				if !broadcastKeepSSID && s != nil {
+					copied := *s
+					copied.DECall = collapseSSIDForBroadcast(s.DECall)
+					toSend = &copied
+				}
+				telnet.BroadcastSpot(toSend)
 			}
 		}()
 	}
+}
+
+// collapseSSIDForBroadcast trims SSID fragments so clients see a single
+// skimmer identity (e.g., N2WQ-1-# -> N2WQ-#). It preserves non-SSID suffixes.
+func collapseSSIDForBroadcast(call string) string {
+	call = strings.TrimSpace(call)
+	if call == "" {
+		return call
+	}
+	if strings.HasSuffix(call, "-#") {
+		trimmed := strings.TrimSuffix(call, "-#")
+		if idx := strings.LastIndexByte(trimmed, '-'); idx > 0 {
+			trimmed = trimmed[:idx]
+		}
+		return trimmed + "-#"
+	}
+	return call
 }
 
 // applyLicenseGate runs the FCC/CTY check after all corrections and returns true when the spot should be dropped.

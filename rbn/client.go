@@ -323,13 +323,11 @@ func normalizeRBNCallsign(call string) string {
 	return call
 }
 
-// normalizeSpotter normalizes the spotter (DE) callsign using either the legacy
-// SSID-collapsing behavior or the exact callsign (when keepSSID is true).
+// normalizeSpotter normalizes the spotter (DE) callsign for processing. SSID
+// suffixes are preserved so dedup/history can keep per-skimmer identity; any
+// broadcast-time collapsing is handled downstream.
 func (c *Client) normalizeSpotter(raw string) string {
-	if c.keepSSID {
-		return spot.NormalizeCallsign(raw)
-	}
-	return normalizeRBNCallsign(raw)
+	return spot.NormalizeCallsign(raw)
 }
 
 // splitSpotterToken separates the "DX de CALL:freq" token into its callsign and any
