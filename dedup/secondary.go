@@ -98,8 +98,10 @@ func (d *SecondaryDeduper) ShouldForward(s *spot.Spot) bool {
 	dup, lastSeen := isSecondaryDuplicateLocked(shard.cache, hash, s.Time, d.window)
 	if dup {
 		if d.preferStronger && s.Report > lastSeen.snr {
-			// Track the stronger representative but do not emit another broadcast.
+			// Track and forward the stronger representative.
 			shard.cache[hash] = secondaryEntry{when: s.Time, snr: s.Report}
+			shard.mu.Unlock()
+			return true
 		}
 		shard.duplicateCount++
 		shard.mu.Unlock()
