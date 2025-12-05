@@ -113,3 +113,84 @@ func TestFormatDXClusterZeroReport(t *testing.T) {
 		t.Fatalf("expected 0 dB report to render, got %q", got)
 	}
 }
+
+func TestFormatDXClusterAlignmentNoConfidence(t *testing.T) {
+	s := &Spot{
+		DXCall:    "K1ABC",
+		DECall:    "W3LPL",
+		Frequency: 7009.5,
+		Mode:      "FT8",
+		Report:    -5,
+		Time:      time.Date(2025, time.November, 22, 6, 15, 0, 0, time.UTC),
+		DXMetadata: CallMetadata{
+			CQZone: 5,
+			Grid:   "FN20",
+		},
+	}
+
+	got := s.FormatDXCluster()
+
+	const freqStr = "7009.5"
+	freqIdx := strings.Index(got, freqStr)
+	if freqIdx == -1 {
+		t.Fatalf("frequency string missing from output: %q", got)
+	}
+	if freqIdx+len(freqStr)-1 != 24 {
+		t.Fatalf("expected frequency to end at column 24, got %d in %q", freqIdx+len(freqStr)-1, got)
+	}
+
+	commentAnchor := "FT8 -5 CQ 05 FN20"
+	commentIdx := strings.Index(got, commentAnchor)
+	if commentIdx != 40 {
+		t.Fatalf("expected comment to start at column 40, got %d in %q", commentIdx, got)
+	}
+
+	timeIdx := strings.LastIndex(got, "0615Z")
+	if timeIdx != 71 {
+		t.Fatalf("expected time to start at column 71, got %d in %q", timeIdx, got)
+	}
+}
+
+func TestFormatDXClusterAlignmentWithConfidence(t *testing.T) {
+	s := &Spot{
+		DXCall:     "KE0UI",
+		DECall:     "W2NAF-#",
+		Frequency:  7014.0,
+		Mode:       "CW",
+		Report:     27,
+		Time:       time.Date(2025, time.November, 22, 4, 54, 0, 0, time.UTC),
+		Confidence: "V",
+		DXMetadata: CallMetadata{
+			CQZone: 4,
+			Grid:   "fn20",
+		},
+	}
+
+	got := s.FormatDXCluster()
+
+	const freqStr = "7014.0"
+	freqIdx := strings.Index(got, freqStr)
+	if freqIdx == -1 {
+		t.Fatalf("frequency string missing from output: %q", got)
+	}
+	if freqIdx+len(freqStr)-1 != 24 {
+		t.Fatalf("expected frequency to end at column 24, got %d in %q", freqIdx+len(freqStr)-1, got)
+	}
+
+	commentAnchor := "CW 27 dB CQ 04 FN20"
+	commentIdx := strings.Index(got, commentAnchor)
+	if commentIdx != 40 {
+		t.Fatalf("expected comment to start at column 40, got %d in %q", commentIdx, got)
+	}
+
+	timeIdx := strings.LastIndex(got, "0454Z")
+	if timeIdx != 71 {
+		t.Fatalf("expected time to start at column 71, got %d in %q", timeIdx, got)
+	}
+
+	confIdx := strings.LastIndex(got, s.Confidence)
+	expectedConfIdx := timeIdx - len(s.Confidence) - 1 // one space between confidence and time
+	if confIdx != expectedConfIdx {
+		t.Fatalf("expected confidence to end at column %d, got %d in %q", expectedConfIdx, confIdx, got)
+	}
+}

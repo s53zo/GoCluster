@@ -27,7 +27,7 @@ rbn_digital:
   keep_ssid_suffix: true        # Broadcast: true preserves SSIDs; false collapses to base-#
 
 pskreporter:
-  enabled: false
+  enabled: true
   name: "PSKReporter"
   broker: "mqtt.pskreporter.info"
   port: 1883

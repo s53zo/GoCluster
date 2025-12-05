@@ -19,7 +19,6 @@ const secondaryShardCount = 64
 
 // SecondaryDeduper drops repeat spots within a time window using a metadata
 // key composed of:
-//   - Time truncated to the minute
 //   - Frequency (integer kHz from existing 0.1 kHz rounding)
 //   - DE ADIF (spotter DXCC)
 //   - DE CQ zone
@@ -164,16 +163,16 @@ func (d *SecondaryDeduper) cleanup() {
 }
 
 // secondaryHash mirrors the primary hash structure (minute + kHz + fixed DX
-// call) but swaps DE callsign for DE DXCC + DE CQ zone.
+// call) but swaps DE callsign for DE DXCC + DE CQ zone and omits the time.
+// The time window is enforced by the cache itself so the hash is stable across
+// minute boundaries, collapsing within the configured window.
 func secondaryHash(s *spot.Spot, deDXCC int, deZone int) uint32 {
-	var buf [32]byte
-	t := s.Time.Truncate(time.Minute).Unix()
-	binary.LittleEndian.PutUint64(buf[0:8], uint64(t))
+	var buf [24]byte
 	freq := uint32(s.Frequency)
-	binary.LittleEndian.PutUint32(buf[8:12], freq)
-	binary.LittleEndian.PutUint16(buf[12:14], uint16(deDXCC))
-	binary.LittleEndian.PutUint16(buf[14:16], uint16(deZone))
-	writeFixedCallNormalized(buf[16:28], s.DXCall)
+	binary.LittleEndian.PutUint32(buf[0:4], freq)
+	binary.LittleEndian.PutUint16(buf[4:6], uint16(deDXCC))
+	binary.LittleEndian.PutUint16(buf[6:8], uint16(deZone))
+	writeFixedCallNormalized(buf[8:20], s.DXCall)
 	return uint32(xxh3.Hash(buf[:]))
 }
 

@@ -4,9 +4,11 @@
 package spot
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -88,6 +90,7 @@ func roundFrequencyTo100Hz(freqKHz float64) float64 {
 //   - Time truncated to the minute (Unix seconds)
 //   - Frequency truncated to whole kHz
 //   - DE and DX calls normalized, uppercased, fixed-width 12 bytes each
+//
 // Little-endian encoding keeps the byte order deterministic across platforms.
 func (s *Spot) Hash32() uint32 {
 	var buf [36]byte
@@ -123,6 +126,29 @@ func writeFixedCall(dst []byte, call string) {
 	}
 }
 
+// Fixed layout constants for DX cluster formatting. Column numbers are 0-based.
+const (
+	freqFieldWidthToEnd = 25 // frequency should end at column 24, so total width is 25
+	dxCallFieldWidth    = 8  // DX callsign is padded to at least 8 characters
+	commentColumn       = 40 // comment (mode + report + payload) starts at column 40
+	timeColumnStart     = 71 // timestamp begins at column 71
+	minGapToSymbol      = 2  // minimum spaces before confidence symbol
+)
+
+const spaceChunk = "                " // 16 spaces, used to pad without extra allocations
+
+func writeSpaces(b *bytes.Buffer, count int) {
+	for count > 0 {
+		if count > len(spaceChunk) {
+			b.WriteString(spaceChunk)
+			count -= len(spaceChunk)
+			continue
+		}
+		b.WriteString(spaceChunk[:count])
+		break
+	}
+}
+
 // FormatDXCluster formats the spot in standard DX cluster format with exact column positions
 //
 // Column positions (0-indexed):
@@ -147,69 +173,66 @@ func writeFixedCall(dst []byte, call string) {
 //	"DX de W3LPL:       7009.5  K1ABC        FT8 -5 JO93fn42>HM68jp36       0615Z"
 func (s *Spot) FormatDXCluster() string {
 	s.formatOnce.Do(func() {
-		// Format time as HHMMZ UTC (exactly 5 characters)
+		// Pre-size a buffer to avoid multiple allocations while preserving the
+		// exact column layout described above.
 		timeStr := s.Time.UTC().Format("1504Z")
-
+		freqStr := strconv.FormatFloat(s.Frequency, 'f', 1, 64)
 		commentPayload := s.formatZoneGridComment()
-		// Build comment section: mode + signal report + comment
-		// Build the signal report string; zero is a valid SNR and must be rendered.
-		var reportStr string
-		mode := strings.ToUpper(s.Mode)
-		if mode == "CW" || mode == "RTTY" {
-			reportStr = fmt.Sprintf("%d dB", s.Report)
-		} else {
-			reportStr = fmt.Sprintf("%+d", s.Report)
-		}
-
-		// Mode with signal report and CQ zone/grid annotation
-		commentSection := fmt.Sprintf("%s %s %s", s.Mode, reportStr, commentPayload)
-
-		// CRITICAL: Build the line so frequency ALWAYS ends at position 24
-		// 1. Start with "DX de " + spotter + ":"
 		prefix := "DX de " + s.DECall + ":"
 
-		// 2. Format the frequency as a string
-		freqStr := fmt.Sprintf("%.1f", s.Frequency)
-
-		// 3. Calculate how many spaces we need between spotter and frequency
-		// Frequency must end at position 24, so total width to position 25 is 25 characters
-		// We need: len(prefix) + spaces + len(freqStr) = 25
-		totalWidthToFreqEnd := 25
-		spacesNeeded := totalWidthToFreqEnd - len(prefix) - len(freqStr)
-		if spacesNeeded < 1 {
-			spacesNeeded = 1 // Minimum 1 space
+		spacesToFreq := freqFieldWidthToEnd - len(prefix) - len(freqStr)
+		if spacesToFreq < 1 {
+			spacesToFreq = 1
 		}
 
-		// 4. Build the left part up through the DX callsign field
-		leftPart := fmt.Sprintf("%s%s%s  %-8s",
-			prefix,                            // "DX de CALL:"
-			strings.Repeat(" ", spacesNeeded), // Variable spaces to align frequency
-			freqStr,                           // Frequency (ends at position 24)
-			s.DXCall,                          // DX callsign, 8 chars left-aligned (positions 27-34)
-		)
+		// Estimate final length to reduce builder growth.
+		estimatedLen := timeColumnStart + len(timeStr) + len(s.Confidence) + 4
+		if estimatedLen < len(prefix) {
+			estimatedLen = len(prefix)
+		}
+		var b bytes.Buffer
+		b.Grow(estimatedLen)
 
-		// 5. Insert enough spaces so the comment starts at column 40
-		spacesToComment := 40 - len(leftPart)
+		b.WriteString(prefix)
+		writeSpaces(&b, spacesToFreq)
+		b.WriteString(freqStr)
+		b.WriteString("  ")
+		b.WriteString(s.DXCall)
+		if pad := dxCallFieldWidth - len(s.DXCall); pad > 0 {
+			writeSpaces(&b, pad)
+		}
+
+		spacesToComment := commentColumn - b.Len()
 		if spacesToComment < 1 {
 			spacesToComment = 1
 		}
-		leftPart += strings.Repeat(" ", spacesToComment)
-		leftPart += commentSection
+		writeSpaces(&b, spacesToComment)
+
+		// Build comment section: Mode + signal report + CQ zone/grid annotation.
+		b.WriteString(s.Mode)
+		b.WriteByte(' ')
+		if strings.EqualFold(s.Mode, "CW") || strings.EqualFold(s.Mode, "RTTY") {
+			b.WriteString(strconv.Itoa(s.Report))
+			b.WriteString(" dB")
+		} else {
+			if s.Report >= 0 {
+				b.WriteByte('+')
+			}
+			b.WriteString(strconv.Itoa(s.Report))
+		}
+		b.WriteByte(' ')
+		b.WriteString(commentPayload)
 
 		confLabel := strings.TrimSpace(s.Confidence)
-		const (
-			timeColumnStart = 71 // 0-based column where the timestamp should start
-			minGapToSymbol  = 2  // minimum spaces between comment and confidence symbol
-		)
-
 		if confLabel == "" {
-			// Pad/truncate so the time begins exactly at column timeColumn.
-			if len(leftPart) > timeColumnStart {
-				leftPart = leftPart[:timeColumnStart]
-			} else if len(leftPart) < timeColumnStart {
-				leftPart += strings.Repeat(" ", timeColumnStart-len(leftPart))
+			// Pad/truncate so the time begins exactly at timeColumnStart.
+			if b.Len() > timeColumnStart {
+				b.Truncate(timeColumnStart)
+			} else if b.Len() < timeColumnStart {
+				writeSpaces(&b, timeColumnStart-b.Len())
 			}
-			s.formatted = leftPart + timeStr
+			b.WriteString(timeStr)
+			s.formatted = b.String()
 			return
 		}
 
@@ -219,23 +242,30 @@ func (s *Spot) FormatDXCluster() string {
 			maxConfWidth = 1
 		}
 		if confWidth > maxConfWidth {
-			confWidth = maxConfWidth
-			confLabel = confLabel[:confWidth]
+			confLabel = confLabel[:maxConfWidth]
+			confWidth = len(confLabel)
 		}
+
 		maxCommentLen := timeColumnStart - minGapToSymbol - confWidth
 		if maxCommentLen < 0 {
 			maxCommentLen = 0
 		}
-		if len(leftPart) > maxCommentLen {
-			leftPart = leftPart[:maxCommentLen]
+		if b.Len() > maxCommentLen {
+			b.Truncate(maxCommentLen)
 		}
-		// Ensure the timestamp begins exactly at timeColumnStart: leftPart + gap + conf + space
-		gapLen := timeColumnStart - confWidth - 1 - len(leftPart)
+
+		// Ensure the timestamp begins exactly at timeColumnStart: comment + gap + conf + space + time.
+		gapLen := timeColumnStart - confWidth - 1 - b.Len()
 		if gapLen < minGapToSymbol {
 			gapLen = minGapToSymbol
 		}
 
-		s.formatted = leftPart + strings.Repeat(" ", gapLen) + confLabel + " " + timeStr
+		writeSpaces(&b, gapLen)
+		b.WriteString(confLabel)
+		b.WriteByte(' ')
+		b.WriteString(timeStr)
+
+		s.formatted = b.String()
 	})
 
 	return s.formatted
