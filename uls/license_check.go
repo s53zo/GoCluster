@@ -2,6 +2,7 @@ package uls
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -62,7 +63,10 @@ func getLicenseDB() *sql.DB {
 		if licenseDBPath == "" {
 			return
 		}
-		db, err := sql.Open("sqlite", licenseDBPath+"?_pragma=journal_mode(OFF)&_pragma=synchronous(OFF)")
+		// Open read-only with WAL/query-only pragmas and a short busy timeout so readers can wait
+		// while the refresh job swaps in a new DB.
+		dsn := fmt.Sprintf("file:%s?mode=ro&_busy_timeout=5000&_pragma=query_only(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", licenseDBPath)
+		db, err := sql.Open("sqlite", dsn)
 		if err != nil {
 			log.Printf("FCC ULS: unable to open license DB at %s: %v (skipping license checks)", licenseDBPath, err)
 			return
@@ -81,19 +85,21 @@ func NormalizeForLicense(call string) string {
 	}
 	normalized = strings.TrimSuffix(normalized, "-#") // RBN skimmer indicator
 
-	// When slashes are present, pick the most callsign-like segment (last with a digit).
+	// When slashes are present, pick the most callsign-like segment (longest slice that contains a digit)
+	// so base calls like W1VF/VE3 resolve to the licensed call rather than the location suffix.
 	if strings.Contains(normalized, "/") {
 		segments := strings.Split(normalized, "/")
 		var candidate string
+		var candidateLen int
 		for _, seg := range segments {
 			seg = strings.TrimSpace(seg)
 			if seg == "" {
 				continue
 			}
 			if idx := strings.IndexFunc(seg, unicode.IsDigit); idx >= 0 {
-				// Prefer segments that look like real calls (length >=3), keep the last match.
-				if len(seg) >= 3 || candidate == "" {
+				if len(seg) > candidateLen {
 					candidate = seg
+					candidateLen = len(seg)
 				}
 			}
 		}
