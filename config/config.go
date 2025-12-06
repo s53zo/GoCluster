@@ -144,6 +144,9 @@ type CallCacheConfig struct {
 // CallCorrectionConfig controls consensus-based DX call corrections.
 type CallCorrectionConfig struct {
 	Enabled bool `yaml:"enabled"`
+	// BandStateOverrides allows per-band, per-activity-state tuning of frequency tolerance
+	// and quality binning. Values fall back to the global defaults when omitted.
+	BandStateOverrides []BandStateOverride `yaml:"band_state_overrides"`
 	// MinConsensusReports defines how many other unique spotters
 	// must agree on an alternate callsign before we consider correcting it.
 	MinConsensusReports int `yaml:"min_consensus_reports"`
@@ -225,6 +228,21 @@ type CallCorrectionConfig struct {
 	// Optional spotter reliability weights (0-1). Reporters below MinSpotterReliability are ignored.
 	SpotterReliabilityFile string  `yaml:"spotter_reliability_file"`
 	MinSpotterReliability  float64 `yaml:"min_spotter_reliability"`
+}
+
+// BandStateOverride groups bands and per-state overrides for correction tolerances.
+type BandStateOverride struct {
+	Name   string          `yaml:"name"`
+	Bands  []string        `yaml:"bands"`
+	Quiet  BandStateParams `yaml:"quiet"`
+	Normal BandStateParams `yaml:"normal"`
+	Busy   BandStateParams `yaml:"busy"`
+}
+
+// BandStateParams holds per-state overrides for a band group.
+type BandStateParams struct {
+	QualityBinHz         int     `yaml:"quality_bin_hz"`
+	FrequencyToleranceHz float64 `yaml:"frequency_tolerance_hz"`
 }
 
 // MorseWeightConfig tunes the Morse-aware edit costs used for CW distance.
@@ -357,10 +375,18 @@ func Load(filename string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+
+	hasSecondaryPrefer := yamlKeyPresent(raw, "dedup", "secondary_prefer_stronger_snr")
+	hasAdaptiveMinReportsEnabled := yamlKeyPresent(raw, "call_correction", "adaptive_min_reports", "enabled")
 
 	// RBN ingest buffers should be sized to absorb decode bursts; fall back to
 	// generous defaults when omitted.
@@ -426,14 +452,14 @@ func Load(filename string) (*Config, error) {
 		cfg.CallCorrection.QualityBustedDecrement = 1
 	}
 	if strings.TrimSpace(cfg.CallCorrection.Strategy) == "" {
-		cfg.CallCorrection.Strategy = "center"
+		cfg.CallCorrection.Strategy = "majority"
 	} else {
 		strategy := strings.ToLower(strings.TrimSpace(cfg.CallCorrection.Strategy))
 		switch strategy {
 		case "center", "classic", "majority":
 			cfg.CallCorrection.Strategy = strategy
 		default:
-			cfg.CallCorrection.Strategy = "center"
+			cfg.CallCorrection.Strategy = "majority"
 		}
 	}
 	if cfg.CallCorrection.InvalidAction == "" {
@@ -524,7 +550,7 @@ func Load(filename string) (*Config, error) {
 	if cfg.CallCorrection.AdaptiveMinReports.HysteresisWindows <= 0 {
 		cfg.CallCorrection.AdaptiveMinReports.HysteresisWindows = 2
 	}
-	if !cfg.CallCorrection.AdaptiveMinReports.Enabled {
+	if !cfg.CallCorrection.AdaptiveMinReports.Enabled && !hasAdaptiveMinReportsEnabled {
 		cfg.CallCorrection.AdaptiveMinReports.Enabled = true
 	}
 	if len(cfg.CallCorrection.AdaptiveMinReports.Groups) == 0 {
@@ -565,6 +591,11 @@ func Load(filename string) (*Config, error) {
 			cfg.CallCorrection.DistanceCacheTTLSeconds = 120
 		}
 	}
+	cfg.CallCorrection.BandStateOverrides = normalizeBandStateOverrides(
+		cfg.CallCorrection.BandStateOverrides,
+		cfg.CallCorrection.QualityBinHz,
+		cfg.CallCorrection.FrequencyToleranceHz,
+	)
 	if cfg.CallCache.Size <= 0 {
 		cfg.CallCache.Size = 4096
 	}
@@ -672,8 +703,7 @@ func Load(filename string) (*Config, error) {
 	if cfg.Dedup.SecondaryWindowSeconds == 0 {
 		cfg.Dedup.SecondaryWindowSeconds = 60
 	}
-	// Default secondary SNR preference to match primary unless specified.
-	if !cfg.Dedup.SecondaryPreferStrong {
+	if !cfg.Dedup.SecondaryPreferStrong && !hasSecondaryPrefer && cfg.Dedup.PreferStrongerSNR {
 		cfg.Dedup.SecondaryPreferStrong = cfg.Dedup.PreferStrongerSNR
 	}
 	if cfg.Dedup.OutputBufferSize <= 0 {
@@ -800,4 +830,61 @@ func (c *Config) Print() {
 		fmt.Printf("Skew: refresh %s UTC (min_spots=%d source=%s)\n", c.Skew.RefreshUTC, c.Skew.MinSpots, c.Skew.URL)
 	}
 	fmt.Printf("Ring buffer capacity: %d spots\n", c.Buffer.Capacity)
+}
+
+// normalizeBandStateOverrides applies guardrails and falls back to global defaults when
+// per-state values are missing or non-positive.
+func normalizeBandStateOverrides(overrides []BandStateOverride, defaultBin int, defaultTol float64) []BandStateOverride {
+	if len(overrides) == 0 {
+		return overrides
+	}
+	out := make([]BandStateOverride, 0, len(overrides))
+	for _, o := range overrides {
+		normalized := o
+		if normalized.Quiet.QualityBinHz <= 0 {
+			normalized.Quiet.QualityBinHz = defaultBin
+		}
+		if normalized.Normal.QualityBinHz <= 0 {
+			normalized.Normal.QualityBinHz = defaultBin
+		}
+		if normalized.Busy.QualityBinHz <= 0 {
+			normalized.Busy.QualityBinHz = defaultBin
+		}
+		if normalized.Quiet.FrequencyToleranceHz <= 0 {
+			normalized.Quiet.FrequencyToleranceHz = defaultTol
+		}
+		if normalized.Normal.FrequencyToleranceHz <= 0 {
+			normalized.Normal.FrequencyToleranceHz = defaultTol
+		}
+		if normalized.Busy.FrequencyToleranceHz <= 0 {
+			normalized.Busy.FrequencyToleranceHz = defaultTol
+		}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+// yamlKeyPresent walks a nested map decoded from YAML and reports whether the
+// provided path exists. Keys must match the YAML field names (e.g., "dedup",
+// "secondary_prefer_stronger_snr").
+func yamlKeyPresent(raw map[string]any, path ...string) bool {
+	if len(path) == 0 || raw == nil {
+		return false
+	}
+	current := raw
+	for i, key := range path {
+		val, ok := current[key]
+		if !ok {
+			return false
+		}
+		if i == len(path)-1 {
+			return true
+		}
+		next, ok := val.(map[string]any)
+		if !ok {
+			return false
+		}
+		current = next
+	}
+	return false
 }

@@ -291,7 +291,6 @@ func main() {
 	if cfg.CallCorrection.Enabled {
 		correctionIndex = spot.NewCorrectionIndex()
 	}
-	spot.SetFrequencyToleranceHz(cfg.CallCorrection.FrequencyToleranceHz)
 
 	var knownCalls atomic.Pointer[spot.KnownCallsigns]
 	knownCallsPath := strings.TrimSpace(cfg.KnownCalls.File)
@@ -1024,6 +1023,20 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 			minReports = dyn
 		}
 	}
+	state := "normal"
+	if adaptive != nil {
+		state = adaptive.StateForBand(spotEntry.Band, now)
+	}
+	qualityBinHz := cfg.QualityBinHz
+	freqToleranceHz := cfg.FrequencyToleranceHz
+	if params, ok := resolveBandStateParams(cfg.BandStateOverrides, spotEntry.Band, state); ok {
+		if params.QualityBinHz > 0 {
+			qualityBinHz = params.QualityBinHz
+		}
+		if params.FrequencyToleranceHz > 0 {
+			freqToleranceHz = params.FrequencyToleranceHz
+		}
+	}
 
 	settings := spot.CorrectionSettings{
 		MinConsensusReports:      minReports,
@@ -1043,7 +1056,8 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 		DistanceCacheTTL:         time.Duration(cfg.DistanceCacheTTLSeconds) * time.Second,
 		DebugLog:                 cfg.DebugLog,
 		TraceLogger:              traceLogger,
-		QualityBinHz:             cfg.QualityBinHz,
+		FrequencyToleranceHz:     freqToleranceHz,
+		QualityBinHz:             qualityBinHz,
 		QualityGoodThreshold:     cfg.QualityGoodThreshold,
 		QualityNewCallIncrement:  cfg.QualityNewCallIncrement,
 		QualityBustedDecrement:   cfg.QualityBustedDecrement,
@@ -1122,6 +1136,45 @@ func callCorrectionWindow(cfg config.CallCorrectionConfig) time.Duration {
 		return 45 * time.Second
 	}
 	return time.Duration(cfg.RecencySeconds) * time.Second
+}
+
+type bandStateParams struct {
+	QualityBinHz         int
+	FrequencyToleranceHz float64
+}
+
+// resolveBandStateParams returns per-band, per-state overrides when defined; otherwise false.
+func resolveBandStateParams(overrides []config.BandStateOverride, band, state string) (bandStateParams, bool) {
+	b := strings.ToLower(strings.TrimSpace(band))
+	if b == "" || len(overrides) == 0 {
+		return bandStateParams{}, false
+	}
+	stateKey := strings.ToLower(strings.TrimSpace(state))
+	for _, o := range overrides {
+		for _, candidate := range o.Bands {
+			if strings.ToLower(strings.TrimSpace(candidate)) != b {
+				continue
+			}
+			switch stateKey {
+			case "quiet":
+				return bandStateParams{
+					QualityBinHz:         o.Quiet.QualityBinHz,
+					FrequencyToleranceHz: o.Quiet.FrequencyToleranceHz,
+				}, true
+			case "busy":
+				return bandStateParams{
+					QualityBinHz:         o.Busy.QualityBinHz,
+					FrequencyToleranceHz: o.Busy.FrequencyToleranceHz,
+				}, true
+			default:
+				return bandStateParams{
+					QualityBinHz:         o.Normal.QualityBinHz,
+					FrequencyToleranceHz: o.Normal.FrequencyToleranceHz,
+				}, true
+			}
+		}
+	}
+	return bandStateParams{}, false
 }
 
 func frequencyAverageWindow(policy config.SpotPolicy) time.Duration {

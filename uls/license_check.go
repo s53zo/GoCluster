@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"dxcluster/spot"
@@ -41,16 +42,28 @@ func IsLicensedUS(call string) bool {
 
 	db := getLicenseDB()
 	if db != nil {
-		var dummy int
-		err := db.QueryRow("SELECT 1 FROM AM WHERE call_sign = ? LIMIT 1;", canonical).Scan(&dummy)
-		if err == nil {
-			allow = true
-		} else if err == sql.ErrNoRows {
-			allow = false
-		} else {
-			// On query errors, default to allow and log once.
+		const retries = 5
+		delay := 100 * time.Millisecond
+		for attempt := 0; attempt < retries; attempt++ {
+			var dummy int
+			err := db.QueryRow("SELECT 1 FROM AM WHERE call_sign = ? LIMIT 1;", canonical).Scan(&dummy)
+			if err == nil {
+				allow = true
+				break
+			}
+			if err == sql.ErrNoRows {
+				allow = false
+				break
+			}
+			if strings.Contains(strings.ToLower(err.Error()), "database is locked") && attempt < retries-1 {
+				time.Sleep(delay)
+				delay *= 2
+				continue
+			}
+			// On other query errors, default to allow and log once.
 			log.Printf("FCC ULS lookup failed for %s: %v", call, err)
 			allow = true
+			break
 		}
 	}
 
@@ -63,9 +76,9 @@ func getLicenseDB() *sql.DB {
 		if licenseDBPath == "" {
 			return
 		}
-		// Open read-only with WAL/query-only pragmas and a short busy timeout so readers can wait
-		// while the refresh job swaps in a new DB.
-		dsn := fmt.Sprintf("file:%s?mode=ro&_busy_timeout=5000&_pragma=query_only(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", licenseDBPath)
+		// Open read-only with query_only/immutable pragmas and a short busy timeout so refresh
+		// swaps don't trigger write attempts (WAL needs write access, so avoid it here).
+		dsn := fmt.Sprintf("file:%s?mode=ro&_busy_timeout=5000&_pragma=query_only(1)&_pragma=immutable(1)", licenseDBPath)
 		db, err := sql.Open("sqlite", dsn)
 		if err != nil {
 			log.Printf("FCC ULS: unable to open license DB at %s: %v (skipping license checks)", licenseDBPath, err)

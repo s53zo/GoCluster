@@ -67,7 +67,7 @@ call_correction:
   frequency_tolerance_hz: 1000    # Spots within this frequency window are considered the same signal
   freq_guard_min_separation_khz: 0.1 # Skip corrections when winner/runner-up are separated by at least this kHz
   freq_guard_runnerup_ratio: 0.5  # Runner-up must have at least this fraction of winner supporters to block correction
-  quality_bin_hz: 500             # Frequency bin size for quality anchors (Hz)
+  quality_bin_hz: 500             # Frequency bin size for quality anchors (Hz); kept as a global fallback
   quality_good_threshold: 2       # Q >= this value marks a call as a good anchor in its bin
   quality_newcall_increment: 1    # Increment applied to winner call after resolved cluster
   quality_busted_decrement: 1     # Decrement applied to losing calls in cluster
@@ -94,6 +94,52 @@ call_correction:
   quality_priors_file: "data/quality/quality_priors.dat"         # Optional path to seed call quality priors (CALL SCORE [FREQ_KHZ])
   spotter_reliability_file: "data/quality/spotter_reliability.dat"    # Optional path with spotter weights (SPOTTER WEIGHT 0-1)
   min_spotter_reliability: 0.0    # Ignore reporters below this reliability weight
+  # Band/state-aware frequency handling (keeps global defaults as a guardrail for unknown bands)
+  band_state_overrides:
+    - name: lowbands
+      bands: ["160m", "80m"]
+      quiet:
+        quality_bin_hz: 500
+        frequency_tolerance_hz: 1000
+      normal:
+        quality_bin_hz: 400
+        frequency_tolerance_hz: 900
+      busy:
+        quality_bin_hz: 300
+        frequency_tolerance_hz: 800
+    - name: midbands
+      bands: ["40m", "20m"]
+      quiet:
+        quality_bin_hz: 500
+        frequency_tolerance_hz: 1000
+      normal:
+        quality_bin_hz: 500
+        frequency_tolerance_hz: 900
+      busy:
+        quality_bin_hz: 400
+        frequency_tolerance_hz: 800
+    - name: highbands
+      bands: ["15m", "10m"]
+      quiet:
+        quality_bin_hz: 500
+        frequency_tolerance_hz: 1000
+      normal:
+        quality_bin_hz: 500
+        frequency_tolerance_hz: 1000
+      busy:
+        quality_bin_hz: 500
+        frequency_tolerance_hz: 900
+    - name: others
+      bands: ["30m", "17m", "12m", "60m", "6m"]
+      quiet:
+        quality_bin_hz: 500
+        frequency_tolerance_hz: 1000
+      normal:
+        quality_bin_hz: 500
+        frequency_tolerance_hz: 1000
+      busy:
+        quality_bin_hz: 500
+        frequency_tolerance_hz: 1000
   adaptive_refresh:
     busy_threshold_per_min: 500   # Enter busy when the 10m average exceeds this rate
     quiet_threshold_per_min: 300  # Exit busy after two windows below this rate

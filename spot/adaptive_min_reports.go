@@ -124,10 +124,7 @@ func (a *AdaptiveMinReports) MinReportsForBand(band string, now time.Time) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if now.Sub(a.lastEval) >= a.evalPeriod {
-		a.evaluate(now)
-		a.lastEval = now
-	}
+	a.ensureEvaluatedLocked(now)
 
 	groupName, ok := a.bandToGroup[b]
 	if !ok {
@@ -214,6 +211,7 @@ func (a *AdaptiveMinReports) HighestState() string {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.ensureEvaluatedLocked(time.Now().UTC())
 	hasNormal := false
 	for _, gs := range a.groups {
 		switch gs.state {
@@ -227,6 +225,37 @@ func (a *AdaptiveMinReports) HighestState() string {
 		return "normal"
 	}
 	return "quiet"
+}
+
+// StateForBand returns the current adaptive state ("quiet"|"normal"|"busy") for the band,
+// defaulting to "normal" when unknown or when adaptive control is disabled.
+func (a *AdaptiveMinReports) StateForBand(band string, now time.Time) string {
+	if a == nil {
+		return "normal"
+	}
+	b := strings.ToLower(strings.TrimSpace(band))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.ensureEvaluatedLocked(now)
+	groupName, ok := a.bandToGroup[b]
+	if !ok {
+		return "normal"
+	}
+	gs, ok := a.groups[groupName]
+	if !ok || strings.TrimSpace(gs.state) == "" {
+		return "normal"
+	}
+	return gs.state
+}
+
+func (a *AdaptiveMinReports) ensureEvaluatedLocked(now time.Time) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if a.lastEval.IsZero() || now.Sub(a.lastEval) >= a.evalPeriod {
+		a.evaluate(now)
+		a.lastEval = now
+	}
 }
 
 func stateForCount(count float64, quietBelow, busyAbove int) string {

@@ -27,6 +27,8 @@ type CorrectionSettings struct {
 	// Frequency guard to avoid merging nearby strong signals.
 	FreqGuardMinSeparationKHz float64
 	FreqGuardRunnerUpRatio    float64
+	// FrequencyToleranceHz defines how close two spots must be to be considered the same signal.
+	FrequencyToleranceHz float64
 	// Quality-based anchors (frequency-binned call scores).
 	QualityBinHz            int
 	QualityGoodThreshold    int
@@ -376,6 +378,12 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 		subjectAgg.lastFreq = subject.Frequency
 	}
 
+	toleranceHz := cfg.FrequencyToleranceHz
+	if toleranceHz <= 0 {
+		toleranceHz = 500 // fallback to a half-kHz window
+	}
+	toleranceKHz := toleranceHz / 1000.0
+
 	for _, entry := range others {
 		otherCall := strings.TrimSpace(entry.Call)
 		if otherCall == "" {
@@ -389,7 +397,7 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 			continue
 		}
 		entryFreqKHz := float64(entry.FreqHz) / 1000.0
-		if math.Abs(entryFreqKHz-subject.Frequency) > frequencyToleranceKHz {
+		if math.Abs(entryFreqKHz-subject.Frequency) > toleranceKHz {
 			continue
 		}
 		seenAt := time.Unix(entry.Time, 0)
@@ -670,6 +678,9 @@ func normalizeCorrectionSettings(settings CorrectionSettings) CorrectionSettings
 	}
 	if cfg.FreqGuardRunnerUpRatio <= 0 {
 		cfg.FreqGuardRunnerUpRatio = 0.5
+	}
+	if cfg.FrequencyToleranceHz <= 0 {
+		cfg.FrequencyToleranceHz = 500
 	}
 	if cfg.QualityBinHz <= 0 {
 		cfg.QualityBinHz = 1000
