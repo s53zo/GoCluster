@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,15 @@ type Config struct {
 	RBNZipTemplate  string `yaml:"rbn_zip_template"`
 	DownloadRBN     bool   `yaml:"download_rbn"`
 	CreateReportDir bool   `yaml:"create_report_dir"`
+	ContestDates    string `yaml:"contest_dates_file"`
+	Stability       StabilityConfig `yaml:"stability"`
+}
+
+type StabilityConfig struct {
+	BucketMinutes   int     `yaml:"bucket_minutes"`
+	WindowMinutes   int     `yaml:"window_minutes"`
+	MinFollowOn     int     `yaml:"min_follow_on"`
+	FreqToleranceHz float64 `yaml:"freq_tolerance_hz"`
 }
 
 type bustedRow struct {
@@ -51,6 +61,17 @@ type reasonRow struct {
 	Count  int64
 }
 
+type spot struct {
+	Ts   int64
+	Freq float64
+}
+
+type stabilityBucket struct {
+	Start  int64
+	Total  int
+	Stable int
+}
+
 func defaultConfig() Config {
 	return Config{
 		DataDir:         ".",
@@ -61,6 +82,13 @@ func defaultConfig() Config {
 		ReportTemplate:  "data/reports/analysis-{DATE}.txt",
 		DownloadRBN:     true,
 		CreateReportDir: true,
+		ContestDates:    "",
+		Stability: StabilityConfig{
+			BucketMinutes:   60,
+			WindowMinutes:   60,
+			MinFollowOn:     2,
+			FreqToleranceHz: 1000,
+		},
 	}
 }
 
@@ -282,6 +310,180 @@ func unzip(zipPath, destDir string) error {
 	return nil
 }
 
+func loadContestDates(path string) map[string]struct{} {
+	out := make(map[string]struct{})
+	if path == "" {
+		return out
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	for _, ln := range strings.Split(string(data), "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		out[ln] = struct{}{}
+	}
+	return out
+}
+
+func loadRBN(csvPath string) (map[string][]spot, error) {
+	f, err := os.Open(csvPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	spots := make(map[string][]spot)
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 0, 1024*1024)
+	scanner.Buffer(buf, 1024*1024)
+	isHeader := true
+	for scanner.Scan() {
+		line := scanner.Text()
+		if isHeader {
+			isHeader = false
+			continue
+		}
+		parts := strings.Split(line, ",")
+		if len(parts) < 11 {
+			continue
+		}
+		freqKhz, err := strconv.ParseFloat(parts[3], 64)
+		if err != nil {
+			continue
+		}
+		dx := strings.ToUpper(strings.TrimSpace(parts[5]))
+		if dx == "" {
+			continue
+		}
+		ts, err := time.Parse("2006-01-02 15:04:05", parts[10])
+		if err != nil {
+			continue
+		}
+		spots[dx] = append(spots[dx], spot{Ts: ts.Unix(), Freq: freqKhz})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	for k := range spots {
+		sort.Slice(spots[k], func(i, j int) bool { return spots[k][i].Ts < spots[k][j].Ts })
+	}
+	return spots, nil
+}
+
+type correction struct {
+	Ts    int64
+	Winner string
+	Freq  float64
+}
+
+func binarySearchSpots(sp []spot, target int64) int {
+	lo, hi := 0, len(sp)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if sp[mid].Ts < target {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+func computeStability(db *sql.DB, csvPath string, minTs int64, cfg StabilityConfig) (int, int, []stabilityBucket) {
+	rbnSpots, err := loadRBN(csvPath)
+	if err != nil {
+		return 0, 0, nil
+	}
+
+	corrections := make([]correction, 0, 8192)
+	rows, err := db.Query("select ts, upper(trim(winner)), freq_khz from decisions where decision='applied'")
+	if err != nil {
+		return 0, 0, nil
+	}
+	for rows.Next() {
+		var ts int64
+		var w string
+		var f float64
+		if err := rows.Scan(&ts, &w, &f); err != nil {
+			rows.Close()
+			return 0, 0, nil
+		}
+		corrections = append(corrections, correction{Ts: ts, Winner: w, Freq: f})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, 0, nil
+	}
+	rows.Close()
+
+	if cfg.BucketMinutes <= 0 {
+		cfg.BucketMinutes = 60
+	}
+	if cfg.WindowMinutes <= 0 {
+		cfg.WindowMinutes = 60
+	}
+	if cfg.MinFollowOn <= 0 {
+		cfg.MinFollowOn = 2
+	}
+	if cfg.FreqToleranceHz <= 0 {
+		cfg.FreqToleranceHz = 1000
+	}
+
+	tolKhz := cfg.FreqToleranceHz / 1000.0
+	horizon := int64(cfg.WindowMinutes * 60)
+	bucketSize := int64(cfg.BucketMinutes * 60)
+
+	bucketMap := make(map[int64]*stabilityBucket)
+	stableCount := 0
+
+	for _, corr := range corrections {
+		list := rbnSpots[corr.Winner]
+		totalHorizon := 0
+		if len(list) > 0 {
+			startIdx := binarySearchSpots(list, corr.Ts)
+			for i := startIdx; i < len(list); i++ {
+				if list[i].Ts > corr.Ts+horizon {
+					break
+				}
+				if math.Abs(list[i].Freq-corr.Freq) <= tolKhz {
+					totalHorizon++
+					if totalHorizon >= cfg.MinFollowOn {
+						break
+					}
+				}
+			}
+		}
+
+		if totalHorizon >= cfg.MinFollowOn {
+			stableCount++
+		}
+
+		bucketStart := minTs + ((corr.Ts - minTs) / bucketSize * bucketSize)
+		b := bucketMap[bucketStart]
+		if b == nil {
+			b = &stabilityBucket{Start: bucketStart}
+			bucketMap[bucketStart] = b
+		}
+		b.Total++
+		if totalHorizon >= cfg.MinFollowOn {
+			b.Stable++
+		}
+	}
+
+	buckets := make([]stabilityBucket, 0, len(bucketMap))
+	for _, v := range bucketMap {
+		buckets = append(buckets, *v)
+	}
+	sort.Slice(buckets, func(i, j int) bool { return buckets[i].Start < buckets[j].Start })
+
+	return stableCount, len(corrections), buckets
+}
+
 func main() {
 	configPath := flag.String("config", "config/daily_analysis.yaml", "Path to analysis config YAML")
 	dateFlag := flag.String("date", "", "Analysis date YYYY-MM-DD (defaults to yesterday)")
@@ -333,6 +535,14 @@ func main() {
 		if strings.HasSuffix(strings.ToLower(rbnZip), ".zip") {
 			log.Printf("Extracting RBN archive %s", rbnZip)
 			must(unzip(rbnZip, filepath.Dir(csvPath)))
+		}
+	}
+
+	contestDates := loadContestDates(cfg.ContestDates)
+	isContest := false
+	if cfg.ContestDates != "" {
+		if _, ok := contestDates[analysisDate.Format("2006-01-02")]; ok {
+			isContest = true
 		}
 	}
 
@@ -460,6 +670,13 @@ func main() {
 		pairRecall = float64(matchedPairs) * 100 / float64(len(bustedUnique))
 	}
 	report = append(report, fmt.Sprintf("Pair-level recall: %.1f%%", pairRecall))
+	if cfg.ContestDates != "" {
+		if isContest {
+			report = append(report, "Profile: contest day (contest_dates_file)")
+		} else {
+			report = append(report, "Profile: non-contest day (contest_dates_file)")
+		}
+	}
 	report = append(report, "")
 
 	report = append(report, "Band recall (reference rows within DB window):")
@@ -504,6 +721,30 @@ func main() {
 	report = append(report, fmt.Sprintf("  Total confidence rejects: %d", totalConfRejects))
 	report = append(report, fmt.Sprintf("  Dist<=2 with 55-59%% confidence: %d", nearConfD12))
 	report = append(report, fmt.Sprintf("  Dist=3 with 60-64%% confidence: %d", nearConfD3))
+
+	// Temporal stability using RBN CSV
+	if _, err := os.Stat(csvPath); err == nil {
+		stableCount, totalStab, buckets := computeStability(db, csvPath, minTs, cfg.Stability)
+		report = append(report, "")
+		report = append(report, fmt.Sprintf("Temporal stability (window %d min, min follow-on %d, freq tol %.0f Hz):",
+			cfg.Stability.WindowMinutes, cfg.Stability.MinFollowOn, cfg.Stability.FreqToleranceHz))
+		if totalStab > 0 {
+			report = append(report, fmt.Sprintf("  Overall: %d/%d (%.1f%%) corrections showed follow-on winner spots",
+				stableCount, totalStab, percent(stableCount, totalStab)))
+			report = append(report, "  Rolling stability by bucket:")
+			report = append(report, "  BucketStartUTC          Total  Stable  Rate")
+			for _, b := range buckets {
+				report = append(report, fmt.Sprintf("  %s %6d %7d %5.1f%%",
+					time.Unix(b.Start, 0).UTC().Format("2006-01-02 15:04"),
+					b.Total, b.Stable, percent(b.Stable, b.Total)))
+			}
+		} else {
+			report = append(report, "  No applied corrections to evaluate for stability.")
+		}
+	} else {
+		report = append(report, "")
+		report = append(report, "Temporal stability: skipped (RBN CSV not found).")
+	}
 
 	if cfg.CreateReportDir {
 		ensureDir(reportPath)

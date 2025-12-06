@@ -48,3 +48,20 @@ download_rbn: true
 
 # If true, the tool will create the report directory automatically.
 create_report_dir: true
+
+# Optional: file listing contest dates (one YYYY-MM-DD per line, # for comments).
+# Example:
+#   2025-12-05
+#   2025-12-06
+contest_dates_file: ""
+
+# Temporal stability settings (uses RBN CSV for follow-on winner sightings).
+stability:
+  # Rolling bucket size for reporting stability (minutes).
+  bucket_minutes: 10
+  # Follow-on window after each correction (minutes) to look for uncorrected winner spots.
+  window_minutes: 10
+  # Minimum follow-on winner spots within the window to count as “stable”.
+  min_follow_on: 2
+  # Frequency tolerance when matching winner sightings in RBN (Hz).
+  freq_tolerance_hz: 1000
