@@ -84,6 +84,8 @@ type Server struct {
 	broadcastWorkers  int                  // Number of goroutines delivering spots
 	workerQueues      []chan *broadcastJob // Per-worker job queues
 	workerQueueSize   int                  // Capacity of each worker's queue
+	batchInterval     time.Duration        // Broadcast batch interval; 0 means immediate
+	batchMax          int                  // Max jobs per batch before flush
 	metrics           broadcastMetrics     // Broadcast metrics counters
 	clientShards      [][]*Client          // Cached shard layout for broadcasts
 	shardsDirty       atomic.Bool          // Flag to rebuild shards on client add/remove
@@ -167,10 +169,12 @@ const (
 )
 
 const (
-	defaultBroadcastQueueSize    = 2048
-	defaultClientBufferSize      = 128
-	defaultWorkerQueueSize       = 128
-	defaultDuplicateLoginMessage = "Another login for your callsign connected. This session is being closed (multiple logins are not allowed)."
+	defaultBroadcastQueueSize     = 2048
+	defaultBroadcastBatch         = 512
+	defaultBroadcastBatchInterval = 250 * time.Millisecond
+	defaultClientBufferSize       = 128
+	defaultWorkerQueueSize        = 128
+	defaultDuplicateLoginMessage  = "Another login for your callsign connected. This session is being closed (multiple logins are not allowed)."
 )
 
 const (
@@ -180,17 +184,18 @@ const (
 
 // ServerOptions configures the telnet server instance.
 type ServerOptions struct {
-	Port              int
-	WelcomeMessage    string
-	DuplicateLoginMsg string
-	LoginGreeting     string
-	ClusterCall       string
-	MaxConnections    int
-	BroadcastWorkers  int
-	BroadcastQueue    int
-	WorkerQueue       int
-	ClientBuffer      int
-	SkipHandshake     bool
+	Port                   int
+	WelcomeMessage         string
+	DuplicateLoginMsg      string
+	LoginGreeting          string
+	ClusterCall            string
+	MaxConnections         int
+	BroadcastWorkers       int
+	BroadcastQueue         int
+	WorkerQueue            int
+	ClientBuffer           int
+	BroadcastBatchInterval time.Duration
+	SkipHandshake          bool
 }
 
 // NewServer creates a new telnet server
@@ -208,6 +213,8 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		broadcast:         make(chan *spot.Spot, config.BroadcastQueue),
 		broadcastWorkers:  config.BroadcastWorkers,
 		workerQueueSize:   config.WorkerQueue,
+		batchInterval:     config.BroadcastBatchInterval,
+		batchMax:          defaultBroadcastBatch,
 		clientBufferSize:  config.ClientBuffer,
 		skipHandshake:     config.SkipHandshake,
 		processor:         processor,
@@ -227,6 +234,9 @@ func normalizeServerOptions(opts ServerOptions) ServerOptions {
 	}
 	if config.ClientBuffer <= 0 {
 		config.ClientBuffer = defaultClientBufferSize
+	}
+	if config.BroadcastBatchInterval <= 0 {
+		config.BroadcastBatchInterval = defaultBroadcastBatchInterval
 	}
 	if strings.TrimSpace(config.DuplicateLoginMsg) == "" {
 		config.DuplicateLoginMsg = defaultDuplicateLoginMessage
@@ -355,15 +365,52 @@ func (s *Server) cachedClientShards() [][]*Client {
 
 func (s *Server) broadcastWorker(id int, jobs <-chan *broadcastJob) {
 	log.Printf("Broadcast worker %d started", id)
+	// Immediate mode when batching is disabled.
+	if s.batchInterval <= 0 {
+		for {
+			select {
+			case <-s.shutdown:
+				return
+			case job := <-jobs:
+				if job == nil {
+					continue
+				}
+				s.deliverJob(job)
+			}
+		}
+	}
+
+	ticker := time.NewTicker(s.batchInterval)
+	defer ticker.Stop()
+	batch := make([]*broadcastJob, 0, s.batchMax)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		for _, job := range batch {
+			if job == nil {
+				continue
+			}
+			s.deliverJob(job)
+		}
+		batch = batch[:0]
+	}
+
 	for {
 		select {
 		case <-s.shutdown:
+			flush()
 			return
 		case job := <-jobs:
 			if job == nil {
 				continue
 			}
-			s.deliverJob(job)
+			batch = append(batch, job)
+			if len(batch) >= s.batchMax {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
 		}
 	}
 }

@@ -59,6 +59,8 @@ type TelnetConfig struct {
 	WorkerQueue       int    `yaml:"worker_queue_size"`
 	ClientBuffer      int    `yaml:"client_buffer_size"`
 	SkipHandshake     bool   `yaml:"skip_handshake"`
+	// BroadcastBatchIntervalMS controls telnet broadcast micro-batching. 0 disables batching.
+	BroadcastBatchIntervalMS int `yaml:"broadcast_batch_interval_ms"`
 }
 
 // RBNConfig contains Reverse Beacon Network settings
@@ -610,6 +612,9 @@ func Load(filename string) (*Config, error) {
 	}
 	if cfg.Telnet.ClientBuffer <= 0 {
 		cfg.Telnet.ClientBuffer = 128
+	}
+	if cfg.Telnet.BroadcastBatchIntervalMS <= 0 {
+		cfg.Telnet.BroadcastBatchIntervalMS = 250
 	}
 	// Provide operator-facing telnet prompts even when omitted from YAML.
 	if strings.TrimSpace(cfg.Telnet.DuplicateLoginMsg) == "" {

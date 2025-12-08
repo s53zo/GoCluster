@@ -476,17 +476,18 @@ func main() {
 
 	// Create and start telnet server
 	telnetServer := telnet.NewServer(telnet.ServerOptions{
-		Port:              cfg.Telnet.Port,
-		WelcomeMessage:    cfg.Telnet.WelcomeMessage,
-		DuplicateLoginMsg: cfg.Telnet.DuplicateLoginMsg,
-		LoginGreeting:     cfg.Telnet.LoginGreeting,
-		ClusterCall:       cfg.Server.NodeID,
-		MaxConnections:    cfg.Telnet.MaxConnections,
-		BroadcastWorkers:  cfg.Telnet.BroadcastWorkers,
-		BroadcastQueue:    cfg.Telnet.BroadcastQueue,
-		WorkerQueue:       cfg.Telnet.WorkerQueue,
-		ClientBuffer:      cfg.Telnet.ClientBuffer,
-		SkipHandshake:     cfg.Telnet.SkipHandshake,
+		Port:                   cfg.Telnet.Port,
+		WelcomeMessage:         cfg.Telnet.WelcomeMessage,
+		DuplicateLoginMsg:      cfg.Telnet.DuplicateLoginMsg,
+		LoginGreeting:          cfg.Telnet.LoginGreeting,
+		ClusterCall:            cfg.Server.NodeID,
+		MaxConnections:         cfg.Telnet.MaxConnections,
+		BroadcastWorkers:       cfg.Telnet.BroadcastWorkers,
+		BroadcastQueue:         cfg.Telnet.BroadcastQueue,
+		WorkerQueue:            cfg.Telnet.WorkerQueue,
+		ClientBuffer:           cfg.Telnet.ClientBuffer,
+		BroadcastBatchInterval: time.Duration(cfg.Telnet.BroadcastBatchIntervalMS) * time.Millisecond,
+		SkipHandshake:          cfg.Telnet.SkipHandshake,
 	}, processor)
 
 	err = telnetServer.Start()
