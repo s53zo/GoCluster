@@ -70,6 +70,10 @@ func (hd *HarmonicDetector) ShouldDrop(s *Spot, now time.Time) (bool, float64, i
 		report:    s.Report,
 		at:        s.Time,
 	})
+	// Prevent map growth: if the slice is empty after pruning, drop the key.
+	if len(hd.entries[call]) == 0 {
+		delete(hd.entries, call)
+	}
 	return false, 0, 0, 0
 }
 

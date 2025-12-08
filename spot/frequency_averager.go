@@ -58,7 +58,18 @@ func (fa *FrequencyAverager) Average(call string, freq float64, now time.Time, w
 	}
 
 	pruned = append(pruned, freqSample{freq: freq, at: now})
-	fa.entries[call] = pruned
+	// Even if pruned is empty (should not happen after append), keep logic to clean map.
+	if len(pruned) == 0 {
+		delete(fa.entries, call)
+	} else {
+		// Reclaim excess capacity when the slice has shrunk significantly.
+		if cap(pruned) > len(pruned)*2 {
+			newSlice := make([]freqSample, len(pruned))
+			copy(newSlice, pruned)
+			pruned = newSlice
+		}
+		fa.entries[call] = pruned
+	}
 
 	total := len(pruned)
 	return sum / float64(corroborators), corroborators, total

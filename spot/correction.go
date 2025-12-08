@@ -872,6 +872,11 @@ func (ci *CorrectionIndex) Candidates(subject *Spot, now time.Time, window time.
 			continue
 		}
 		bucket.spots = prune(bucket.spots, now, window)
+		if len(bucket.spots) == 0 {
+			// Drop empty buckets to prevent map growth as frequencies churn.
+			delete(ci.buckets, k)
+			continue
+		}
 		results = append(results, bucket.spots...)
 	}
 	return results
