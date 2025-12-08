@@ -369,6 +369,11 @@ func (s *Server) broadcastWorker(id int, jobs <-chan *broadcastJob) {
 }
 
 func (s *Server) deliverJob(job *broadcastJob) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("telnet: panic delivering broadcast job: %v", r)
+		}
+	}()
 	for _, client := range job.clients {
 		// Always deliver spots where the DX callsign matches the logged-in user,
 		// regardless of filters (self-spots should not be filtered out).

@@ -43,6 +43,7 @@ import (
 	"dxcluster/uls"
 
 	"github.com/dustin/go-humanize"
+	"golang.org/x/term"
 )
 
 const (
@@ -240,8 +241,15 @@ func (c *gridCache) lookupWithMetrics(call string, metrics *gridMetrics) (string
 }
 
 func main() {
+	forceTUI := os.Getenv("DXC_FORCE_TUI") == "1"
 	disableTUI := os.Getenv("DXC_NO_TUI") == "1"
-	ui := newDashboard(!disableTUI)
+	tty := term.IsTerminal(int(os.Stdout.Fd()))
+	enableDashboard := forceTUI || (!disableTUI && tty)
+	if !enableDashboard && !forceTUI {
+		log.Printf("Dashboard disabled (non-interactive console or DXC_NO_TUI set)")
+	}
+
+	ui := newDashboard(enableDashboard)
 	if ui != nil {
 		ui.WaitReady()
 		defer ui.Stop()
@@ -817,6 +825,7 @@ func processOutputSpots(
 				return
 			}
 			s.EnsureNormalized()
+			dirty := false
 			modeUpper := s.ModeNorm
 			if refresher != nil {
 				refresher.IncrementSpots()
@@ -830,16 +839,16 @@ func processOutputSpots(
 				if strings.TrimSpace(s.DXMetadata.Grid) == "" {
 					if grid, ok := gridLookup(s.DXCall); ok {
 						s.DXMetadata.Grid = grid
+						dirty = true
 					}
 				}
 				if strings.TrimSpace(s.DEMetadata.Grid) == "" {
 					if grid, ok := gridLookup(s.DECall); ok {
 						s.DEMetadata.Grid = grid
+						dirty = true
 					}
 				}
 			}
-			// Grids may have been backfilled; refresh normalized caches.
-			s.EnsureNormalized()
 			if s.IsBeacon {
 				// Beacons are tagged with a strong confidence so they still display a glyph.
 				s.Confidence = "V"
@@ -860,7 +869,7 @@ func processOutputSpots(
 				}
 				// Call correction can change the DX call; recompute beacon flag accordingly.
 				s.RefreshBeaconFlag()
-				s.EnsureNormalized()
+				dirty = true
 			}
 
 			if !s.IsBeacon && harmonicDetector != nil && harmonicCfg.Enabled {
@@ -899,6 +908,7 @@ func processOutputSpots(
 						tracker.IncrementFrequencyCorrections()
 					}
 					// Frequency corrections are applied silently (no dedicated dashboard pane).
+					dirty = true
 				}
 			}
 
@@ -906,14 +916,28 @@ func processOutputSpots(
 			if !s.IsBeacon {
 				if (modeUpper == "CW" || modeUpper == "RTTY" || modeUpper == "SSB") && strings.TrimSpace(s.Confidence) == "" {
 					s.Confidence = "?"
+					dirty = true
 				}
 			}
 
+			if dirty {
+				s.EnsureNormalized()
+				dirty = false
+			}
 			// Final CTY/licensing gate runs after corrections so busted calls can be fixed first.
 			if applyLicenseGate(s, ctyDB, unlicensedReporter) {
 				return
 			}
+			// License gate refreshes metadata; normalize once more before stats/broadcast.
+			if !dirty {
+				// applyLicenseGate mutates metadata; mark dirty for final normalization.
+				dirty = true
+			}
 
+			if dirty {
+				s.EnsureNormalized()
+				dirty = false
+			}
 			if tracker != nil {
 				modeKey := modeUpper
 				if modeKey == "" {
@@ -1016,7 +1040,6 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, reporter func(source
 	if s == nil {
 		return false
 	}
-	s.EnsureNormalized()
 	if s.IsBeacon {
 		return false
 	}
@@ -1038,7 +1061,6 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, reporter func(source
 	if deGrid != "" {
 		s.DEMetadata.Grid = deGrid
 	}
-	s.EnsureNormalized()
 
 	now := time.Now()
 	if dxInfo != nil && dxInfo.ADIF == 291 {

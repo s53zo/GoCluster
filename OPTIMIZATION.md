@@ -3,7 +3,7 @@
 ### Baseline (for before/after comparison)
 - **CPU profile (2 min, 2025-12-08 11:24:20):** `data/diagnostics/cpu-20251208-112420.pprof`
   - Top costs: `memeqbody` 22.7% flat, `runtime.cgocall` 15.7% flat, `runtime.scanobject` 6.1% flat.
-  - App hotspots (cumulative): `cty.lookupCallsignNoCache` ~28%, `pskreporter.workerLoop/convertToSpot/fetchCallsignInfo` ~25–40%, `processOutputSpots` ~18%, `uls.IsLicensedUS` ~12%, `gridstore.Get` ~11%.
+  - App hotspots (cumulative): `cty.lookupCallsignNoCache` ~28%, `pskreporter.workerLoop/convertToSpot/fetchCallsignInfo` ~25-40%, `processOutputSpots` ~18%, `uls.IsLicensedUS` ~12%, `gridstore.Get` ~11%.
 - **Heap snapshot (same time):** `data/diagnostics/heap-20251208-112420.pprof` (steady-state; ring buffer dominates; no leak seen).
 - **GC settings during capture:** `GOGC=50`, `DXC_PPROF_ADDR=localhost:6061`, `DXC_HEAP_LOG_INTERVAL=60s`, `DXC_NO_TUI=1`.
 
@@ -39,20 +39,18 @@
   - `gridstore.Get` ~6.3% cum (down from ~7% after Phase 1).
   - PSKReporter ingest still largest app hotspot (~32% cum, down from ~43%).
 
-**Phase 3 (next): Allocation trims in correction/dedup**
-- Distance cache key builder with pre-sized buffer.
-- Map/slice preallocation for correction maps/lists.
-- Optional Levenshtein buffer pooling (guarded).
-- Dedup cleanup short-lock pattern (if not already done).
+**Phase 3 (completed): Allocation trims in correction/dedup and hot caches**
+- Distance cache key builder uses pre-sized `strings.Builder`; correction maps/slices pre-sized.
+- Levenshtein buffers pooled via `sync.Pool`; optional, bounded sizes.
+- Dedup cleanup switched to short-lock two-phase delete.
+- Added license cache (5m TTL) to avoid repeated FCC checks; PSKReporter CTY cache TTL 5m.
+- After Phase 3 CPU: `cpu-after-phase3-20251208-123914.pprof` (120s).
+  - `memeqbody` 26.2% flat, `runtime.cgocall` 17.3% flat, `cty.lookupCallsignNoCache` ~32.2% cum, PSKReporter ingest ~46.6% cum, `uls.IsLicensedUS` ~16.7% cum, `gridstore.Get` ~15.3% cum.
 
-**Phase 3:** Allocation trims in correction/dedup
-- Distance cache key builder with pre-sized buffer.
-- Map/slice preallocation for correction maps/lists.
-- Optional Levenshtein buffer pooling (guarded).
-- Dedup cleanup short-lock pattern (if not already done).
-
-**Phase 4:** Re-measure and tune
-- Repeat the same profiling harness to compare `-top`/`-cum` against the baseline CPU/heap files above.
+**Post-Phase 3 re-run (headless)**
+- Captured with `DXC_NO_TUI=1`, `GOGC=50`: `cpu-pskopt-20251208-130954.pprof` and `heap-pskopt-20251208-130954.pprof`.
+- Results: `memeqbody` 25.3% flat, `runtime.cgocall` 22.3% flat, `cty.lookupCallsignNoCache` ~31.7% cum, PSKReporter ingest ~45.8% cum, `uls.IsLicensedUS` ~15.3% cum, `gridstore.Get` ~12.8% cum.
+- Delta vs Phase 3 profile is within noise (traffic variance). No additional CPU drop observed from PSKReporter/CTY changes; controlled load is needed to make a clean comparison.
 
 ### Measurement Harness (already available)
 - Enable profiling: set `DXC_PPROF_ADDR=localhost:6061` and `DXC_HEAP_LOG_INTERVAL=60s` (opt-in) and run the cluster.
@@ -60,7 +58,7 @@
 - Collect heap: `curl http://localhost:6061/debug/pprof/heap -o data/diagnostics/heap-<ts>.pprof`
 - Compare with `go tool pprof -top/-cum` against baseline.
 
-### Expected Impact (Phase 1)
-- Fewer string ops/allocs per spot; reduced contention on call cache.
-- Lower CPU in `memeqbody`, `strings.HasPrefix`/ToUpper hotspots.
-- Reduced GC pressure; expect lower `scanobject/findObject` time.
+### Recommendations / Next Steps
+- Run the profiling harness under a controlled workload (same duration/rate, `DXC_NO_TUI=1`) to isolate code effects from traffic variance and re-compare to baseline/Phase 3.
+- Target remaining hotspots (unchanged): PSKReporter ingest and CTY lookups dominate; consider inlining normalized fields further and cutting repeated prefix checks.
+- Keep Phase summaries and profile references here until optimizations are finalized; then we can archive or slim this file.

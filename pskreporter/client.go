@@ -251,6 +251,11 @@ func (c *Client) onConnectionLost(client mqtt.Client, err error) {
 
 // messageHandler processes incoming MQTT messages
 func (c *Client) messageHandler(client mqtt.Client, msg mqtt.Message) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PSKReporter: panic in messageHandler: %v", r)
+		}
+	}()
 	payload := make([]byte, len(msg.Payload()))
 	copy(payload, msg.Payload())
 	select {
@@ -284,6 +289,11 @@ func (c *Client) startWorkerPool() {
 func (c *Client) workerLoop(id int) {
 	log.Printf("PSKReporter worker %d started", id)
 	defer c.workerWg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PSKReporter worker %d panic: %v", id, r)
+		}
+	}()
 	for {
 		select {
 		case <-c.shutdown:
@@ -295,6 +305,11 @@ func (c *Client) workerLoop(id int) {
 }
 
 func (c *Client) handlePayload(payload []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PSKReporter: panic in handlePayload: %v", r)
+		}
+	}()
 	var pskrMsg PSKRMessage
 	if err := json.Unmarshal(payload, &pskrMsg); err != nil {
 		log.Printf("PSKReporter: Failed to parse message: %v", err)

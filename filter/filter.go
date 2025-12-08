@@ -774,15 +774,41 @@ func (f *Filter) ResetDEDXCC() {
 //	filter.Matches(spot_40m_CW)   → false (wrong band)
 //	filter.Matches(spot_20m_USB)  → false (wrong mode)
 func (f *Filter) Matches(s *spot.Spot) bool {
-	s.EnsureNormalized()
+	// Spot must be normalized upstream; this function treats the spot as immutable.
 	if s != nil && s.IsBeacon && !f.BeaconsEnabled() {
 		return false
 	}
 
 	modeUpper := s.ModeNorm
+	if modeUpper == "" {
+		modeUpper = strings.ToUpper(strings.TrimSpace(s.Mode))
+	}
+
+	bandNorm := s.BandNorm
+	if bandNorm == "" {
+		bandNorm = spot.NormalizeBand(s.Band)
+	}
+
+	dxCont := s.DXContinentNorm
+	if dxCont == "" {
+		dxCont = strings.ToUpper(strings.TrimSpace(s.DXMetadata.Continent))
+	}
+	deCont := s.DEContinentNorm
+	if deCont == "" {
+		deCont = strings.ToUpper(strings.TrimSpace(s.DEMetadata.Continent))
+	}
+
+	dxGrid2 := s.DXGrid2
+	if dxGrid2 == "" {
+		dxGrid2 = normalizeGrid2Token(s.DXMetadata.Grid)
+	}
+	deGrid2 := s.DEGrid2
+	if deGrid2 == "" {
+		deGrid2 = normalizeGrid2Token(s.DEMetadata.Grid)
+	}
 
 	// Band and mode filters: blocklist wins, allowlist optional.
-	if !passesStringFilter(spot.NormalizeBand(s.BandNorm), f.Bands, f.BlockBands, f.AllBands, f.BlockAllBands) {
+	if !passesStringFilter(bandNorm, f.Bands, f.BlockBands, f.AllBands, f.BlockAllBands) {
 		return false
 	}
 	if !passesStringFilter(modeUpper, f.Modes, f.BlockModes, f.AllModes, f.BlockAllModes) {
@@ -790,10 +816,10 @@ func (f *Filter) Matches(s *spot.Spot) bool {
 	}
 
 	// DX/DE continent filters.
-	if !passesStringFilter(s.DXContinentNorm, f.DXContinents, f.BlockDXContinents, f.AllDXContinents, f.BlockAllDXContinents) {
+	if !passesStringFilter(dxCont, f.DXContinents, f.BlockDXContinents, f.AllDXContinents, f.BlockAllDXContinents) {
 		return false
 	}
-	if !passesStringFilter(s.DEContinentNorm, f.DEContinents, f.BlockDEContinents, f.AllDEContinents, f.BlockAllDEContinents) {
+	if !passesStringFilter(deCont, f.DEContinents, f.BlockDEContinents, f.AllDEContinents, f.BlockAllDEContinents) {
 		return false
 	}
 
@@ -814,10 +840,10 @@ func (f *Filter) Matches(s *spot.Spot) bool {
 	}
 
 	// 2-character grid filters.
-	if !passesStringFilter(prefix2(s.DXGrid2), f.DXGrid2Prefixes, f.BlockDXGrid2, f.AllDXGrid2, f.BlockAllDXGrid2) {
+	if !passesStringFilter(prefix2(dxGrid2), f.DXGrid2Prefixes, f.BlockDXGrid2, f.AllDXGrid2, f.BlockAllDXGrid2) {
 		return false
 	}
-	if !passesStringFilter(prefix2(s.DEGrid2), f.DEGrid2Prefixes, f.BlockDEGrid2, f.AllDEGrid2, f.BlockAllDEGrid2) {
+	if !passesStringFilter(prefix2(deGrid2), f.DEGrid2Prefixes, f.BlockDEGrid2, f.AllDEGrid2, f.BlockAllDEGrid2) {
 		return false
 	}
 
@@ -850,7 +876,7 @@ func passesStringFilter(token string, allow map[string]bool, block map[string]bo
 	if blockAll {
 		return false
 	}
-	token = strings.TrimSpace(token)
+	token = safeTrimSpace(token)
 	if len(block) > 0 && block[token] {
 		return false
 	}
@@ -863,6 +889,18 @@ func passesStringFilter(token string, allow map[string]bool, block map[string]bo
 		}
 	}
 	return true
+}
+
+// safeTrimSpace trims whitespace but guards against malformed string headers that could panic.
+// If a panic occurs, it returns an empty string to fail closed.
+func safeTrimSpace(s string) (out string) {
+	defer func() {
+		if r := recover(); r != nil {
+			out = ""
+		}
+	}()
+	out = strings.TrimSpace(s)
+	return
 }
 
 // passesIntFilter evaluates an integer token against allow/block lists with deny-first semantics.
