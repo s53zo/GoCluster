@@ -103,6 +103,7 @@ func Refresh(cfg config.FCCULSConfig, force bool) (bool, error) {
 	}
 	defer os.RemoveAll(extractDir)
 
+	ResetLicenseDB()
 	if err := buildDatabase(extractDir, dbPath, cfg.TempDir); err != nil {
 		markMetadataBuildStatus(metaPath, false)
 		return false, err

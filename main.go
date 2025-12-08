@@ -888,9 +888,8 @@ func processOutputSpots(
 			if telnet != nil {
 				toSend := s
 				if !broadcastKeepSSID && s != nil {
-					copied := *s
-					copied.DECall = collapseSSIDForBroadcast(s.DECall)
-					toSend = &copied
+					toSend = cloneSpotForBroadcast(s)
+					toSend.DECall = collapseSSIDForBroadcast(s.DECall)
 				}
 				telnet.BroadcastSpot(toSend)
 			}
@@ -913,6 +912,31 @@ func collapseSSIDForBroadcast(call string) string {
 		return trimmed + "-#"
 	}
 	return call
+}
+
+func cloneSpotForBroadcast(src *spot.Spot) *spot.Spot {
+	if src == nil {
+		return nil
+	}
+	return &spot.Spot{
+		ID:         src.ID,
+		DXCall:     src.DXCall,
+		DECall:     src.DECall,
+		Frequency:  src.Frequency,
+		Band:       src.Band,
+		Mode:       src.Mode,
+		Report:     src.Report,
+		Time:       src.Time,
+		Comment:    src.Comment,
+		SourceType: src.SourceType,
+		SourceNode: src.SourceNode,
+		TTL:        src.TTL,
+		IsHuman:    src.IsHuman,
+		IsBeacon:   src.IsBeacon,
+		DXMetadata: src.DXMetadata,
+		DEMetadata: src.DEMetadata,
+		Confidence: src.Confidence,
+	}
 }
 
 // applyLicenseGate runs the FCC/CTY check after all corrections and returns true when the spot should be dropped.
@@ -988,10 +1012,6 @@ func metadataFromPrefix(info *cty.PrefixInfo) spot.CallMetadata {
 		ITUZone:   info.ITUZone,
 		ADIF:      info.ADIF,
 	}
-}
-
-func maybeApplyCallCorrection(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash *dashboard, adaptive *spot.AdaptiveMinReports, spotterReliability spot.SpotterReliability) bool {
-	return maybeApplyCallCorrectionWithLogger(spotEntry, idx, cfg, ctyDB, knownPtr, tracker, dash, nil, adaptive, spotterReliability)
 }
 
 func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash *dashboard, traceLogger spot.CorrectionTraceLogger, adaptive *spot.AdaptiveMinReports, spotterReliability spot.SpotterReliability) bool {

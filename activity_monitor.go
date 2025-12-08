@@ -27,6 +27,8 @@ type bucket struct {
 	count int
 }
 
+var _ = newActivityMonitor
+
 func newActivityMonitor(cfg config.AdaptiveRefreshConfig, logger *log.Logger) *activityMonitor {
 	if cfg.WindowMinutesForRate <= 0 {
 		return nil

@@ -205,9 +205,7 @@ func (dc *distanceCache) evictOldest() {
 	for len(dc.entries) > dc.max && len(dc.order) > 0 {
 		k := dc.order[0]
 		dc.order = dc.order[1:]
-		if _, ok := dc.entries[k]; ok {
-			delete(dc.entries, k)
-		}
+		delete(dc.entries, k)
 	}
 	// Trim runaway order slice if it has grown much larger than the cache.
 	if cap(dc.order) > 0 && len(dc.order) > dc.max*2 {
@@ -324,9 +322,10 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 		FreqGuardRunnerUpRatio:    cfg.FreqGuardRunnerUpRatio,
 		DistanceModel:             distanceModelPlain,
 	}
-	if trace.Mode == "CW" {
+	switch trace.Mode {
+	case "CW":
 		trace.DistanceModel = normalizeCWDistanceModel(cfg.DistanceModelCW)
-	} else if trace.Mode == "RTTY" {
+	case "RTTY":
 		trace.DistanceModel = normalizeRTTYDistanceModel(cfg.DistanceModelRTTY)
 	}
 	allReporters := map[string]struct{}{}
@@ -866,50 +865,6 @@ func prune(spots []*Spot, now time.Time, window time.Duration) []*Spot {
 func pruneAndAppend(spots []*Spot, s *Spot, now time.Time, window time.Duration) []*Spot {
 	spots = prune(spots, now, window)
 	return append(spots, s)
-}
-
-// legacyLevenshtein remains for Morse/Baudot helpers; general path uses agnivade/levenshtein.
-func legacyLevenshtein(a, b string) int {
-	if a == b {
-		return 0
-	}
-	r1 := []rune(a)
-	r2 := []rune(b)
-	len1 := len(r1)
-	len2 := len(r2)
-	if len1 == 0 {
-		return len2
-	}
-	if len2 == 0 {
-		return len1
-	}
-	prev := make([]int, len2+1)
-	cur := make([]int, len2+1)
-	for j := 0; j <= len2; j++ {
-		prev[j] = j
-	}
-	for i := 1; i <= len1; i++ {
-		cur[0] = i
-		for j := 1; j <= len2; j++ {
-			cost := 0
-			if r1[i-1] != r2[j-1] {
-				cost = 1
-			}
-			insert := cur[j-1] + 1
-			delete := prev[j] + 1
-			replace := prev[j-1] + cost
-			cur[j] = min(insert, min(delete, replace))
-		}
-		prev, cur = cur, prev
-	}
-	return prev[len2]
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 const (

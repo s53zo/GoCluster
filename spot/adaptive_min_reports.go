@@ -117,7 +117,7 @@ func (a *AdaptiveMinReports) Observe(band, reporter string, now time.Time) {
 // or when the band is not mapped to any group.
 func (a *AdaptiveMinReports) MinReportsForBand(band string, now time.Time) int {
 	if a == nil {
-		return a.fallback
+		return 0
 	}
 	b := strings.ToLower(strings.TrimSpace(band))
 

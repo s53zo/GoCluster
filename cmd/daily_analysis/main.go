@@ -3,35 +3,40 @@ package main
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
+	"context"
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
-	"math"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	spotpkg "dxcluster/spot"
 	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 )
 
 type Config struct {
-	DataDir         string `yaml:"data_dir"`
-	DBTemplate      string `yaml:"db_template"`
-	BustedTemplate  string `yaml:"busted_template"`
-	CSVTemplate     string `yaml:"csv_template"`
-	ReportTemplate  string `yaml:"report_template"`
-	RBNZipTemplate  string `yaml:"rbn_zip_template"`
-	DownloadRBN     bool   `yaml:"download_rbn"`
-	CreateReportDir bool   `yaml:"create_report_dir"`
-	ContestDates    string `yaml:"contest_dates_file"`
+	DataDir         string          `yaml:"data_dir"`
+	DBTemplate      string          `yaml:"db_template"`
+	BustedTemplate  string          `yaml:"busted_template"`
+	CSVTemplate     string          `yaml:"csv_template"`
+	ReportTemplate  string          `yaml:"report_template"`
+	RBNZipTemplate  string          `yaml:"rbn_zip_template"`
+	DownloadRBN     bool            `yaml:"download_rbn"`
+	CreateReportDir bool            `yaml:"create_report_dir"`
+	ContestDates    string          `yaml:"contest_dates_file"`
 	Stability       StabilityConfig `yaml:"stability"`
+	OpenAI          OpenAIConfig    `yaml:"openai"`
 }
 
 type StabilityConfig struct {
@@ -39,6 +44,19 @@ type StabilityConfig struct {
 	WindowMinutes   int     `yaml:"window_minutes"`
 	MinFollowOn     int     `yaml:"min_follow_on"`
 	FreqToleranceHz float64 `yaml:"freq_tolerance_hz"`
+}
+
+type OpenAIConfig struct {
+	Enabled               bool    `yaml:"enabled"`
+	APIKey                string  `yaml:"api_key"`
+	Model                 string  `yaml:"model"`
+	Endpoint              string  `yaml:"endpoint"`
+	MaxTokens             int     `yaml:"max_tokens"` // sent as max_completion_tokens in payload
+	Temperature           float64 `yaml:"temperature"`
+	SystemPrompt          string  `yaml:"system_prompt"`
+	OutputTemplate        string  `yaml:"output_template"`
+	IncludeConfigSnapshot bool    `yaml:"include_config_snapshot"`
+	ClusterConfigPath     string  `yaml:"cluster_config_path"`
 }
 
 type bustedRow struct {
@@ -72,6 +90,32 @@ type stabilityBucket struct {
 	Stable int
 }
 
+type openAIRequest struct {
+	Model               string            `json:"model"`
+	MaxCompletionTokens int               `json:"max_completion_tokens,omitempty"`
+	Temperature         float64           `json:"temperature,omitempty"`
+	Messages            []openAIMessage   `json:"messages"`
+	ResponseFormat      map[string]string `json:"response_format,omitempty"`
+	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
+	Verbosity           string            `json:"verbosity,omitempty"`
+}
+
+type openAIMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type openAIResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
 func defaultConfig() Config {
 	return Config{
 		DataDir:         ".",
@@ -88,6 +132,17 @@ func defaultConfig() Config {
 			WindowMinutes:   60,
 			MinFollowOn:     2,
 			FreqToleranceHz: 1000,
+		},
+		OpenAI: OpenAIConfig{
+			Enabled:               false,
+			Model:                 "gpt-5-nano",
+			Endpoint:              "https://api.openai.com/v1/chat/completions",
+			MaxTokens:             5000,
+			Temperature:           1,
+			SystemPrompt:          "",
+			OutputTemplate:        "data/reports/analysis-{DATE}.llm.txt",
+			IncludeConfigSnapshot: true,
+			ClusterConfigPath:     "config.yaml",
 		},
 	}
 }
@@ -115,9 +170,9 @@ func readConfig(path string) Config {
 
 func expandTemplate(tmpl string, dt time.Time) string {
 	repl := map[string]string{
-		"{DATE}":        dt.Format("2006-01-02"),
+		"{DATE}":         dt.Format("2006-01-02"),
 		"{DATE_COMPACT}": dt.Format("20060102"),
-		"{DATE_BUSTED}": dt.Format("02-Jan-2006"),
+		"{DATE_BUSTED}":  dt.Format("02-Jan-2006"),
 	}
 	out := tmpl
 	for k, v := range repl {
@@ -243,6 +298,14 @@ func ensureDir(path string) {
 		return
 	}
 	_ = os.MkdirAll(dir, 0o755)
+}
+
+func readFileIfExists(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func downloadFile(url, dest string) error {
@@ -376,9 +439,10 @@ func loadRBN(csvPath string) (map[string][]spot, error) {
 }
 
 type correction struct {
-	Ts    int64
+	Ts     int64
 	Winner string
-	Freq  float64
+	Freq   float64
+	Band   string
 }
 
 func binarySearchSpots(sp []spot, target int64) int {
@@ -394,16 +458,21 @@ func binarySearchSpots(sp []spot, target int64) int {
 	return lo
 }
 
-func computeStability(db *sql.DB, csvPath string, minTs int64, cfg StabilityConfig) (int, int, []stabilityBucket) {
+type bandStability struct {
+	Total  int
+	Stable int
+}
+
+func computeStability(db *sql.DB, csvPath string, minTs int64, cfg StabilityConfig) (int, int, []stabilityBucket, map[string]bandStability, error) {
 	rbnSpots, err := loadRBN(csvPath)
 	if err != nil {
-		return 0, 0, nil
+		return 0, 0, nil, nil, fmt.Errorf("load RBN CSV: %w", err)
 	}
 
 	corrections := make([]correction, 0, 8192)
 	rows, err := db.Query("select ts, upper(trim(winner)), freq_khz from decisions where decision='applied'")
 	if err != nil {
-		return 0, 0, nil
+		return 0, 0, nil, nil, fmt.Errorf("query applied decisions: %w", err)
 	}
 	for rows.Next() {
 		var ts int64
@@ -411,13 +480,17 @@ func computeStability(db *sql.DB, csvPath string, minTs int64, cfg StabilityConf
 		var f float64
 		if err := rows.Scan(&ts, &w, &f); err != nil {
 			rows.Close()
-			return 0, 0, nil
+			return 0, 0, nil, nil, fmt.Errorf("scan applied decision row: %w", err)
 		}
-		corrections = append(corrections, correction{Ts: ts, Winner: w, Freq: f})
+		b := spotpkg.FreqToBand(f)
+		if b == "" {
+			b = "unknown"
+		}
+		corrections = append(corrections, correction{Ts: ts, Winner: w, Freq: f, Band: b})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return 0, 0, nil
+		return 0, 0, nil, nil, fmt.Errorf("iterate applied decisions: %w", err)
 	}
 	rows.Close()
 
@@ -439,6 +512,7 @@ func computeStability(db *sql.DB, csvPath string, minTs int64, cfg StabilityConf
 	bucketSize := int64(cfg.BucketMinutes * 60)
 
 	bucketMap := make(map[int64]*stabilityBucket)
+	bandMap := make(map[string]bandStability)
 	stableCount := 0
 
 	for _, corr := range corrections {
@@ -462,6 +536,13 @@ func computeStability(db *sql.DB, csvPath string, minTs int64, cfg StabilityConf
 		if totalHorizon >= cfg.MinFollowOn {
 			stableCount++
 		}
+		// Track band-level counts.
+		bs := bandMap[corr.Band]
+		bs.Total++
+		if totalHorizon >= cfg.MinFollowOn {
+			bs.Stable++
+		}
+		bandMap[corr.Band] = bs
 
 		bucketStart := minTs + ((corr.Ts - minTs) / bucketSize * bucketSize)
 		b := bucketMap[bucketStart]
@@ -481,14 +562,147 @@ func computeStability(db *sql.DB, csvPath string, minTs int64, cfg StabilityConf
 	}
 	sort.Slice(buckets, func(i, j int) bool { return buckets[i].Start < buckets[j].Start })
 
-	return stableCount, len(corrections), buckets
+	return stableCount, len(corrections), buckets, bandMap, nil
+}
+
+// generateLLM requests recommendations from OpenAI using the assembled report and optional config snapshot.
+// It respects OPENAI_API_KEY when api_key is blank in the config. When enabled but no key is found, it errors.
+func generateLLM(cfg Config, analysisDate time.Time, report []string) (string, error) {
+	key := strings.TrimSpace(cfg.OpenAI.APIKey)
+	if key == "" {
+		key = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	}
+	if key == "" {
+		return "", fmt.Errorf("OPENAI_API_KEY missing; set openai.api_key or environment variable")
+	}
+	model := strings.TrimSpace(cfg.OpenAI.Model)
+	if model == "" {
+		model = "gpt-5-nano"
+	}
+	endpoint := strings.TrimSpace(cfg.OpenAI.Endpoint)
+	if endpoint == "" {
+		endpoint = "https://api.openai.com/v1/chat/completions"
+	}
+
+	userContent := strings.Join(report, "\n")
+	if cfg.OpenAI.IncludeConfigSnapshot {
+		cfgPath := cfg.OpenAI.ClusterConfigPath
+		if cfgPath == "" {
+			cfgPath = "config.yaml"
+		}
+		cfgPath = filepath.Clean(filepath.Join(cfg.DataDir, cfgPath))
+		if snapshot := readFileIfExists(cfgPath); snapshot != "" {
+			userContent += "\n\nCluster config snapshot:\n" + snapshot
+		}
+	}
+
+	systemPrompt := strings.TrimSpace(cfg.OpenAI.SystemPrompt)
+	if systemPrompt == "" {
+		systemPrompt = "You are an RF/cluster QA analyst. Read the daily call-correction metrics and propose specific parameter adjustments."
+	}
+
+	reqBody := openAIRequest{
+		Model:               model,
+		MaxCompletionTokens: cfg.OpenAI.MaxTokens,
+		Messages: []openAIMessage{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userContent},
+		},
+	}
+	// GPT-5 series: use text response, minimal reasoning effort, low verbosity; skip temperature.
+	if strings.HasPrefix(model, "gpt-5") {
+		reqBody.ResponseFormat = map[string]string{"type": "text"}
+		reqBody.ReasoningEffort = "minimal"
+		reqBody.Verbosity = "low"
+	} else if cfg.OpenAI.Temperature > 0 {
+		reqBody.Temperature = cfg.OpenAI.Temperature
+	}
+
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal OpenAI request: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("build OpenAI request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("call OpenAI: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read OpenAI response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("OpenAI HTTP %s: %s", resp.Status, string(body))
+	}
+
+	var oaResp openAIResponse
+	if err := json.Unmarshal(body, &oaResp); err != nil {
+		return "", fmt.Errorf("parse OpenAI response: %w", err)
+	}
+	if oaResp.Error != nil {
+		return "", fmt.Errorf("OpenAI error: %s", oaResp.Error.Message)
+	}
+	if len(oaResp.Choices) == 0 {
+		return "", fmt.Errorf("OpenAI response had no choices")
+	}
+	return strings.TrimSpace(oaResp.Choices[0].Message.Content), nil
+}
+
+// loadDotEnv loads KEY=VALUE pairs from a .env-style file into the process environment.
+// Lines starting with # are ignored; only the first '=' is treated as a separator.
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Allow optional "export KEY=VAL" style.
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(line[len("export "):])
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		if key == "" {
+			continue
+		}
+		_ = os.Setenv(key, val)
+	}
 }
 
 func main() {
-	configPath := flag.String("config", "config/daily_analysis.yaml", "Path to analysis config YAML")
+	configPath := flag.String("config", "cmd/daily_analysis/daily_analysis.yaml", "Path to analysis config YAML")
 	dateFlag := flag.String("date", "", "Analysis date YYYY-MM-DD (defaults to yesterday)")
 	skipDownload := flag.Bool("skip-download", false, "Skip downloading RBN zip")
 	flag.Parse()
+
+	// Load .env first so OPENAI_API_KEY (and other secrets) are available before reading config.
+	loadDotEnv(".env")
+	if configPath != nil && *configPath != "" {
+		loadDotEnv(filepath.Join(filepath.Dir(*configPath), ".env"))
+	}
 
 	cfg := readConfig(*configPath)
 
@@ -724,13 +938,26 @@ func main() {
 
 	// Temporal stability using RBN CSV
 	if _, err := os.Stat(csvPath); err == nil {
-		stableCount, totalStab, buckets := computeStability(db, csvPath, minTs, cfg.Stability)
+		stableCount, totalStab, buckets, bandStab, stabErr := computeStability(db, csvPath, minTs, cfg.Stability)
+		if stabErr != nil {
+			log.Fatalf("stability computation failed: %v", stabErr)
+		}
 		report = append(report, "")
 		report = append(report, fmt.Sprintf("Temporal stability (window %d min, min follow-on %d, freq tol %.0f Hz):",
 			cfg.Stability.WindowMinutes, cfg.Stability.MinFollowOn, cfg.Stability.FreqToleranceHz))
 		if totalStab > 0 {
 			report = append(report, fmt.Sprintf("  Overall: %d/%d (%.1f%%) corrections showed follow-on winner spots",
 				stableCount, totalStab, percent(stableCount, totalStab)))
+			report = append(report, "  Band stability:")
+			bandKeys := make([]string, 0, len(bandStab))
+			for k := range bandStab {
+				bandKeys = append(bandKeys, k)
+			}
+			sort.Strings(bandKeys)
+			for _, b := range bandKeys {
+				bs := bandStab[b]
+				report = append(report, fmt.Sprintf("    %-4s %5d %5d %5.1f%%", b, bs.Total, bs.Stable, percent(bs.Stable, bs.Total)))
+			}
 			report = append(report, "  Rolling stability by bucket:")
 			report = append(report, "  BucketStartUTC          Total  Stable  Rate")
 			for _, b := range buckets {
@@ -744,6 +971,19 @@ func main() {
 	} else {
 		report = append(report, "")
 		report = append(report, "Temporal stability: skipped (RBN CSV not found).")
+	}
+
+	// Optional LLM recommendations.
+	if cfg.OpenAI.Enabled {
+		llmContent, err := generateLLM(cfg, analysisDate, report)
+		if err != nil {
+			log.Printf("OpenAI request failed: %v (continuing without LLM recommendations)", err)
+		}
+		if llmContent != "" {
+			report = append(report, "")
+			report = append(report, "LLM Recommendations:")
+			report = append(report, llmContent)
+		}
 	}
 
 	if cfg.CreateReportDir {

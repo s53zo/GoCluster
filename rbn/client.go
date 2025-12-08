@@ -464,7 +464,7 @@ func (c *Client) parseSpot(line string) {
 		return
 	}
 
-	dxCall := spot.NormalizeCallsign(parts[freqIdx+1])
+	dxCall := normalizeRBNCallsign(parts[freqIdx+1])
 	mode := parts[freqIdx+2]
 	dbStr := parts[freqIdx+3]
 

@@ -99,14 +99,14 @@ call_correction:
     - name: lowbands
       bands: ["160m", "80m"]
       quiet:
-        quality_bin_hz: 400
-        frequency_tolerance_hz: 800
+        quality_bin_hz: 500
+        frequency_tolerance_hz: 1000
       normal:
         quality_bin_hz: 400
-        frequency_tolerance_hz: 700
+        frequency_tolerance_hz: 900
       busy:
         quality_bin_hz: 300
-        frequency_tolerance_hz: 500
+        frequency_tolerance_hz: 800
     - name: midbands
       bands: ["40m", "20m"]
       quiet:
@@ -167,28 +167,28 @@ call_correction:
         busy_above: 75
         quiet_min_reports: 2
         normal_min_reports: 3
-        busy_min_reports: 4
+        busy_min_reports: 3
       - name: midbands
         bands: ["40m", "20m"]
         quiet_below: 80
         busy_above: 130
         quiet_min_reports: 2
         normal_min_reports: 3
-        busy_min_reports: 4
+        busy_min_reports: 3
       - name: highbands
         bands: ["15m", "10m"]
         quiet_below: 35
         busy_above: 85
         quiet_min_reports: 2
         normal_min_reports: 3
-        busy_min_reports: 4
+        busy_min_reports: 3
       - name: others
         bands: ["30m", "17m", "12m", "60m", "6m"]
         quiet_below: 20
         busy_above: 55
         quiet_min_reports: 2
         normal_min_reports: 3
-        busy_min_reports: 4
+        busy_min_reports: 3
 
 # Harmonic suppression (CW/USB/LSB/RTTY)
 harmonics:

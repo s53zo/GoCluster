@@ -135,36 +135,57 @@ func (l *decisionLogger) write(entry CorrectionLogEntry) error {
 		return fmt.Errorf("call-correction logger: prepared statements not initialized")
 	}
 
-	res, err := l.decisionStmt.Exec(
-		ts.UTC().Unix(),
-		entry.Trace.Strategy,
-		entry.Trace.FrequencyKHz,
-		strings.ToUpper(entry.Trace.SubjectCall),
-		strings.ToUpper(entry.Trace.WinnerCall),
-		strings.ToUpper(entry.Trace.Mode),
-		strings.ToUpper(entry.Trace.Source),
-		entry.Trace.TotalReporters,
-		entry.Trace.SubjectSupport,
-		entry.Trace.WinnerSupport,
-		entry.Trace.RunnerUpSupport,
-		entry.Trace.SubjectConfidence,
-		entry.Trace.WinnerConfidence,
-		entry.Trace.Distance,
-		entry.Trace.DistanceModel,
-		entry.Trace.MaxEditDistance,
-		entry.Trace.MinReports,
-		entry.Trace.MinAdvantage,
-		entry.Trace.MinConfidence,
-		entry.Trace.Distance3ExtraReports,
-		entry.Trace.Distance3ExtraAdvantage,
-		entry.Trace.Distance3ExtraConfidence,
-		entry.Trace.FreqGuardMinSeparationKHz,
-		entry.Trace.FreqGuardRunnerUpRatio,
-		entry.Trace.Decision,
-		entry.Trace.Reason,
-	)
-	if err != nil {
-		return fmt.Errorf("call-correction logger: insert decision: %w", err)
+	path := l.pathFor(ts)
+
+	var insertErr error
+	var res sql.Result
+	for attempt := 0; attempt < 2; attempt++ {
+		res, insertErr = l.decisionStmt.Exec(
+			ts.UTC().Unix(),
+			entry.Trace.Strategy,
+			entry.Trace.FrequencyKHz,
+			strings.ToUpper(entry.Trace.SubjectCall),
+			strings.ToUpper(entry.Trace.WinnerCall),
+			strings.ToUpper(entry.Trace.Mode),
+			strings.ToUpper(entry.Trace.Source),
+			entry.Trace.TotalReporters,
+			entry.Trace.SubjectSupport,
+			entry.Trace.WinnerSupport,
+			entry.Trace.RunnerUpSupport,
+			entry.Trace.SubjectConfidence,
+			entry.Trace.WinnerConfidence,
+			entry.Trace.Distance,
+			entry.Trace.DistanceModel,
+			entry.Trace.MaxEditDistance,
+			entry.Trace.MinReports,
+			entry.Trace.MinAdvantage,
+			entry.Trace.MinConfidence,
+			entry.Trace.Distance3ExtraReports,
+			entry.Trace.Distance3ExtraAdvantage,
+			entry.Trace.Distance3ExtraConfidence,
+			entry.Trace.FreqGuardMinSeparationKHz,
+			entry.Trace.FreqGuardRunnerUpRatio,
+			entry.Trace.Decision,
+			entry.Trace.Reason,
+		)
+		if insertErr == nil {
+			break
+		}
+		if attempt == 0 && isSQLiteCorrupted(insertErr) {
+			l.closeDBLocked()
+			_ = os.Remove(path)
+			if _, err := l.ensureDB(ts); err != nil {
+				return err
+			}
+			if l.decisionStmt == nil || l.voteStmt == nil {
+				return fmt.Errorf("call-correction logger: prepared statements not initialized")
+			}
+			continue
+		}
+		return fmt.Errorf("call-correction logger: insert decision: %w", insertErr)
+	}
+	if insertErr != nil {
+		return fmt.Errorf("call-correction logger: insert decision: %w", insertErr)
 	}
 
 	votesJSON, err := encodeVotes(entry.Votes)
@@ -202,23 +223,32 @@ func (l *decisionLogger) ensureDB(ts time.Time) (*sql.DB, error) {
 		return nil, fmt.Errorf("call-correction logger: mkdir %s: %w", filepath.Dir(path), err)
 	}
 
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("call-correction logger: open %s: %w", path, err)
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	for attempt := 0; attempt < 2; attempt++ {
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			return nil, fmt.Errorf("call-correction logger: open %s: %w", path, err)
+		}
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
 
-	if _, err := db.Exec(`PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("call-correction logger: pragmas: %w", err)
-	}
-	if err := initDecisionSchema(db); err != nil {
-		db.Close()
-		return nil, err
-	}
+		if _, err := db.Exec(`PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;`); err != nil {
+			db.Close()
+			if attempt == 0 && isSQLiteCorrupted(err) {
+				_ = os.Remove(path)
+				continue
+			}
+			return nil, fmt.Errorf("call-correction logger: pragmas: %w", err)
+		}
+		if err := initDecisionSchema(db); err != nil {
+			db.Close()
+			if attempt == 0 && isSQLiteCorrupted(err) {
+				_ = os.Remove(path)
+				continue
+			}
+			return nil, err
+		}
 
-	decisionStmt, err := db.Prepare(`
+		decisionStmt, err := db.Prepare(`
 INSERT INTO decisions (
     ts, strategy, freq_khz, subject, winner, mode, source,
     total_reporters, subject_support, winner_support, runner_up_support,
@@ -228,46 +258,64 @@ INSERT INTO decisions (
     freq_guard_min_sep_khz, freq_guard_runner_ratio, decision, reason
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("call-correction logger: prepare decisions: %w", err)
-	}
-	voteStmt, err := db.Prepare(`INSERT INTO decision_votes(decision_id, votes_json) VALUES (?, ?)`)
-	if err != nil {
-		decisionStmt.Close()
-		db.Close()
-		return nil, fmt.Errorf("call-correction logger: prepare votes: %w", err)
-	}
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("call-correction logger: prepare decisions: %w", err)
+		}
+		voteStmt, err := db.Prepare(`INSERT INTO decision_votes(decision_id, votes_json) VALUES (?, ?)`)
+		if err != nil {
+			decisionStmt.Close()
+			db.Close()
+			return nil, fmt.Errorf("call-correction logger: prepare votes: %w", err)
+		}
 
-	l.db = db
-	l.decisionStmt = decisionStmt
-	l.voteStmt = voteStmt
-	l.currentPath = path
-	return l.db, nil
+		l.db = db
+		l.decisionStmt = decisionStmt
+		l.voteStmt = voteStmt
+		l.currentPath = path
+		return l.db, nil
+	}
+	return nil, fmt.Errorf("call-correction logger: unable to open database")
 }
 
 func (l *decisionLogger) closeDBLocked() error {
 	var firstErr error
 	if l.decisionStmt != nil {
-		if err := l.decisionStmt.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if err := l.decisionStmt.Close(); err != nil {
+			firstErr = captureError(firstErr, err)
 		}
 		l.decisionStmt = nil
 	}
 	if l.voteStmt != nil {
-		if err := l.voteStmt.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if err := l.voteStmt.Close(); err != nil {
+			firstErr = captureError(firstErr, err)
 		}
 		l.voteStmt = nil
 	}
 	if l.db != nil {
-		if err := l.db.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if err := l.db.Close(); err != nil {
+			firstErr = captureError(firstErr, err)
 		}
 		l.db = nil
 	}
 	l.currentPath = ""
 	return firstErr
+}
+
+func captureError(existing error, candidate error) error {
+	if existing != nil {
+		return existing
+	}
+	return candidate
+}
+
+func isSQLiteCorrupted(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database disk image is malformed") ||
+		strings.Contains(msg, "file is encrypted or is not a database")
 }
 
 func (l *decisionLogger) pathFor(ts time.Time) string {

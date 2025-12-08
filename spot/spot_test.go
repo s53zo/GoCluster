@@ -2,6 +2,7 @@ package spot
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -114,6 +115,70 @@ func TestFormatDXClusterZeroReport(t *testing.T) {
 	}
 }
 
+func TestFormatDXClusterModeMatrix(t *testing.T) {
+	cases := []struct {
+		name     string
+		mode     string
+		report   int
+		expected string
+	}{
+		{"CW positive", "CW", 23, "CW 23 dB"},
+		{"RTTY negative", "RTTY", -7, "RTTY -7 dB"},
+		{"FT8 positive", "FT8", 12, "FT8 +12"},
+		{"FT8 negative", "FT8", -5, "FT8 -5"},
+		{"SSB positive", "USB", 8, "USB +8"},
+		{"SSB negative", "LSB", -3, "LSB -3"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Spot{
+				DXCall:    "K1ABC",
+				DECall:    "W3LPL",
+				Frequency: 7009.5,
+				Mode:      tc.mode,
+				Report:    tc.report,
+				Time:      time.Date(2025, time.November, 22, 6, 15, 0, 0, time.UTC),
+				DXMetadata: CallMetadata{
+					CQZone: 5,
+					Grid:   "FN20",
+				},
+			}
+			got := s.FormatDXCluster()
+			if !strings.Contains(got, tc.expected) {
+				t.Fatalf("expected %q to contain %q", got, tc.expected)
+			}
+			// Time formatting should be HHMMZ.
+			if !strings.Contains(got, "0615Z") {
+				t.Fatalf("expected time suffix 0615Z, got %q", got)
+			}
+		})
+	}
+}
+
+func TestFormatDXClusterFormatOnce(t *testing.T) {
+	s := &Spot{
+		DXCall:    "K1ABC",
+		DECall:    "W3LPL",
+		Frequency: 7009.5,
+		Mode:      "FT8",
+		Report:    -5,
+		Time:      time.Date(2025, time.November, 22, 6, 15, 0, 0, time.UTC),
+		DXMetadata: CallMetadata{
+			CQZone: 5,
+			Grid:   "FN20",
+		},
+	}
+	first := s.FormatDXCluster()
+	// Mutate fields; formatted output should remain identical because it is cached.
+	s.Report = 99
+	s.Mode = "CW"
+	second := s.FormatDXCluster()
+	if first != second {
+		t.Fatalf("expected cached formatting to remain unchanged; first=%q second=%q", first, second)
+	}
+}
+
 func TestFormatDXClusterAlignmentNoConfidence(t *testing.T) {
 	s := &Spot{
 		DXCall:    "K1ABC",
@@ -192,5 +257,27 @@ func TestFormatDXClusterAlignmentWithConfidence(t *testing.T) {
 	expectedConfIdx := timeIdx - len(s.Confidence) - 1 // one space between confidence and time
 	if confIdx != expectedConfIdx {
 		t.Fatalf("expected confidence to end at column %d, got %d in %q", expectedConfIdx, confIdx, got)
+	}
+}
+
+func BenchmarkFormatDXCluster(b *testing.B) {
+	s := &Spot{
+		DXCall:     "KE0UI",
+		DECall:     "W2NAF-#",
+		Frequency:  7014.0,
+		Mode:       "CW",
+		Report:     27,
+		Time:       time.Date(2025, time.November, 22, 4, 54, 0, 0, time.UTC),
+		Confidence: "V",
+		DXMetadata: CallMetadata{
+			CQZone: 4,
+			Grid:   "fn20",
+		},
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		s.formatted = ""
+		s.formatOnce = sync.Once{}
+		_ = s.FormatDXCluster()
 	}
 }

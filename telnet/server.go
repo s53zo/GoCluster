@@ -1563,6 +1563,13 @@ func formatGrid2State(all bool, enabled map[string]bool) string {
 	return strings.Join(parts, ", ")
 }
 
+var (
+	_ = formatContinentStates
+	_ = formatZoneStates
+	_ = formatDXCCStates
+	_ = formatGrid2State
+)
+
 // formatGreeting replaces placeholders with the client's callsign and the cluster call.
 func formatGreeting(tmpl, call, cluster string) string {
 	if tmpl == "" {

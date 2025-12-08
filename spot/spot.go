@@ -4,7 +4,6 @@
 package spot
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -135,16 +134,58 @@ const (
 	minGapToSymbol      = 2  // minimum spaces before confidence symbol
 )
 
+type stringBuilder struct {
+	buf []byte
+}
+
+func (sb *stringBuilder) Grow(n int) {
+	if n <= 0 {
+		return
+	}
+	if cap(sb.buf)-len(sb.buf) >= n {
+		return
+	}
+	newBuf := make([]byte, len(sb.buf), len(sb.buf)+n)
+	copy(newBuf, sb.buf)
+	sb.buf = newBuf
+}
+
+func (sb *stringBuilder) AppendString(s string) {
+	sb.buf = append(sb.buf, s...)
+}
+
+func (sb *stringBuilder) AppendByte(b byte) {
+	sb.buf = append(sb.buf, b)
+}
+
+func (sb *stringBuilder) Len() int {
+	return len(sb.buf)
+}
+
+func (sb *stringBuilder) Truncate(n int) {
+	if n < 0 {
+		n = 0
+	}
+	if n > len(sb.buf) {
+		return
+	}
+	sb.buf = sb.buf[:n]
+}
+
+func (sb *stringBuilder) String() string {
+	return string(sb.buf)
+}
+
 const spaceChunk = "                " // 16 spaces, used to pad without extra allocations
 
-func writeSpaces(b *bytes.Buffer, count int) {
+func writeSpaces(b *stringBuilder, count int) {
 	for count > 0 {
 		if count > len(spaceChunk) {
-			b.WriteString(spaceChunk)
+			b.AppendString(spaceChunk)
 			count -= len(spaceChunk)
 			continue
 		}
-		b.WriteString(spaceChunk[:count])
+		b.AppendString(spaceChunk[:count])
 		break
 	}
 }
@@ -190,14 +231,14 @@ func (s *Spot) FormatDXCluster() string {
 		if estimatedLen < len(prefix) {
 			estimatedLen = len(prefix)
 		}
-		var b bytes.Buffer
+		var b stringBuilder
 		b.Grow(estimatedLen)
 
-		b.WriteString(prefix)
+		b.AppendString(prefix)
 		writeSpaces(&b, spacesToFreq)
-		b.WriteString(freqStr)
-		b.WriteString("  ")
-		b.WriteString(s.DXCall)
+		b.AppendString(freqStr)
+		b.AppendString("  ")
+		b.AppendString(s.DXCall)
 		if pad := dxCallFieldWidth - len(s.DXCall); pad > 0 {
 			writeSpaces(&b, pad)
 		}
@@ -209,19 +250,19 @@ func (s *Spot) FormatDXCluster() string {
 		writeSpaces(&b, spacesToComment)
 
 		// Build comment section: Mode + signal report + CQ zone/grid annotation.
-		b.WriteString(s.Mode)
-		b.WriteByte(' ')
+		b.AppendString(s.Mode)
+		b.AppendByte(' ')
 		if strings.EqualFold(s.Mode, "CW") || strings.EqualFold(s.Mode, "RTTY") {
-			b.WriteString(strconv.Itoa(s.Report))
-			b.WriteString(" dB")
+			b.AppendString(strconv.Itoa(s.Report))
+			b.AppendString(" dB")
 		} else {
 			if s.Report >= 0 {
-				b.WriteByte('+')
+				b.AppendByte('+')
 			}
-			b.WriteString(strconv.Itoa(s.Report))
+			b.AppendString(strconv.Itoa(s.Report))
 		}
-		b.WriteByte(' ')
-		b.WriteString(commentPayload)
+		b.AppendByte(' ')
+		b.AppendString(commentPayload)
 
 		confLabel := strings.TrimSpace(s.Confidence)
 		if confLabel == "" {
@@ -231,7 +272,7 @@ func (s *Spot) FormatDXCluster() string {
 			} else if b.Len() < timeColumnStart {
 				writeSpaces(&b, timeColumnStart-b.Len())
 			}
-			b.WriteString(timeStr)
+			b.AppendString(timeStr)
 			s.formatted = b.String()
 			return
 		}
@@ -261,9 +302,9 @@ func (s *Spot) FormatDXCluster() string {
 		}
 
 		writeSpaces(&b, gapLen)
-		b.WriteString(confLabel)
-		b.WriteByte(' ')
-		b.WriteString(timeStr)
+		b.AppendString(confLabel)
+		b.AppendByte(' ')
+		b.AppendString(timeStr)
 
 		s.formatted = b.String()
 	})

@@ -4,8 +4,11 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -17,18 +20,38 @@ var (
 	licenseDB     *sql.DB
 	licenseOnce   sync.Once
 	licenseCache  sync.Map // call (uppercased) -> bool
+	licenseMu     sync.Mutex
+	licenseDead   atomic.Bool
+	loggedDBError atomic.Bool
 )
 
 // SetLicenseDBPath configures the path to the FCC ULS SQLite database used for license lookups.
 // If the path is empty or the DB cannot be opened, lookups will be skipped and treated as allowed.
 func SetLicenseDBPath(path string) {
-	licenseDBPath = strings.TrimSpace(path)
+	clean := strings.TrimSpace(path)
+	if clean == "" {
+		licenseDBPath = ""
+		return
+	}
+	if abs, err := filepath.Abs(clean); err == nil {
+		clean = abs
+	}
+	if _, err := os.Stat(clean); err != nil {
+		log.Printf("FCC ULS: database not found at %s (%v); license checks will be skipped", clean, err)
+		licenseDBPath = ""
+		licenseDead.Store(true)
+		return
+	}
+	licenseDBPath = clean
 }
 
 // IsLicensedUS reports whether the callsign appears in the FCC ULS AM table (active licenses only).
 // If no DB is configured or the DB cannot be opened, the call is treated as licensed (allowed).
 // Results are cached for the lifetime of the process.
 func IsLicensedUS(call string) bool {
+	if licenseDead.Load() {
+		return true
+	}
 	canonical := NormalizeForLicense(call)
 	if canonical == "" {
 		return true
@@ -60,8 +83,22 @@ func IsLicensedUS(call string) bool {
 				delay *= 2
 				continue
 			}
+			if strings.Contains(strings.ToLower(err.Error()), "unable to open database file") ||
+				strings.Contains(strings.ToLower(err.Error()), "out of memory") {
+				if !loggedDBError.Load() {
+					loggedDBError.Store(true)
+					log.Printf("FCC ULS lookup failed for %s: %v (disabling license checks)", call, err)
+				}
+				licenseDead.Store(true)
+				ResetLicenseDB()
+				allow = true
+				break
+			}
 			// On other query errors, default to allow and log once.
-			log.Printf("FCC ULS lookup failed for %s: %v", call, err)
+			if !loggedDBError.Load() {
+				loggedDBError.Store(true)
+				log.Printf("FCC ULS lookup failed for %s: %v", call, err)
+			}
 			allow = true
 			break
 		}
@@ -84,9 +121,27 @@ func getLicenseDB() *sql.DB {
 			log.Printf("FCC ULS: unable to open license DB at %s: %v (skipping license checks)", licenseDBPath, err)
 			return
 		}
+		licenseMu.Lock()
 		licenseDB = db
+		licenseMu.Unlock()
 	})
+	licenseMu.Lock()
+	defer licenseMu.Unlock()
 	return licenseDB
+}
+
+// ResetLicenseDB closes any open license DB, clears caches, and allows reopening.
+func ResetLicenseDB() {
+	licenseMu.Lock()
+	defer licenseMu.Unlock()
+	if licenseDB != nil {
+		_ = licenseDB.Close()
+		licenseDB = nil
+	}
+	licenseOnce = sync.Once{}
+	licenseCache = sync.Map{}
+	licenseDead.Store(false)
+	loggedDBError.Store(false)
 }
 
 // NormalizeForLicense strips adornments (SSID, skimmer suffix, portable prefixes)
