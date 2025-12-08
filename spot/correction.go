@@ -190,11 +190,21 @@ func (dc *distanceCache) put(key string, distance int, now time.Time) {
 	if dc.entries == nil {
 		dc.entries = make(map[string]distanceCacheEntry, dc.max)
 	}
+	_, exists := dc.entries[key]
 	dc.entries[key] = distanceCacheEntry{
 		distance: distance,
 		expires:  now.Add(dc.ttl),
 	}
-	dc.order = append(dc.order, key)
+	// Only track the key once in the order slice to avoid unbounded growth when the same
+	// key is updated repeatedly. We still bias toward recent inserts by appending here.
+	if !exists {
+		dc.order = append(dc.order, key)
+	} else {
+		dc.order = append(dc.order, key)
+		if len(dc.order) > dc.max*2 {
+			dc.condenseOrderLocked()
+		}
+	}
 	if len(dc.entries) > dc.max {
 		dc.evictOldest()
 	}
@@ -208,9 +218,36 @@ func (dc *distanceCache) evictOldest() {
 		delete(dc.entries, k)
 	}
 	// Trim runaway order slice if it has grown much larger than the cache.
-	if cap(dc.order) > 0 && len(dc.order) > dc.max*2 {
-		dc.order = append([]string(nil), dc.order...)
+	if len(dc.order) > dc.max*2 {
+		dc.condenseOrderLocked()
 	}
+}
+
+// condenseOrderLocked rebuilds the order slice to contain unique keys in their latest order,
+// keeping memory bounded even when the same key is updated frequently.
+func (dc *distanceCache) condenseOrderLocked() {
+	if len(dc.order) == 0 {
+		return
+	}
+	seen := make(map[string]bool, len(dc.entries))
+	tmp := make([]string, 0, len(dc.entries))
+	// Walk from newest to oldest, keep first occurrence, then reverse to restore order.
+	for i := len(dc.order) - 1; i >= 0; i-- {
+		k := dc.order[i]
+		if seen[k] {
+			continue
+		}
+		if _, exists := dc.entries[k]; !exists {
+			continue
+		}
+		seen[k] = true
+		tmp = append(tmp, k)
+	}
+	// Reverse tmp into order (oldest to newest).
+	for i, j := 0, len(tmp)-1; i < j; i, j = i+1, j-1 {
+		tmp[i], tmp[j] = tmp[j], tmp[i]
+	}
+	dc.order = tmp
 }
 
 // SetFrequencyToleranceHz updates the frequency similarity window in Hz.
@@ -841,7 +878,8 @@ func (ci *CorrectionIndex) Candidates(subject *Spot, now time.Time, window time.
 }
 
 func bucketKey(freq float64) int {
-	return int(math.Round(freq * 10))
+	// Half-up rounding to 0.1 kHz keeps bucket boundaries stable at .x5 points.
+	return int(math.Floor(freq*10 + 0.5))
 }
 
 func prune(spots []*Spot, now time.Time, window time.Duration) []*Spot {

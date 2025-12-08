@@ -1,6 +1,7 @@
 package spot
 
 import (
+	"container/list"
 	"regexp"
 	"strings"
 	"sync"
@@ -14,13 +15,14 @@ var callsignPattern = regexp.MustCompile(`^[A-Z0-9]+(?:[/-][A-Z0-9#]+)*$`)
 // work for hot call/spotter strings during bursts.
 type CallCache struct {
 	mu       sync.Mutex
-	entries  map[string]cacheEntry
-	order    []string
+	lru      *list.List
+	entries  map[string]*list.Element
 	capacity int
 	ttl      time.Duration
 }
 
 type cacheEntry struct {
+	key     string
 	value   string
 	expires time.Time
 }
@@ -34,8 +36,8 @@ func NewCallCache(capacity int, ttl time.Duration) *CallCache {
 		ttl = 10 * time.Minute
 	}
 	return &CallCache{
-		entries:  make(map[string]cacheEntry, capacity),
-		order:    make([]string, 0, capacity),
+		lru:      list.New(),
+		entries:  make(map[string]*list.Element, capacity),
 		capacity: capacity,
 		ttl:      ttl,
 	}
@@ -48,14 +50,18 @@ func (c *CallCache) Get(key string) (string, bool) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry, ok := c.entries[key]
-	if !ok {
+	elem, ok := c.entries[key]
+	if !ok || elem == nil {
 		return "", false
 	}
+	entry := elem.Value.(cacheEntry)
 	if c.ttl > 0 && time.Now().After(entry.expires) {
+		c.lru.Remove(elem)
 		delete(c.entries, key)
 		return "", false
 	}
+	// Move to front (most recently used).
+	c.lru.MoveToFront(elem)
 	return entry.value, true
 }
 
@@ -67,22 +73,22 @@ func (c *CallCache) Add(key, val string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
-		c.entries = make(map[string]cacheEntry, c.capacity)
-		c.order = c.order[:0]
+		c.lru = list.New()
+		c.entries = make(map[string]*list.Element, c.capacity)
 	}
-	if _, exists := c.entries[key]; exists {
-		c.entries[key] = cacheEntry{value: val, expires: time.Now().Add(c.ttl)}
+	if elem, exists := c.entries[key]; exists && elem != nil {
+		elem.Value = cacheEntry{key: key, value: val, expires: time.Now().Add(c.ttl)}
+		c.lru.MoveToFront(elem)
 		return
 	}
-	c.entries[key] = cacheEntry{value: val, expires: time.Now().Add(c.ttl)}
-	c.order = append(c.order, key)
-	if len(c.entries) > c.capacity && len(c.order) > 0 {
-		oldest := c.order[0]
-		c.order = c.order[1:]
-		delete(c.entries, oldest)
-		// Bound runaway order growth if many keys were evicted.
-		if cap(c.order) > c.capacity*2 && len(c.order) < c.capacity {
-			c.order = append([]string(nil), c.order...)
+	elem := c.lru.PushFront(cacheEntry{key: key, value: val, expires: time.Now().Add(c.ttl)})
+	c.entries[key] = elem
+	if c.lru.Len() > c.capacity {
+		oldest := c.lru.Back()
+		if oldest != nil {
+			entry := oldest.Value.(cacheEntry)
+			c.lru.Remove(oldest)
+			delete(c.entries, entry.key)
 		}
 	}
 }

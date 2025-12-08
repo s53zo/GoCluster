@@ -814,7 +814,8 @@ func processOutputSpots(
 				window := frequencyAverageWindow(spotPolicy)
 				tolerance := frequencyAverageTolerance(spotPolicy)
 				avg, corroborators, _ := freqAvg.Average(s.DXCall, s.Frequency, time.Now().UTC(), window, tolerance)
-				rounded := math.Round(avg*10) / 10
+				// Half-up rounding to 0.1 kHz to avoid banker's rounding at .x5 boundaries.
+				rounded := math.Floor(avg*10+0.5) / 10
 				// Apply the averaged frequency when we have enough corroborators and the rounded
 				// value actually differs from the reported frequency. We deliberately decouple
 				// this apply threshold from the inclusion tolerance so sub-500 Hz shifts are

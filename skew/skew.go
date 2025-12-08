@@ -132,7 +132,8 @@ func ApplyCorrection(store *Store, rawCall string, freqKHz float64) float64 {
 		return freqKHz
 	}
 	corrected := freqKHz * factor
-	return math.Round(corrected*10) / 10
+	// Half-up rounding to 0.1 kHz to avoid banker's rounding surprises.
+	return math.Floor(corrected*10+0.5) / 10
 }
 
 // Count returns the number of entries currently cached.

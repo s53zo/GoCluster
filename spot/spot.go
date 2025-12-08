@@ -81,7 +81,8 @@ func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
 
 // roundFrequencyTo100Hz normalizes a kHz value to the nearest 100 Hz (0.1 kHz).
 func roundFrequencyTo100Hz(freqKHz float64) float64 {
-	return math.Round(freqKHz*10) / 10
+	// Use half-up rounding to avoid banker's rounding surprises at .x5 boundaries.
+	return math.Floor(freqKHz*10+0.5) / 10
 }
 
 // Hash32 returns a 32-bit hash for deduplication using a fixed-layout,
@@ -232,6 +233,9 @@ func (s *Spot) FormatDXCluster() string {
 			estimatedLen = len(prefix)
 		}
 		var b stringBuilder
+		if estimatedLen < 80 {
+			estimatedLen = 80 // typical DX cluster line length; helps avoid Grow reallocations
+		}
 		b.Grow(estimatedLen)
 
 		b.AppendString(prefix)
