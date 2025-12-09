@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -249,6 +250,13 @@ func (c *Client) handleLogin() {
 
 // readLoop reads lines from RBN
 func (c *Client) readLoop() {
+	// Guard the ingest goroutine so malformed input cannot crash the process.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("%s: panic in read loop: %v\n%s", c.displayName(), r, debug.Stack())
+			c.requestReconnect(fmt.Errorf("panic: %v", r))
+		}
+	}()
 	defer func() {
 		c.connected = false
 		if c.conn != nil {

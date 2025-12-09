@@ -7,7 +7,9 @@
       "Bash(./investigate_reappearances.exe)",
       "Bash(./simulate_threshold.exe:*)",
       "Bash(./analyze_distance3.exe:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(go version:*)",
+      "Bash(go list:*)"
     ],
     "deny": [],
     "ask": []

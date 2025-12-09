@@ -175,6 +175,7 @@ const (
 	defaultClientBufferSize       = 128
 	defaultWorkerQueueSize        = 128
 	defaultDuplicateLoginMessage  = "Another login for your callsign connected. This session is being closed (multiple logins are not allowed)."
+	defaultSendDeadline           = 2 * time.Second
 )
 
 const (
@@ -1722,6 +1723,16 @@ func (c *Client) SendRaw(data []byte) error {
 
 // Send writes a message to the client with proper line endings
 func (c *Client) Send(message string) error {
+	// Protect broadcast goroutines from stalling on slow or wedged clients by
+	// bounding how long a write can block. Each call refreshes the deadline and
+	// then clears it, so idle clients are not disconnected by an old timeout.
+	if c.conn != nil {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(defaultSendDeadline)); err != nil {
+			return err
+		}
+		defer c.conn.SetWriteDeadline(time.Time{})
+	}
+
 	// Normalize any existing CRLF to LF, then replace LF with CRLF so callers
 	// don't need to worry about line endings (and we avoid doubling CRs).
 	message = strings.ReplaceAll(message, "\r\n", "\n")
