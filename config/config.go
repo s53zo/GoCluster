@@ -62,6 +62,12 @@ type TelnetConfig struct {
 	SkipHandshake     bool   `yaml:"skip_handshake"`
 	// BroadcastBatchIntervalMS controls telnet broadcast micro-batching. 0 disables batching.
 	BroadcastBatchIntervalMS int `yaml:"broadcast_batch_interval_ms"`
+	// LoginLineLimit bounds how many bytes are accepted for the initial callsign
+	// prompt. Keep this tight to prevent DoS via huge login banners.
+	LoginLineLimit int `yaml:"login_line_limit"`
+	// CommandLineLimit bounds how many bytes post-login commands may include.
+	// Raising this can help workflows that need larger filter strings.
+	CommandLineLimit int `yaml:"command_line_limit"`
 }
 
 // UIConfig controls the optional local console UI. The legacy TUI uses tview;
@@ -686,6 +692,12 @@ func Load(filename string) (*Config, error) {
 	}
 	if cfg.Telnet.BroadcastBatchIntervalMS <= 0 {
 		cfg.Telnet.BroadcastBatchIntervalMS = 250
+	}
+	if cfg.Telnet.LoginLineLimit <= 0 {
+		cfg.Telnet.LoginLineLimit = 32
+	}
+	if cfg.Telnet.CommandLineLimit <= 0 {
+		cfg.Telnet.CommandLineLimit = 128
 	}
 	// Provide operator-facing telnet prompts even when omitted from YAML.
 	if strings.TrimSpace(cfg.Telnet.DuplicateLoginMsg) == "" {

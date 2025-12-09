@@ -9,16 +9,16 @@ stats:
 
 # Local console UI (applies only to the process console, not telnet clients)
 ui:
-  mode: "ansi"         # ansi | tview | headless
-  refresh_ms: 250      # ANSI redraw cadence; 0 disables redraws
-  color: true          # Enable simple ANSI colors for marked-up lines
-  clear_screen: true   # Clear the screen each frame (set false to append)
+  mode: "ansi"        # ansi | tview | headless
+  refresh_ms: 250     # ANSI redraw cadence; 0 disables redraws
+  color: true         # Enable simple ANSI colors for marked-up lines
+  clear_screen: true  # Clear the screen each frame (set false to append)
   pane_lines:
-    stats: 10          # Lines retained in the stats block
-    calls: 10          # Corrected calls history
-    unlicensed: 10     # Unlicensed drops history
-    harmonics: 10      # Harmonic drops history
-    system: 10         # System log history
+    stats: 10         # Lines retained in the stats block
+    calls: 9          # Corrected calls history
+    unlicensed: 9     # Unlicensed drops history
+    harmonics: 9      # Harmonic drops history
+    system: 9         # System log history
 
 # Spot sources (ingest)
 rbn:
@@ -270,6 +270,8 @@ telnet:
   worker_queue_size: 512          # Jobs queued per broadcast worker before dropping
   client_buffer_size: 512         # Per-client spot backlog before a slow session drops spots
   skip_handshake: true            # Set true to disable Telnet option negotiation (raw TCP clients)
+  login_line_limit: 32            # Max bytes accepted for the initial login prompt (DoS guardrail)
+  command_line_limit: 128         # Max bytes accepted for post-login commands (filters, etc.)
 
 # Default filters applied to new users
 filter:

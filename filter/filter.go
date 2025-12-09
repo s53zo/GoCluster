@@ -3,13 +3,13 @@
 // Filters allow users to customize which spots they receive based on:
 //   - Band (e.g., 20m, 40m, 160m)
 //   - Mode (e.g., CW, USB, FT8, RTTY)
-//   - Callsign patterns (e.g., W1*, LZ5VV, *ABC)
+//   - Callsign patterns (e.g., W1*, LZ5VV, *ABC) for DX and DE calls
 //
 // Filter Logic:
 //   - Multiple filters use AND logic (all must match)
 //   - Default state: All bands and modes enabled (no filtering)
 //   - Once a specific filter is set, only matching spots pass
-//   - Callsign patterns support wildcards (* at start or end)
+//   - Callsign patterns support wildcards (* at start or end) for both DX and DE calls
 //
 // Each telnet client has its own Filter instance, allowing personalized spot feeds.
 // This reduces bandwidth for clients who only want specific spots (e.g., 20m CW only).
@@ -29,7 +29,7 @@ import (
 )
 
 // SupportedModes lists the commonly used modes that users can enable/disable
-// via the SET/FILTER MODE command. Exported so UI/commands can display them.
+// via the PASS MODE command. Exported so UI/commands can display them.
 var SupportedModes = []string{
 	"CW",
 	"FT4",
@@ -189,7 +189,7 @@ func EnsureUserDataDir() error {
 // The filter maintains five types of criteria that can be combined:
 //  1. Band filters: Which amateur radio bands to accept (20m, 40m, 160m)
 //  2. Mode filters: Which operating modes to accept (CW, USB, FT8, etc.)
-//  3. Callsign patterns: Which callsigns to accept (W1*, LZ5VV, etc.)
+//  3. Callsign patterns: Which DX/DE callsigns to accept (W1*, LZ5VV, etc.)
 //  4. Confidence glyphs: Which consensus indicators (?, S, C, P, V, B) to accept.
 //  5. Beacon inclusion: Whether DX calls ending in /B (beacons) should be delivered.
 //
@@ -208,7 +208,8 @@ type Filter struct {
 	BlockBands           map[string]bool // Blocked bands (deny wins over allow)
 	Modes                map[string]bool // Allowed modes
 	BlockModes           map[string]bool // Blocked modes
-	Callsigns            []string        // Callsign patterns (e.g., ["W1*", "LZ5VV"])
+	DXCallsigns          []string        `yaml:"callsigns,omitempty"`   // DX callsign patterns (e.g., ["W1*", "LZ5VV"])
+	DECallsigns          []string        `yaml:"decallsigns,omitempty"` // DE callsign patterns
 	AllBands             bool            // If true, accept all bands (except blocked)
 	BlockAllBands        bool            // If true, reject all bands
 	AllModes             bool            // If true, accept all modes (except blocked)
@@ -270,7 +271,8 @@ func NewFilter() *Filter {
 		BlockBands:           make(map[string]bool),
 		Modes:                make(map[string]bool),
 		BlockModes:           make(map[string]bool),
-		Callsigns:            make([]string, 0),
+		DXCallsigns:          make([]string, 0),
+		DECallsigns:          make([]string, 0),
 		Confidence:           make(map[string]bool),
 		BlockConfidence:      make(map[string]bool),
 		DXContinents:         make(map[string]bool),
@@ -395,28 +397,23 @@ func (f *Filter) SetMode(mode string, enabled bool) {
 	f.AllModes = len(f.Modes) == 0
 }
 
-// AddCallsignPattern adds a callsign pattern to the filter.
+// AddDXCallsignPattern adds a DX callsign pattern to the filter.
 //
 // Parameters:
 //   - pattern: Callsign pattern with optional wildcards (e.g., "W1*", "LZ5VV", "*ABC")
 //
-// Pattern matching:
-//   - Exact match: "LZ5VV" matches only LZ5VV
-//   - Prefix wildcard: "W1*" matches W1ABC, W1XYZ, etc.
-//   - Suffix wildcard: "*ABC" matches W1ABC, K3ABC, etc.
-//
 // Behavior:
 //   - Multiple patterns can be added (OR logic)
 //   - Patterns are case-insensitive (normalized to uppercase)
-//
-// Examples:
-//
-//	filter.AddCallsignPattern("W1*")    // Accept all W1 callsigns
-//	filter.AddCallsignPattern("LZ5VV")  // Also accept LZ5VV
-//	// Now accepts: W1ABC, W1XYZ, LZ5VV, etc.
-func (f *Filter) AddCallsignPattern(pattern string) {
+func (f *Filter) AddDXCallsignPattern(pattern string) {
 	pattern = strings.ToUpper(pattern)
-	f.Callsigns = append(f.Callsigns, pattern)
+	f.DXCallsigns = append(f.DXCallsigns, pattern)
+}
+
+// AddDECallsignPattern adds a DE/spotter callsign pattern to the filter.
+func (f *Filter) AddDECallsignPattern(pattern string) {
+	pattern = strings.ToUpper(pattern)
+	f.DECallsigns = append(f.DECallsigns, pattern)
 }
 
 // SetDXContinent enables or disables filtering for a specific DX continent.
@@ -565,17 +562,20 @@ func (f *Filter) SetDEDXCC(code int, enabled bool) {
 	f.AllDEDXCC = len(f.DEDXCC) == 0
 }
 
-// ClearCallsignPatterns removes all callsign filters.
-//
-// After calling this, callsign filtering is disabled and all callsigns are accepted
-// (subject to band/mode filters).
-//
-// Example:
-//
-//	filter.ClearCallsignPatterns()
-//	// All callsigns now pass through
+// ClearDXCallsignPatterns removes all DX callsign filters.
+func (f *Filter) ClearDXCallsignPatterns() {
+	f.DXCallsigns = make([]string, 0)
+}
+
+// ClearDECallsignPatterns removes all DE callsign filters.
+func (f *Filter) ClearDECallsignPatterns() {
+	f.DECallsigns = make([]string, 0)
+}
+
+// ClearCallsignPatterns clears both DX and DE callsign filters.
 func (f *Filter) ClearCallsignPatterns() {
-	f.Callsigns = make([]string, 0)
+	f.ClearDXCallsignPatterns()
+	f.ClearDECallsignPatterns()
 }
 
 // SetConfidenceSymbol enables or disables filtering for a specific confidence glyph.
@@ -847,11 +847,25 @@ func (f *Filter) Matches(s *spot.Spot) bool {
 		return false
 	}
 
-	// Check callsign patterns (if any are set)
-	if len(f.Callsigns) > 0 {
+	// Check DX callsign patterns (if any are set)
+	if len(f.DXCallsigns) > 0 {
 		matched := false
-		for _, pattern := range f.Callsigns {
+		for _, pattern := range f.DXCallsigns {
 			if matchesCallsignPattern(s.DXCall, pattern) {
+				matched = true
+				break // At least one pattern matched (OR logic)
+			}
+		}
+		if !matched {
+			return false // No patterns matched
+		}
+	}
+
+	// Check DE callsign patterns (if any are set)
+	if len(f.DECallsigns) > 0 {
+		matched := false
+		for _, pattern := range f.DECallsigns {
+			if matchesCallsignPattern(s.DECall, pattern) {
 				matched = true
 				break // At least one pattern matched (OR logic)
 			}
@@ -998,7 +1012,7 @@ func isConfidenceExemptMode(mode string) bool {
 //   - Callsign filter: "Callsigns: W1*, LZ5VV"
 //   - Empty filter: "Bands: NONE (no spots will pass)"
 //
-// This is used for the SHOW/FILTER command to display current filter state.
+// This is used for the SHOW FILTER command to display current filter state.
 //
 // Examples:
 //
@@ -1043,8 +1057,11 @@ func (f *Filter) String() string {
 	}
 
 	// Describe callsign patterns (if any)
-	if len(f.Callsigns) > 0 {
-		parts = append(parts, "Callsigns: "+strings.Join(f.Callsigns, ", "))
+	if len(f.DXCallsigns) > 0 {
+		parts = append(parts, "DXCallsigns: "+strings.Join(f.DXCallsigns, ", "))
+	}
+	if len(f.DECallsigns) > 0 {
+		parts = append(parts, "DECallsigns: "+strings.Join(f.DECallsigns, ", "))
 	}
 
 	// Describe continent filters

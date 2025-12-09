@@ -117,34 +117,36 @@ Telnet clients can issue commands via the prompt once logged in. The processor, 
 - `SHOW DX [N]` / `SHOW/DX [N]` - stream the most recent `N` spots directly from the shared ring buffer (`N` ranges from 1-100, default 10). The command accepts the alias `SH DX` as well.
 - `BYE`, `QUIT`, `EXIT` - request a graceful logout; the server replies with `73!` and closes the connection.
 
-Filter management commands are implemented directly in `telnet/server.go` and operate on each client's `filter.Filter`. They can be used at any time and fall into `SET`, `UNSET`, and `SHOW` groups:
+Filter management commands are implemented directly in `telnet/server.go` and operate on each client's `filter.Filter`. They can be used at any time and fall into `PASS`, `REJECT`, and `SHOW FILTER` groups:
 
-- `SHOW/FILTER` - prints the current filter state for bands, modes, continents, CQ zones, and callsigns.
-- `SHOW/FILTER MODES` - lists every supported mode along with whether it is currently enabled for the session.
-- `SHOW/FILTER BANDS` - lists all supported bands that can be enabled.
-- `SHOW/FILTER DXCONT` / `DECONT` - list supported DX/spotter continents and enabled state.
-- `SHOW/FILTER DXZONE` / `DEZONE` - list CQ zones (1-40) and enabled state for DX/spotter.
-- `SHOW/FILTER DXGRID2` / `DEGRID2` - list enabled 2-character DX/DE grid prefixes or `ALL`.
-- `SET/FILTER BAND <band>[,<band>...]` - enables filtering for the comma- or space-separated list (each item normalized via `spot.NormalizeBand`), or specify `ALL` to accept every band; use the band names from `spot.SupportedBandNames()`.
-- `SET/FILTER MODE <mode>[,<mode>...]` - enables one or more modes (comma- or space-separated) that must exist in `filter.SupportedModes`, or specify `ALL` to accept every mode.
-- `SET/FILTER DXCONT <cont>[,<cont>...]` / `DECONT <cont>[,<cont>...]` - enable only the listed DX/spotter continents (AF, AN, AS, EU, NA, OC, SA), or `ALL`.
-- `SET/FILTER DXZONE <zone>[,<zone>...]` / `DEZONE <zone>[,<zone>...]` - enable only the listed DX/spotter CQ zones (1-40), or `ALL`.
-- `SET/FILTER DXGRID2 <grid>[,<grid>...]` - enable only the listed 2-character DX grid prefixes. Tokens longer than two characters are truncated (e.g., `FN05` -> `FN`); `ALL` resets to accept every DX 2-character grid.
-- `SET/FILTER DEGRID2 <grid>[,<grid>...]` - enable only the listed 2-character DE grid prefixes (same parsing/truncation as DXGRID2); `ALL` resets to accept every DE 2-character grid.
-- `SET/FILTER CALL <pattern>` - begins delivering only spots matching the supplied callsign pattern.
-- `SET/FILTER CONFIDENCE <symbol>[,<symbol>...]` - enables the comma- or space-separated list of consensus glyphs (valid symbols: `?`, `S`, `C`, `P`, `V`, `B`; use `ALL` to accept every glyph).
-- `SET/FILTER BEACON` - explicitly enable delivery of beacon spots (DX calls ending `/B`; enabled by default).
-- `UNSET/FILTER ALL` - resets every filter back to the default (no filtering).
-- `UNSET/FILTER BAND <band>[,<band>...]` - disables only the comma- or space-separated list of bands provided (use `ALL` to clear every band filter).
-- `UNSET/FILTER MODE <mode>[,<mode>...]` - disables only the comma- or space-separated list of modes provided (specify `ALL` to clear every mode filter).
-- `UNSET/FILTER DXCONT` / `DECONT` / `DXZONE` / `DEZONE` - clear continent/zone filters (use `ALL` to reset).
-- `UNSET/FILTER DXGRID2 <grid>[,<grid>...]` - remove specific 2-character DX grid prefixes (tokens truncated to two characters); `ALL` clears the whitelist and accepts all DX 2-character grids again.
-- `UNSET/FILTER DEGRID2 <grid>[,<grid>...]` - remove specific 2-character DE grid prefixes (tokens truncated to two characters); `ALL` clears the whitelist and accepts all DE 2-character grids again.
-- `UNSET/FILTER CALL` - removes all callsign patterns.
-- `UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...]` - disables only the comma- or space-separated list of glyphs provided (use `ALL` to clear the whitelist).
-- `UNSET/FILTER BEACON` - drop beacon spots entirely (they remain tagged internally for future processing).
-- `SHOW/FILTER BEACON` - display the current beacon-filter state.
-- `SHOW/FILTER CONFIDENCE` - lists each glyph alongside whether it is currently enabled.
+- `SHOW FILTER` - prints the current filter state for bands, modes, continents, CQ zones, and callsigns.
+- `SHOW FILTER MODES` - lists every supported mode along with whether it is currently enabled for the session.
+- `SHOW FILTER BANDS` - lists all supported bands that can be enabled.
+- `SHOW FILTER DXCONT` / `DECONT` - list supported DX/spotter continents and enabled state.
+- `SHOW FILTER DXZONE` / `DEZONE` - list CQ zones (1-40) and enabled state for DX/spotter.
+- `SHOW FILTER DXGRID2` / `DEGRID2` - list enabled 2-character DX/DE grid prefixes or `ALL`.
+- `PASS BAND <band>[,<band>...]` - enables filtering for the comma- or space-separated list (each item normalized via `spot.NormalizeBand`), or specify `ALL` to accept every band; use the band names from `spot.SupportedBandNames()`.
+- `PASS MODE <mode>[,<mode>...]` - enables one or more modes (comma- or space-separated) that must exist in `filter.SupportedModes`, or specify `ALL` to accept every mode.
+- `PASS DXCONT <cont>[,<cont>...]` / `DECONT <cont>[,<cont>...]` - enable only the listed DX/spotter continents (AF, AN, AS, EU, NA, OC, SA), or `ALL`.
+- `PASS DXZONE <zone>[,<zone>...]` / `DEZONE <zone>[,<zone>...]` - enable only the listed DX/spotter CQ zones (1-40), or `ALL`.
+- `PASS DXGRID2 <grid>[,<grid>...]` - enable only the listed 2-character DX grid prefixes. Tokens longer than two characters are truncated (e.g., `FN05` -> `FN`); `ALL` resets to accept every DX 2-character grid.
+- `PASS DEGRID2 <grid>[,<grid>...]` - enable only the listed 2-character DE grid prefixes (same parsing/truncation as DXGRID2); `ALL` resets to accept every DE 2-character grid.
+- `PASS DXCALL <pattern>` - begins delivering only spots with DX calls matching the supplied pattern.
+- `PASS DECALL <pattern>` - begins delivering only spots with DE/spotter calls matching the supplied pattern.
+- `PASS CONFIDENCE <symbol>[,<symbol>...]` - enables the comma- or space-separated list of consensus glyphs (valid symbols: `?`, `S`, `C`, `P`, `V`, `B`; use `ALL` to accept every glyph).
+- `PASS BEACON` - explicitly enable delivery of beacon spots (DX calls ending `/B`; enabled by default).
+- `REJECT ALL` - resets every filter back to the default (no filtering).
+- `REJECT BAND <band>[,<band>...]` - disables only the comma- or space-separated list of bands provided (use `ALL` to block every band).
+- `REJECT MODE <mode>[,<mode>...]` - disables only the comma- or space-separated list of modes provided (specify `ALL` to block every mode).
+- `REJECT DXCONT` / `DECONT` / `DXZONE` / `DEZONE` - block continent/zone filters (use `ALL` to block all).
+- `REJECT DXGRID2 <grid>[,<grid>...]` - remove specific 2-character DX grid prefixes (tokens truncated to two characters); `ALL` blocks every DX 2-character grid.
+- `REJECT DEGRID2 <grid>[,<grid>...]` - remove specific 2-character DE grid prefixes (tokens truncated to two characters); `ALL` blocks every DE 2-character grid.
+- `REJECT DXCALL` - removes all DX callsign patterns.
+- `REJECT DECALL` - removes all DE callsign patterns.
+- `REJECT CONFIDENCE <symbol>[,<symbol>...]` - disables only the comma- or space-separated list of glyphs provided (use `ALL` to block every glyph).
+- `REJECT BEACON` - drop beacon spots entirely (they remain tagged internally for future processing).
+- `SHOW FILTER BEACON` - display the current beacon-filter state.
+- `SHOW FILTER CONFIDENCE` - lists each glyph alongside whether it is currently enabled.
 
 Confidence glyphs are only emitted for modes that run consensus-based correction (CW/RTTY/SSB). FT8/FT4 spots carry no confidence glyphs, so confidence filters do not affect them.
 
@@ -159,12 +161,12 @@ Confidence indicator legend in telnet output:
 - `B` - Correction was suggested but CTY validation failed (call left unchanged)
 - `C` - Callsign was corrected and CTY-validated
 
-Use `SET/FILTER CONFIDENCE` with the glyphs above to whitelist the consensus levels you want to see (for example, `SET/FILTER CONFIDENCE P,V` keeps strong/very strong reports while dropping `?`/`S`/`B` entries).
+Use `PASS CONFIDENCE` with the glyphs above to whitelist the consensus levels you want to see (for example, `PASS CONFIDENCE P,V` keeps strong/very strong reports while dropping `?`/`S`/`B` entries).
 
-Use `UNSET/FILTER BEACON` to suppress DX beacons when you only want live operator traffic; `SET/FILTER BEACON` re-enables them, and `SHOW/FILTER BEACON` reports the current state. Regardless of delivery, `/B` spots are excluded from call-correction, frequency-averaging, and harmonic checks.
-Errors during filter commands return a usage message (e.g., invalid bands or modes refer to the supported lists) and the `SHOW/FILTER` commands help confirm the active settings.
+Use `REJECT BEACON` to suppress DX beacons when you only want live operator traffic; `PASS BEACON` re-enables them, and `SHOW FILTER BEACON` reports the current state. Regardless of delivery, `/B` spots are excluded from call-correction, frequency-averaging, and harmonic checks.
+Errors during filter commands return a usage message (e.g., invalid bands or modes refer to the supported lists) and the `SHOW FILTER` commands help confirm the active settings.
 
-Continent and CQ-zone filters behave like the band/mode whitelists: start permissive, tighten with `SET/FILTER`, reset with `ALL`. When a continent/zone filter is active, spots missing that metadata are rejected so the whitelist cannot be bypassed by incomplete records.
+Continent and CQ-zone filters behave like the band/mode whitelists: start permissive, tighten with `PASS`, reset with `ALL`. When a continent/zone filter is active, spots missing that metadata are rejected so the whitelist cannot be bypassed by incomplete records.
 
 ## RBN Skew Corrections
 
@@ -253,21 +255,21 @@ SHOW/DX 5
 DX1 14.074 FT8 599 N1ABC>W1XYZ
 DX2 14.070 FT4 26 N1ABC>W2ABC
 ...
-SET/FILTER BAND 20M
+PASS BAND 20M
 Filter set: Band 20M
-SET/FILTER MODE FT8,FT4
+PASS MODE FT8,FT4
 Filter set: Modes FT8, FT4
-SET/FILTER CONFIDENCE P,V
+PASS CONFIDENCE P,V
 Confidence symbols enabled: P, V
-SHOW/FILTER MODES
+SHOW FILTER MODES
 Supported modes: FT8=ENABLED, FT4=ENABLED, CW=DISABLED, ...
-SHOW/FILTER CONFIDENCE
+SHOW FILTER CONFIDENCE
 Confidence symbols: ?=DISABLED, S=DISABLED, C=ENABLED, P=ENABLED, V=ENABLED, B=DISABLED
-SHOW/FILTER
+SHOW FILTER
 Current filters: Bands: 20M | Modes: FT8, FT4 | Confidence: P, V
-UNSET/FILTER MODE FT4
+REJECT MODE FT4
 Mode filters disabled: FT4
-UNSET/FILTER ALL
+REJECT ALL
 All filters cleared
 BYE
 73!
@@ -284,6 +286,8 @@ The telnet server fans every post-dedup spot to every connected client. When PSK
 - `worker_queue_size` controls how many per-shard jobs each worker buffers before dropping a shard assignment (default `128`).
 - `client_buffer_size` defines how many spots a single telnet session can fall behind before its personal queue starts dropping (default `128`).
 - `broadcast_batch_interval_ms` micro-batches outbound broadcasts to reduce mutex/IO churn (default `250`; set to `0` for immediate sends). Each shard flushes on interval or when the batch reaches its max size, preserving order per shard.
+- `login_line_limit` caps how many bytes a user can enter at the login prompt (default `32`). Keep this tight to prevent hostile clients from allocating massive buffers before authentication.
+- `command_line_limit` caps how long any post-login command may be (default `128`). Raise this when operators expect comma-heavy filter commands or scripted clients that send longer payloads.
 
 Increase the queue sizes if you see the broadcast-channel drop message frequently, or raise `broadcast_workers` when you have CPU headroom and thousands of concurrent clients.
 

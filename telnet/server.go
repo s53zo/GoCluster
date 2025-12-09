@@ -92,6 +92,8 @@ type Server struct {
 	processor         *commands.Processor  // Command processor for user commands
 	skipHandshake     bool                 // When true, omit Telnet IAC negotiation
 	clientBufferSize  int                  // Per-client spot channel capacity
+	loginLineLimit    int                  // Maximum bytes accepted for login/callsign input
+	commandLineLimit  int                  // Maximum bytes accepted for post-login commands
 }
 
 // Client represents a connected telnet client session.
@@ -113,6 +115,25 @@ type Client struct {
 	spotChan  chan *spot.Spot // Buffered channel for spot delivery (configurable capacity)
 	filter    *filter.Filter  // Personal spot filter (band, mode, callsign)
 	dropCount uint64          // Count of spots dropped for this client due to backpressure
+}
+
+// InputValidationError represents a non-fatal ingress violation (length or character guardrails).
+// Returning this error allows the caller to keep the connection open and prompt the user again.
+type InputValidationError struct {
+	reason      string
+	userMessage string
+}
+
+func (e *InputValidationError) Error() string {
+	return e.reason
+}
+
+// UserMessage returns the friendly text that should be sent back to the telnet client.
+func (e *InputValidationError) UserMessage() string {
+	if e == nil || strings.TrimSpace(e.userMessage) == "" {
+		return "Input rejected. Please try again."
+	}
+	return e.userMessage
 }
 
 func (c *Client) saveFilter() error {
@@ -147,6 +168,23 @@ func (m *broadcastMetrics) snapshot() (queueDrops, clientDrops uint64) {
 	return
 }
 
+func isFilterCommand(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	if lower == "" {
+		return false
+	}
+	if strings.HasPrefix(lower, "pass") ||
+		strings.HasPrefix(lower, "reject") ||
+		strings.HasPrefix(lower, "show filter") {
+		return true
+	}
+	// Catch legacy verbs so we can return the syntax-changed hint.
+	return strings.HasPrefix(lower, "set/filter") ||
+		strings.HasPrefix(lower, "unset/filter") ||
+		strings.HasPrefix(lower, "show/filter") ||
+		strings.HasPrefix(lower, "sh/filter")
+}
+
 func shouldLogQueueDrop(total uint64) bool {
 	return total == 1 || total%100 == 0
 }
@@ -176,11 +214,14 @@ const (
 	defaultWorkerQueueSize        = 128
 	defaultDuplicateLoginMessage  = "Another login for your callsign connected. This session is being closed (multiple logins are not allowed)."
 	defaultSendDeadline           = 2 * time.Second
+	defaultLoginLineLimit         = 32
+	defaultCommandLineLimit       = 128
 )
 
 const (
-	setFilterUsageMsg   = "Usage: SET/FILTER BAND <band>[,<band>...] | SET/FILTER MODE <mode>[,<mode>...] | SET/FILTER CALL <pattern> | SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | SET/FILTER BEACON | SET/FILTER DXGRID2 <grid>[,<grid>...] (two characters or ALL) | SET/FILTER DEGRID2 <grid>[,<grid>...] (two characters or ALL) | SET/FILTER DXCONT <cont>[,<cont>...] | SET/FILTER DECONT <cont>[,<cont>...] | SET/FILTER DXZONE <zone>[,<zone>...] | SET/FILTER DEZONE <zone>[,<zone>...] | SET/FILTER DXDXCC <code>[,<code>...] | SET/FILTER DEDXCC <code>[,<code>...] (SET = allow list; clears block-all)\n"
-	unsetFilterUsageMsg = "Usage: UNSET/FILTER ALL | UNSET/FILTER BAND <band>[,<band>...] | UNSET/FILTER MODE <mode>[,<mode>...] | UNSET/FILTER CALL | UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | UNSET/FILTER BEACON | UNSET/FILTER DXGRID2 <grid>[,<grid>...] (two characters or ALL) | UNSET/FILTER DEGRID2 <grid>[,<grid>...] (two characters or ALL) | UNSET/FILTER DXCONT <cont>[,<cont>...] | UNSET/FILTER DECONT <cont>[,<cont>...] | UNSET/FILTER DXZONE <zone>[,<zone>...] | UNSET/FILTER DEZONE <zone>[,<zone>...] | UNSET/FILTER DXDXCC <code>[,<code>...] | UNSET/FILTER DEDXCC <code>[,<code>...] (UNSET = block list; ALL blocks all)\n"
+	passFilterUsageMsg    = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS DXCALL <pattern> | PASS DECALL <pattern> | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all)\nType HELP for usage.\n"
+	rejectFilterUsageMsg  = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT DXCALL | REJECT DECALL | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults)\nType HELP for usage.\n"
+	legacyFilterSyntaxMsg = "Filter syntax changed: use PASS/REJECT/SHOW FILTER.\nType HELP for usage.\n"
 )
 
 // ServerOptions configures the telnet server instance.
@@ -197,6 +238,8 @@ type ServerOptions struct {
 	ClientBuffer           int
 	BroadcastBatchInterval time.Duration
 	SkipHandshake          bool
+	LoginLineLimit         int
+	CommandLineLimit       int
 }
 
 // NewServer creates a new telnet server
@@ -219,6 +262,8 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		clientBufferSize:  config.ClientBuffer,
 		skipHandshake:     config.SkipHandshake,
 		processor:         processor,
+		loginLineLimit:    config.LoginLineLimit,
+		commandLineLimit:  config.CommandLineLimit,
 	}
 }
 
@@ -247,6 +292,12 @@ func normalizeServerOptions(opts ServerOptions) ServerOptions {
 	}
 	if strings.TrimSpace(config.ClusterCall) == "" {
 		config.ClusterCall = "DXC"
+	}
+	if config.LoginLineLimit <= 0 {
+		config.LoginLineLimit = defaultLoginLineLimit
+	}
+	if config.CommandLineLimit <= 0 {
+		config.CommandLineLimit = defaultCommandLineLimit
 	}
 	return config
 }
@@ -530,19 +581,34 @@ func (s *Server) handleClient(conn net.Conn) {
 	client.Send(s.welcomeMessage)
 	client.Send("\r\nEnter your callsign:\r\n")
 
-	// Read callsign
-	callsign, err := client.ReadLine()
-	if err != nil {
-		log.Printf("Error reading callsign from %s: %v", address, err)
-		return
+	var callsign string
+	for {
+		// Read callsign with tight guard rails so a single telnet client cannot
+		// consume unbounded memory or smuggle control characters during login. The
+		// limit is configurable but defaults to 32 bytes which covers every valid
+		// callsign, including suffixes such as /QRP or /MM.
+		line, err := client.ReadLine(s.loginLineLimit, "login", false, false, false)
+		if err != nil {
+			var inputErr *InputValidationError
+			if errors.As(err, &inputErr) {
+				client.Send(inputErr.UserMessage() + "\n")
+				client.Send("Enter your callsign:\r\n")
+				continue
+			}
+			log.Printf("Error reading callsign from %s: %v", address, err)
+			return
+		}
+
+		line = strings.ToUpper(strings.TrimSpace(line))
+		if line == "" {
+			client.Send("Callsign cannot be empty. Please try again.\n")
+			client.Send("Enter your callsign:\r\n")
+			continue
+		}
+		callsign = line
+		break
 	}
 
-	callsign = strings.ToUpper(strings.TrimSpace(callsign))
-	if callsign == "" {
-		client.Send("Invalid callsign, disconnecting.\n")
-		log.Printf("Client %s provided empty callsign", address)
-		return
-	}
 	client.callsign = callsign
 	log.Printf("Client %s logged in as %s", address, client.callsign)
 
@@ -577,8 +643,16 @@ func (s *Server) handleClient(conn net.Conn) {
 
 	// Read commands from client
 	for {
-		line, err := client.ReadLine()
+		// Commands use the more relaxed limit because filter manipulation can
+		// legitimately include several tokens. The limit is still kept small
+		// (default 128 bytes) to keep parsing cheap and predictable.
+		line, err := client.ReadLine(s.commandLineLimit, "command", true, true, true)
 		if err != nil {
+			var inputErr *InputValidationError
+			if errors.As(err, &inputErr) {
+				client.Send(inputErr.UserMessage() + "\n")
+				continue
+			}
 			log.Printf("Client %s disconnected: %v", client.callsign, err)
 			return
 		}
@@ -589,9 +663,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		}
 
 		// Check for filter commands first
-		if strings.HasPrefix(strings.ToLower(line), "set/filter") ||
-			strings.HasPrefix(strings.ToLower(line), "unset/filter") ||
-			strings.HasPrefix(strings.ToLower(line), "show/filter") {
+		if isFilterCommand(line) {
 			response := client.handleFilterCommand(line)
 			client.Send(response)
 			continue
@@ -618,16 +690,25 @@ func (s *Server) handleClient(conn net.Conn) {
 func (c *Client) handleFilterCommand(cmd string) string {
 	parts := strings.Fields(cmd)
 	if len(parts) == 0 {
-		return "Invalid filter command\n"
+		return "Invalid filter command. Type HELP for usage.\n"
 	}
 
 	command := strings.ToLower(parts[0])
 
+	// Explicitly catch legacy verbs to provide a clearer error.
 	switch command {
-	case "show/filter", "sh/filter":
+	case "set/filter", "unset/filter", "show/filter", "sh/filter":
+		return legacyFilterSyntaxMsg
+	}
+
+	switch command {
+	case "show":
+		if len(parts) < 2 || strings.ToLower(parts[1]) != "filter" {
+			return "Invalid filter command. Type HELP for usage.\n"
+		}
 		// If user asked for modes specifically, show supported modes and enabled state
-		if len(parts) > 1 {
-			arg := strings.ToLower(parts[1])
+		if len(parts) > 2 {
+			arg := strings.ToLower(parts[2])
 			switch arg {
 			case "modes":
 				var b strings.Builder
@@ -684,20 +765,20 @@ func (c *Client) handleFilterCommand(cmd string) string {
 
 		return fmt.Sprintf("Current filters: %s\n", c.filter.String())
 
-	case "set/filter":
+	case "pass":
 		if len(parts) < 2 {
-			return setFilterUsageMsg
+			return passFilterUsageMsg
 		}
 
 		filterType := strings.ToUpper(parts[1])
 		if filterType != "BEACON" && len(parts) < 3 {
-			return setFilterUsageMsg
+			return passFilterUsageMsg
 		}
 		switch filterType {
 		case "BAND":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return setFilterUsageMsg
+				return passFilterUsageMsg
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetBands()
@@ -706,7 +787,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			rawBands := parseBandList(value)
 			if len(rawBands) == 0 {
-				return setFilterUsageMsg
+				return passFilterUsageMsg
 			}
 			normalizedBands := make([]string, 0, len(rawBands))
 			seen := make(map[string]bool)
@@ -726,7 +807,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 				return fmt.Sprintf("Unknown band: %s\nSupported bands: %s\n", strings.Join(invalid, ", "), strings.Join(spot.SupportedBandNames(), ", "))
 			}
 			if len(normalizedBands) == 0 {
-				return setFilterUsageMsg
+				return passFilterUsageMsg
 			}
 			for _, band := range normalizedBands {
 				c.filter.SetBand(band, true)
@@ -745,7 +826,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			modes := parseModeList(modeArgs)
 			if len(modes) == 0 {
-				return "Usage: SET/FILTER MODE <mode>[,<mode>...] (comma or space separated)\n"
+				return "Usage: PASS MODE <mode>[,<mode>...] (comma or space separated)\nType HELP for usage.\n"
 			}
 			invalid := collectInvalidModes(modes)
 			if len(invalid) > 0 {
@@ -756,15 +837,20 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			c.saveFilter()
 			return fmt.Sprintf("Filter set: Modes %s\n", strings.Join(modes, ", "))
-		case "CALL":
+		case "DXCALL":
 			value := strings.ToUpper(parts[2])
-			c.filter.AddCallsignPattern(value)
+			c.filter.AddDXCallsignPattern(value)
 			c.saveFilter()
-			return fmt.Sprintf("Filter set: Callsign %s\n", value)
+			return fmt.Sprintf("Filter set: DX callsign %s\n", value)
+		case "DECALL":
+			value := strings.ToUpper(parts[2])
+			c.filter.AddDECallsignPattern(value)
+			c.saveFilter()
+			return fmt.Sprintf("Filter set: DE callsign %s\n", value)
 		case "CONFIDENCE":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
+				return "Usage: PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetConfidence()
@@ -773,7 +859,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			symbols := parseConfidenceList(value)
 			if len(symbols) == 0 {
-				return "Usage: SET/FILTER CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\n"
+				return "Usage: PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\nType HELP for usage.\n"
 			}
 			invalid := collectInvalidConfidenceSymbols(symbols)
 			if len(invalid) > 0 {
@@ -791,7 +877,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DXCONT":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: SET/FILTER DXCONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\n"
+				return "Usage: PASS DXCONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDXContinents()
@@ -800,7 +886,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			continents := parseContinentList(value)
 			if len(continents) == 0 {
-				return "Usage: SET/FILTER DXCONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\n"
+				return "Usage: PASS DXCONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\nType HELP for usage.\n"
 			}
 			if invalid := collectInvalidContinents(continents); len(invalid) > 0 {
 				return fmt.Sprintf("Unknown continent: %s\nSupported continents: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedContinents, ", "))
@@ -813,7 +899,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DECONT":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: SET/FILTER DECONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\n"
+				return "Usage: PASS DECONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDEContinents()
@@ -822,7 +908,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			continents := parseContinentList(value)
 			if len(continents) == 0 {
-				return "Usage: SET/FILTER DECONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\n"
+				return "Usage: PASS DECONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\nType HELP for usage.\n"
 			}
 			if invalid := collectInvalidContinents(continents); len(invalid) > 0 {
 				return fmt.Sprintf("Unknown continent: %s\nSupported continents: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedContinents, ", "))
@@ -835,7 +921,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DXZONE":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: SET/FILTER DXZONE <zone>[,<zone>...] (1-40, or ALL)\n"
+				return "Usage: PASS DXZONE <zone>[,<zone>...] (1-40, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDXZones()
@@ -844,7 +930,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			zones := parseZoneList(value)
 			if len(zones) == 0 {
-				return "Usage: SET/FILTER DXZONE <zone>[,<zone>...] (1-40, or ALL)\n"
+				return "Usage: PASS DXZONE <zone>[,<zone>...] (1-40, or ALL)\nType HELP for usage.\n"
 			}
 			if invalid := collectInvalidZones(zones); len(invalid) > 0 {
 				return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone())
@@ -857,7 +943,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DEZONE":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: SET/FILTER DEZONE <zone>[,<zone>...] (1-40, or ALL)\n"
+				return "Usage: PASS DEZONE <zone>[,<zone>...] (1-40, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDEZones()
@@ -866,7 +952,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			zones := parseZoneList(value)
 			if len(zones) == 0 {
-				return "Usage: SET/FILTER DEZONE <zone>[,<zone>...] (1-40, or ALL)\n"
+				return "Usage: PASS DEZONE <zone>[,<zone>...] (1-40, or ALL)\nType HELP for usage.\n"
 			}
 			if invalid := collectInvalidZones(zones); len(invalid) > 0 {
 				return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone())
@@ -879,7 +965,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DXDXCC":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: SET/FILTER DXDXCC <code>[,<code>...] (comma or space separated, or ALL)\n"
+				return "Usage: PASS DXDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDXDXCC()
@@ -888,7 +974,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			codes, invalid := parseDXCCList(value)
 			if len(codes) == 0 {
-				return "Usage: SET/FILTER DXDXCC <code>[,<code>...] (comma or space separated, or ALL)\n"
+				return "Usage: PASS DXDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if len(invalid) > 0 {
 				return fmt.Sprintf("Invalid DXCC code: %s\n", strings.Join(invalid, ", "))
@@ -901,7 +987,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DEDXCC":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: SET/FILTER DEDXCC <code>[,<code>...] (comma or space separated, or ALL)\n"
+				return "Usage: PASS DEDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDEDXCC()
@@ -910,7 +996,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			codes, invalid := parseDXCCList(value)
 			if len(codes) == 0 {
-				return "Usage: SET/FILTER DEDXCC <code>[,<code>...] (comma or space separated, or ALL)\n"
+				return "Usage: PASS DEDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if len(invalid) > 0 {
 				return fmt.Sprintf("Invalid DXCC code: %s\n", strings.Join(invalid, ", "))
@@ -923,7 +1009,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DXGRID2":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: SET/FILTER DXGRID2 <grid>[,<grid>...] (two characters, or ALL)\n"
+				return "Usage: PASS DXGRID2 <grid>[,<grid>...] (two characters, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDXGrid2()
@@ -932,7 +1018,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			gridList, invalidTokens := parseGrid2List(value)
 			if len(gridList) == 0 {
-				return "Usage: SET/FILTER DXGRID2 <grid>[,<grid>...] (two characters, or ALL)\n"
+				return "Usage: PASS DXGRID2 <grid>[,<grid>...] (two characters, or ALL)\nType HELP for usage.\n"
 			}
 			if len(invalidTokens) > 0 {
 				return fmt.Sprintf("Unknown 2-character grid: %s\n", strings.Join(invalidTokens, ", "))
@@ -945,7 +1031,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DEGRID2":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: SET/FILTER DEGRID2 <grid>[,<grid>...] (two characters, or ALL)\n"
+				return "Usage: PASS DEGRID2 <grid>[,<grid>...] (two characters, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDEGrid2()
@@ -954,7 +1040,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			gridList, invalidTokens := parseGrid2List(value)
 			if len(gridList) == 0 {
-				return "Usage: SET/FILTER DEGRID2 <grid>[,<grid>...] (two characters, or ALL)\n"
+				return "Usage: PASS DEGRID2 <grid>[,<grid>...] (two characters, or ALL)\nType HELP for usage.\n"
 			}
 			if len(invalidTokens) > 0 {
 				return fmt.Sprintf("Unknown 2-character grid: %s\n", strings.Join(invalidTokens, ", "))
@@ -965,12 +1051,12 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			c.saveFilter()
 			return fmt.Sprintf("Filter set: DE 2-character grids %s\n", strings.Join(gridList, ", "))
 		default:
-			return "Unknown filter type. Use: BAND, MODE, CALL, CONFIDENCE, BEACON, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\n"
+			return "Unknown filter type. Use: BAND, MODE, DXCALL, DECALL, CONFIDENCE, BEACON, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 		}
 
-	case "unset/filter":
+	case "reject":
 		if len(parts) < 2 {
-			return unsetFilterUsageMsg
+			return rejectFilterUsageMsg
 		}
 
 		filterType := strings.ToUpper(parts[1])
@@ -983,7 +1069,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "BAND":
 			bandArgs := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if bandArgs == "" {
-				return "Usage: UNSET/FILTER BAND <band>[,<band>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT BAND <band>[,<band>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(bandArgs, "ALL") {
 				c.filter.ResetBands()
@@ -994,7 +1080,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			bands := parseBandList(bandArgs)
 			if len(bands) == 0 {
-				return "Usage: UNSET/FILTER BAND <band>[,<band>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT BAND <band>[,<band>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			invalid := make([]string, 0)
 			normalized := make([]string, 0, len(bands))
@@ -1014,7 +1100,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 				return fmt.Sprintf("Unknown band: %s\nSupported bands: %s\n", strings.Join(invalid, ", "), strings.Join(spot.SupportedBandNames(), ", "))
 			}
 			if len(normalized) == 0 {
-				return "Usage: UNSET/FILTER BAND <band>[,<band>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT BAND <band>[,<band>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			for _, band := range normalized {
 				c.filter.SetBand(band, false)
@@ -1024,7 +1110,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "MODE":
 			modeArgs := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if modeArgs == "" {
-				return "Usage: UNSET/FILTER MODE <mode>[,<mode>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT MODE <mode>[,<mode>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(modeArgs, "ALL") {
 				c.filter.ResetModes()
@@ -1035,7 +1121,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			modes := parseModeList(modeArgs)
 			if len(modes) == 0 {
-				return "Usage: UNSET/FILTER MODE <mode>[,<mode>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT MODE <mode>[,<mode>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			invalid := collectInvalidModes(modes)
 			if len(invalid) > 0 {
@@ -1046,14 +1132,18 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			c.saveFilter()
 			return fmt.Sprintf("Mode filters disabled: %s\n", strings.Join(modes, ", "))
-		case "CALL":
-			c.filter.ClearCallsignPatterns()
+		case "DXCALL":
+			c.filter.ClearDXCallsignPatterns()
 			c.saveFilter()
-			return "Callsign filters cleared\n"
+			return "DX callsign filters cleared\n"
+		case "DECALL":
+			c.filter.ClearDECallsignPatterns()
+			c.saveFilter()
+			return "DE callsign filters cleared\n"
 		case "CONFIDENCE":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT CONFIDENCE <symbol>[,<symbol>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetConfidence()
@@ -1064,7 +1154,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			symbols := parseConfidenceList(value)
 			if len(symbols) == 0 {
-				return "Usage: UNSET/FILTER CONFIDENCE <symbol>[,<symbol>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT CONFIDENCE <symbol>[,<symbol>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			invalid := collectInvalidConfidenceSymbols(symbols)
 			if len(invalid) > 0 {
@@ -1082,7 +1172,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DXCONT":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: UNSET/FILTER DXCONT <cont>[,<cont>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DXCONT <cont>[,<cont>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDXContinents()
@@ -1093,7 +1183,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			continents := parseContinentList(value)
 			if len(continents) == 0 {
-				return "Usage: UNSET/FILTER DXCONT <cont>[,<cont>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DXCONT <cont>[,<cont>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if invalid := collectInvalidContinents(continents); len(invalid) > 0 {
 				return fmt.Sprintf("Unknown continent: %s\nSupported continents: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedContinents, ", "))
@@ -1106,7 +1196,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DECONT":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: UNSET/FILTER DECONT <cont>[,<cont>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DECONT <cont>[,<cont>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDEContinents()
@@ -1117,7 +1207,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			continents := parseContinentList(value)
 			if len(continents) == 0 {
-				return "Usage: UNSET/FILTER DECONT <cont>[,<cont>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DECONT <cont>[,<cont>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if invalid := collectInvalidContinents(continents); len(invalid) > 0 {
 				return fmt.Sprintf("Unknown continent: %s\nSupported continents: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedContinents, ", "))
@@ -1130,7 +1220,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DXZONE":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: UNSET/FILTER DXZONE <zone>[,<zone>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DXZONE <zone>[,<zone>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDXZones()
@@ -1141,7 +1231,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			zones := parseZoneList(value)
 			if len(zones) == 0 {
-				return "Usage: UNSET/FILTER DXZONE <zone>[,<zone>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DXZONE <zone>[,<zone>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if invalid := collectInvalidZones(zones); len(invalid) > 0 {
 				return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone())
@@ -1154,7 +1244,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DEZONE":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: UNSET/FILTER DEZONE <zone>[,<zone>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DEZONE <zone>[,<zone>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDEZones()
@@ -1165,7 +1255,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			zones := parseZoneList(value)
 			if len(zones) == 0 {
-				return "Usage: UNSET/FILTER DEZONE <zone>[,<zone>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DEZONE <zone>[,<zone>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if invalid := collectInvalidZones(zones); len(invalid) > 0 {
 				return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone())
@@ -1178,7 +1268,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DXDXCC":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: UNSET/FILTER DXDXCC <code>[,<code>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DXDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDXDXCC()
@@ -1189,7 +1279,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			codes, invalid := parseDXCCList(value)
 			if len(codes) == 0 {
-				return "Usage: UNSET/FILTER DXDXCC <code>[,<code>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DXDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if len(invalid) > 0 {
 				return fmt.Sprintf("Invalid DXCC code: %s\n", strings.Join(invalid, ", "))
@@ -1202,7 +1292,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DEDXCC":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: UNSET/FILTER DEDXCC <code>[,<code>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DEDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDEDXCC()
@@ -1213,7 +1303,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			codes, invalid := parseDXCCList(value)
 			if len(codes) == 0 {
-				return "Usage: UNSET/FILTER DEDXCC <code>[,<code>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DEDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if len(invalid) > 0 {
 				return fmt.Sprintf("Invalid DXCC code: %s\n", strings.Join(invalid, ", "))
@@ -1226,7 +1316,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DXGRID2":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: UNSET/FILTER DXGRID2 <grid>[,<grid>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DXGRID2 <grid>[,<grid>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDXGrid2()
@@ -1237,7 +1327,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			gridList, invalidTokens := parseGrid2List(value)
 			if len(gridList) == 0 {
-				return "Usage: UNSET/FILTER DXGRID2 <grid>[,<grid>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DXGRID2 <grid>[,<grid>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if len(invalidTokens) > 0 {
 				return fmt.Sprintf("Unknown 2-character grid: %s\n", strings.Join(invalidTokens, ", "))
@@ -1250,7 +1340,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		case "DEGRID2":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
-				return "Usage: UNSET/FILTER DEGRID2 <grid>[,<grid>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DEGRID2 <grid>[,<grid>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if strings.EqualFold(value, "ALL") {
 				c.filter.ResetDEGrid2()
@@ -1261,7 +1351,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			}
 			gridList, invalidTokens := parseGrid2List(value)
 			if len(gridList) == 0 {
-				return "Usage: UNSET/FILTER DEGRID2 <grid>[,<grid>...] (comma or space separated, or ALL)\n"
+				return "Usage: REJECT DEGRID2 <grid>[,<grid>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
 			}
 			if len(invalidTokens) > 0 {
 				return fmt.Sprintf("Unknown 2-character grid: %s\n", strings.Join(invalidTokens, ", "))
@@ -1272,11 +1362,11 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			c.saveFilter()
 			return fmt.Sprintf("DE 2-character grid filters disabled: %s\n", strings.Join(gridList, ", "))
 		default:
-			return "Unknown filter type. Use: ALL, BAND, MODE, CALL, CONFIDENCE, BEACON, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\n"
+			return "Unknown filter type. Use: ALL, BAND, MODE, DXCALL, DECALL, CONFIDENCE, BEACON, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 		}
 
 	default:
-		return "Unknown filter command\n"
+		return "Invalid filter command. Type HELP for usage.\n"
 	}
 }
 
@@ -1744,8 +1834,28 @@ func (c *Client) Send(message string) error {
 	return c.writer.Flush()
 }
 
-// ReadLine reads a line from the client, filtering out telnet control codes
-func (c *Client) ReadLine() (string, error) {
+// ReadLine reads a single logical line from the telnet client while enforcing
+// three invariants:
+//  1. Telnet IAC negotiations are consumed without leaking into user input.
+//  2. User-supplied characters are bounded to maxLen bytes to prevent
+//     unbounded growth (e.g., 32 bytes for login, 128 for commands).
+//  3. Only the whitelisted character set (letters, digits, space, '/', '#',
+//     '@', and '-') is accepted. Command contexts can optionally allow commas,
+//     wildcards (*), and the '?' confidence glyph so filter commands retain
+//     their legacy syntax. Any other
+//     character is immediately rejected, logged, and returned as an error so
+//     the caller can tear down the session before state is mutated.
+//
+// The CRLF terminator is always allowed: '\r' is skipped and '\n' ends the
+// input. maxLen is measured in bytes because telnet input is ASCII-oriented.
+func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard, allowConfidence bool) (string, error) {
+	if maxLen <= 0 {
+		maxLen = defaultCommandLineLimit
+	}
+	if context == "" {
+		context = "command"
+	}
+
 	var line []byte
 
 	for {
@@ -1754,38 +1864,123 @@ func (c *Client) ReadLine() (string, error) {
 			return "", err
 		}
 
-		// Handle telnet IAC (Interpret As Command) sequences
+		// Handle telnet IAC (Interpret As Command) sequences.
 		if b == IAC {
-			// Read next byte
 			cmd, err := c.reader.ReadByte()
 			if err != nil {
 				return "", err
 			}
-
-			// If it's DO, DONT, WILL, WONT, read and discard the option byte
 			if cmd == DO || cmd == DONT || cmd == WILL || cmd == WONT {
-				_, err := c.reader.ReadByte()
-				if err != nil {
+				if _, err := c.reader.ReadByte(); err != nil {
 					return "", err
 				}
 			}
-			// Skip this sequence and continue reading
 			continue
 		}
 
-		// End of line
+		// End of line once LF is observed (CR was already skipped).
 		if b == '\n' {
 			break
 		}
-
-		// Skip carriage return
 		if b == '\r' {
 			continue
 		}
 
-		// Add to line buffer
+		if len(line) >= maxLen {
+			c.logRejectedInput(context, fmt.Sprintf("exceeded %d-byte limit", maxLen))
+			return "", newInputValidationError(
+				fmt.Sprintf("%s input exceeds %d-byte limit", context, maxLen),
+				fmt.Sprintf("%s input is too long (maximum %d characters).", friendlyContextLabel(context), maxLen),
+			)
+		}
+		if !isAllowedInputByte(b, allowComma, allowWildcard, allowConfidence) {
+			c.logRejectedInput(context, fmt.Sprintf("forbidden byte 0x%02X", b))
+			return "", newInputValidationError(
+				fmt.Sprintf("%s input contains forbidden byte 0x%02X", context, b),
+				fmt.Sprintf("%s input may only contain %s.", friendlyContextLabel(context), allowedCharacterList(allowComma, allowWildcard, allowConfidence)),
+			)
+		}
+
 		line = append(line, b)
 	}
 
 	return string(line), nil
+}
+
+// isAllowedInputByte reports whether the byte is part of the strict ingress
+// safe list (letters, digits, space, '/', '#', '@'). When allowComma is true,
+// comma is also accepted to preserve legacy comma-delimited filter syntax.
+// CRLF is handled separately by ReadLine.
+func newInputValidationError(reason, userMessage string) error {
+	return &InputValidationError{
+		reason:      reason,
+		userMessage: userMessage,
+	}
+}
+
+func isAllowedInputByte(b byte, allowComma, allowWildcard, allowConfidence bool) bool {
+	switch {
+	case b >= 'A' && b <= 'Z':
+		return true
+	case b >= 'a' && b <= 'z':
+		return true
+	case b >= '0' && b <= '9':
+		return true
+	case b == ' ':
+		return true
+	case b == '/':
+		return true
+	case b == '#':
+		return true
+	case b == '@':
+		return true
+	case b == '-':
+		return true
+	case allowComma && b == ',':
+		return true
+	case allowWildcard && b == '*':
+		return true
+	case allowConfidence && b == '?':
+		return true
+	default:
+		return false
+	}
+}
+
+func allowedCharacterList(allowComma, allowWildcard, allowConfidence bool) string {
+	base := "letters, numbers, space, '/', '#', '@', '-'"
+	if allowComma {
+		base += ", ','"
+	}
+	if allowWildcard {
+		base += ", '*'"
+	}
+	if allowConfidence {
+		base += ", '?'"
+	}
+	return base
+}
+
+func friendlyContextLabel(context string) string {
+	context = strings.TrimSpace(context)
+	if context == "" {
+		return "Input"
+	}
+	if len(context) == 1 {
+		return strings.ToUpper(context)
+	}
+	return strings.ToUpper(context[:1]) + context[1:]
+}
+
+// logRejectedInput emits a consistent, high-signal log entry whenever the
+// ingress guardrail rejects input. This makes debugging user issues easier and
+// provides an audit trail when a hostile client repeatedly violates the
+// policy. The helper deliberately prefers the callsign when known, falling
+// back to the remote address prior to login.
+func (c *Client) logRejectedInput(context, reason string) {
+	id := strings.TrimSpace(c.callsign)
+	if id == "" {
+		id = c.address
+	}
+	log.Printf("Rejected %s input from %s: %s", context, id, reason)
 }

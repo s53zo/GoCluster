@@ -506,6 +506,8 @@ func main() {
 		ClientBuffer:           cfg.Telnet.ClientBuffer,
 		BroadcastBatchInterval: time.Duration(cfg.Telnet.BroadcastBatchIntervalMS) * time.Millisecond,
 		SkipHandshake:          cfg.Telnet.SkipHandshake,
+		LoginLineLimit:         cfg.Telnet.LoginLineLimit,
+		CommandLineLimit:       cfg.Telnet.CommandLineLimit,
 	}, processor)
 
 	err = telnetServer.Start()
