@@ -548,6 +548,21 @@ func main() {
 		}
 	}
 
+	// Connect to human/relay telnet feed if enabled (upstream cluster or operator-submitted spots)
+	var humanTelnetClient *rbn.Client
+	if cfg.HumanTelnet.Enabled {
+		humanTelnetClient = rbn.NewClient(cfg.HumanTelnet.Host, cfg.HumanTelnet.Port, cfg.HumanTelnet.Callsign, cfg.HumanTelnet.Name, ctyDB, skewStore, cfg.HumanTelnet.KeepSSIDSuffix, cfg.HumanTelnet.SlotBuffer)
+		humanTelnetClient.UseMinimalParser()
+		humanTelnetClient.SetUnlicensedReporter(unlicensedReporter)
+		err = humanTelnetClient.Connect()
+		if err != nil {
+			log.Printf("Warning: Failed to connect to human/relay telnet feed: %v", err)
+		} else {
+			go processHumanTelnetSpots(humanTelnetClient, deduplicator, "HUMAN-TELNET")
+			log.Println("Human/relay telnet client feeding spots into unified dedup engine")
+		}
+	}
+
 	// Connect to PSKReporter if enabled
 	// PSKReporter spots go INTO the deduplicator input channel
 	var (
@@ -589,6 +604,9 @@ func main() {
 			topicList = "<none>"
 		}
 		log.Printf("Receiving digital mode spots from PSKReporter (topics: %s)...", topicList)
+	}
+	if cfg.HumanTelnet.Enabled {
+		log.Printf("Receiving human/relay spots from %s:%d...", cfg.HumanTelnet.Host, cfg.HumanTelnet.Port)
 	}
 	if cfg.Dedup.ClusterWindowSeconds > 0 {
 		log.Printf("Unified deduplication active: %d second window", cfg.Dedup.ClusterWindowSeconds)
@@ -776,6 +794,36 @@ func processRBNSpots(client *rbn.Client, deduplicator *dedup.Deduplicator, sourc
 		// Non-blocking send to avoid wedging ingest if dedup blocks.
 		select {
 		case dedupInput <- spot:
+		default:
+			count := drops.Add(1)
+			if count == 1 || count%100 == 0 {
+				log.Printf("%s: Dedup input full, dropping spot (total drops=%d)", source, count)
+			}
+		}
+	}
+	log.Printf("%s: Spot processing stopped", source)
+}
+
+// processHumanTelnetSpots marks incoming telnet spots as human-sourced and sends them into dedup.
+func processHumanTelnetSpots(client *rbn.Client, deduplicator *dedup.Deduplicator, source string) {
+	spotChan := client.GetSpotChannel()
+	dedupInput := deduplicator.GetInputChannel()
+	var drops atomic.Uint64
+
+	for sp := range spotChan {
+		if sp != nil {
+			sp.IsHuman = true
+			sp.SourceType = spot.SourceUpstream
+			if strings.TrimSpace(sp.SourceNode) == "" {
+				sp.SourceNode = source
+			}
+			if strings.TrimSpace(sp.Mode) == "" {
+				sp.Mode = "RTTY" // temporary default until mode parser is added
+				sp.EnsureNormalized()
+			}
+		}
+		select {
+		case dedupInput <- sp:
 		default:
 			count := drops.Add(1)
 			if count == 1 || count%100 == 0 {

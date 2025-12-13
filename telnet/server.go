@@ -31,6 +31,7 @@ package telnet
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -42,6 +43,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"dxcluster/commands"
@@ -305,7 +307,7 @@ func normalizeServerOptions(opts ServerOptions) ServerOptions {
 // Start begins listening for telnet connections
 func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%d", s.port)
-	listener, err := net.Listen("tcp", addr)
+	listener, err := listenWithReuse(addr)
 	if err != nil {
 		return fmt.Errorf("failed to start telnet server: %w", err)
 	}
@@ -323,6 +325,29 @@ func (s *Server) Start() error {
 	go s.acceptConnections()
 
 	return nil
+}
+
+// listenWithReuse enables SO_REUSEADDR so we can rebind quickly after a crash/exit.
+// It falls back to a standard Listen when the control call fails.
+func listenWithReuse(addr string) (net.Listener, error) {
+	lc := net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			var sockErr error
+			controlErr := c.Control(func(fd uintptr) {
+				sockErr = setReuseAddr(fd)
+			})
+			if controlErr != nil {
+				return controlErr
+			}
+			return sockErr
+		},
+	}
+	listener, err := lc.Listen(context.Background(), "tcp", addr)
+	if err != nil {
+		// Fallback to default listener to avoid failing on platforms that reject the control call.
+		return net.Listen("tcp", addr)
+	}
+	return listener, nil
 }
 
 // handleBroadcasts sends spots to all connected clients
@@ -578,7 +603,8 @@ func (s *Server) handleClient(conn net.Conn) {
 	}
 
 	// Send welcome message
-	client.Send(s.welcomeMessage)
+	now := time.Now().UTC()
+	client.Send(applyWelcomeTokens(s.welcomeMessage, now))
 	client.Send("\r\nEnter your callsign:\r\n")
 
 	var callsign string
@@ -1720,7 +1746,28 @@ func formatGreeting(tmpl, call, cluster string) string {
 	}
 	out := strings.ReplaceAll(tmpl, "<CALL>", call)
 	out = strings.ReplaceAll(out, "<CLUSTER>", cluster)
-	return out
+	// Allow date/time tokens in the greeting as well.
+	return applyWelcomeTokens(out, time.Now().UTC())
+}
+
+// applyWelcomeTokens replaces simple time/date placeholders in the welcome message.
+// Tokens:
+//
+//	<DATE>      -> YYYY-MM-DD (UTC)
+//	<TIME>      -> HH:MM:SS (UTC)
+//	<DATETIME>  -> YYYY-MM-DD HH:MM:SS UTC
+func applyWelcomeTokens(msg string, now time.Time) string {
+	if msg == "" {
+		return msg
+	}
+	date := now.Format("02-Jan-2006")
+	tm := now.Format("15:04:05")
+	datetime := now.Format("02-Jan-2006 15:04:05 UTC")
+
+	msg = strings.ReplaceAll(msg, "<DATETIME>", datetime)
+	msg = strings.ReplaceAll(msg, "<DATE>", date)
+	msg = strings.ReplaceAll(msg, "<TIME>", tm)
+	return msg
 }
 
 // spotSender sends spots to the client from the spot channel

@@ -9,7 +9,7 @@ stats:
 
 # Local console UI (applies only to the process console, not telnet clients)
 ui:
-  mode: "ansi"        # ansi | tview | headless
+  mode: "tview"        # ansi | tview | headless
   refresh_ms: 250     # ANSI redraw cadence; 0 disables redraws
   color: true         # Enable simple ANSI colors for marked-up lines
   clear_screen: true  # Clear the screen each frame (set false to append)
@@ -22,7 +22,7 @@ ui:
 
 # Spot sources (ingest)
 rbn:
-  enabled: true
+  enabled: false
   name: "RBN-CW-RTTY"
   host: "telnet.reversebeacon.net"
   port: 7000
@@ -31,7 +31,7 @@ rbn:
   keep_ssid_suffix: false        # Broadcast: true preserves SSIDs; false collapses to base-# for display
 
 rbn_digital:
-  enabled: true
+  enabled: false
   name: "RBN-FT4-FT8"
   host: "telnet.reversebeacon.net"
   port: 7001
@@ -39,12 +39,22 @@ rbn_digital:
   slot_buffer: 1000             # Buffer depth between telnet reader and pipeline (FT4/FT8 bursts are spiky)
   keep_ssid_suffix: true        # Broadcast: true preserves SSIDs; false collapses to base-#
 
-pskreporter:
+# Optional human/relay telnet ingest (POC or upstream cluster)
+human_telnet:
   enabled: true
+  name: "HUMAN-SPOTS"
+  host: "dxs.n2wq.com"
+  port: 7300
+  callsign: "N2WQ-33"          # Change this to your callsign or upstream ID
+  slot_buffer: 1000            # Buffer depth between telnet reader and pipeline
+  keep_ssid_suffix: true       # Set false to collapse SSIDs when broadcasting
+
+pskreporter:
+  enabled: false
   name: "PSKReporter"
   broker: "mqtt.pskreporter.info"
   port: 1883
-  modes: ["FT8", "FT4", "CW", "RTTY"]  # List of MQTT modes to subscribe to
+  modes: ["FT8", "FT4", "CW", "RTTY", "MSK144"]  # List of MQTT modes to subscribe to
   workers: 0                           # 0 means automatic (uses all CPU cores, minimum 4)
   append_spotter_ssid: true            # Append "-#" to receiver calls lacking an SSID for dedup
 
@@ -258,11 +268,11 @@ buffer:
 
 # Telnet server (user-facing interface)
 telnet:
-  port: 8300
+  port: 9300
   tls_enabled: false
   max_connections: 100
   welcome_message: "\r\nExperimental DX Cluster\r\n"
-  login_greeting: "\r\n<CALL> de <CLUSTER>>\r\n"
+  login_greeting: "\r\n<CALL> de <CLUSTER> <DATETIME>>\r\n"
   duplicate_login_message: "Another login for your callsign connected. This session is being closed (multiple logins are not allowed)."
   broadcast_workers: 0            # 0 means automatic (uses all CPU cores, minimum 4)
   broadcast_queue_size: 8192      # Buffer depth for the global telnet broadcast queue

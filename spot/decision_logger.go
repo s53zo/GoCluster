@@ -54,9 +54,10 @@ type decisionLogger struct {
 }
 
 const (
-	defaultDecisionQueue = 8192
-	schemaVersionKey     = "schema_version"
-	currentSchemaVersion = "1"
+	defaultDecisionQueue     = 8192
+	schemaVersionKey         = "schema_version"
+	currentSchemaVersion     = "1"
+	decisionLogRetentionDays = 3
 )
 
 // NewDecisionLogger builds a non-blocking SQLite-backed logger. The basePath acts
@@ -231,7 +232,7 @@ func (l *decisionLogger) ensureDB(ts time.Time) (*sql.DB, error) {
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
 
-		if _, err := db.Exec(`PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;`); err != nil {
+		if _, err := db.Exec(`PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;`); err != nil {
 			db.Close()
 			if attempt == 0 && isSQLiteCorrupted(err) {
 				_ = os.Remove(path)
@@ -273,6 +274,9 @@ INSERT INTO decisions (
 		l.decisionStmt = decisionStmt
 		l.voteStmt = voteStmt
 		l.currentPath = path
+		if err := cleanupDecisionLogRetention(l.basePath, time.Now().UTC(), decisionLogRetentionDays); err != nil {
+			log.Printf("call-correction logger retention cleanup: %v", err)
+		}
 		return l.db, nil
 	}
 	return nil, fmt.Errorf("call-correction logger: unable to open database")
@@ -320,6 +324,66 @@ func isSQLiteCorrupted(err error) bool {
 
 func (l *decisionLogger) pathFor(ts time.Time) string {
 	return DecisionLogPath(l.basePath, ts)
+}
+
+func cleanupDecisionLogRetention(basePath string, now time.Time, retentionDays int) error {
+	if retentionDays <= 0 {
+		return nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	dateStr := now.Format("2006-01-02")
+	currentPath := DecisionLogPath(basePath, now)
+	dir := filepath.Dir(currentPath)
+	name := filepath.Base(currentPath)
+	ext := filepath.Ext(name)
+	suffix := dateStr + ext
+	if !strings.HasSuffix(name, suffix) || ext == "" {
+		return nil
+	}
+	prefix := strings.TrimSuffix(name, suffix)
+
+	loc := now.Location()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	keepFrom := today.AddDate(0, 0, -(retentionDays - 1))
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		candidate := entry.Name()
+		if !strings.HasPrefix(candidate, prefix) || !strings.HasSuffix(candidate, ext) {
+			continue
+		}
+		dayStr := strings.TrimSuffix(strings.TrimPrefix(candidate, prefix), ext)
+		if len(dayStr) != len("2006-01-02") {
+			continue
+		}
+		day, err := time.ParseInLocation("2006-01-02", dayStr, loc)
+		if err != nil {
+			continue
+		}
+		day = time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc)
+		if !day.Before(keepFrom) {
+			continue
+		}
+
+		dbPath := filepath.Join(dir, candidate)
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	}
+	return nil
 }
 
 func encodeVotes(votes []bandmap.SpotEntry) (string, error) {

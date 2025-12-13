@@ -311,47 +311,39 @@ func (s *Spot) FormatDXCluster() string {
 		b.AppendByte(' ')
 		b.AppendString(commentPayload)
 
-		confLabel := strings.TrimSpace(s.Confidence)
-		if confLabel == "" {
-			// Pad/truncate so the time begins exactly at timeColumnStart.
-			if b.Len() > timeColumnStart {
-				b.Truncate(timeColumnStart)
-			} else if b.Len() < timeColumnStart {
-				writeSpaces(&b, timeColumnStart-b.Len())
-			}
-			b.AppendString(timeStr)
-			s.formatted = b.String()
-			return
+		// Fixed tail layout:
+		// comment (ends at <=63) | grid (cols 64-67) | space (68) | confidence (69) | space (70) | time (71-75)
+		const (
+			gridStartCol = 64
+			gridWidth    = 4
+		)
+
+		gridLabel := formatGridLabel(s.DXMetadata.Grid)
+		if gridLabel == "" {
+			gridLabel = strings.Repeat(" ", gridWidth)
+		} else if len(gridLabel) < gridWidth {
+			gridLabel = gridLabel + strings.Repeat(" ", gridWidth-len(gridLabel))
+		} else if len(gridLabel) > gridWidth {
+			gridLabel = gridLabel[:gridWidth]
 		}
 
-		confWidth := len(confLabel)
-		maxConfWidth := timeColumnStart - minGapToSymbol
-		if maxConfWidth < 1 {
-			maxConfWidth = 1
-		}
-		if confWidth > maxConfWidth {
-			confLabel = confLabel[:maxConfWidth]
-			confWidth = len(confLabel)
+		confLabel := " "
+		if trimmed := strings.TrimSpace(s.Confidence); trimmed != "" {
+			confLabel = trimmed[:1]
 		}
 
-		maxCommentLen := timeColumnStart - minGapToSymbol - confWidth
-		if maxCommentLen < 0 {
-			maxCommentLen = 0
-		}
-		if b.Len() > maxCommentLen {
-			b.Truncate(maxCommentLen)
-		}
-
-		// Ensure the timestamp begins exactly at timeColumnStart: comment + gap + conf + space + time.
-		gapLen := timeColumnStart - confWidth - 1 - b.Len()
-		if gapLen < minGapToSymbol {
-			gapLen = minGapToSymbol
+		// Ensure comment ends exactly at gridStartCol.
+		if b.Len() > gridStartCol {
+			b.Truncate(gridStartCol)
+		} else if b.Len() < gridStartCol {
+			writeSpaces(&b, gridStartCol-b.Len())
 		}
 
-		writeSpaces(&b, gapLen)
-		b.AppendString(confLabel)
-		b.AppendByte(' ')
-		b.AppendString(timeStr)
+		b.AppendString(gridLabel) // cols 64-67
+		b.AppendByte(' ')         // col 68
+		b.AppendString(confLabel) // col 69 (or space)
+		b.AppendByte(' ')         // col 70
+		b.AppendString(timeStr)   // starts at col 71
 
 		s.formatted = b.String()
 	})
@@ -404,11 +396,7 @@ func (s *Spot) String() string {
 
 func (s *Spot) formatZoneGridComment() string {
 	zone := formatCQZoneLabel(s.DXMetadata.CQZone)
-	grid := formatGridLabel(s.DXMetadata.Grid)
-	if grid == "" {
-		return fmt.Sprintf("CQ %s", zone)
-	}
-	return fmt.Sprintf("CQ %s %s", zone, grid)
+	return fmt.Sprintf("CQ %s", zone)
 }
 
 func formatCQZoneLabel(zone int) string {

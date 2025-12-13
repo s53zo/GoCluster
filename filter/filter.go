@@ -37,6 +37,7 @@ var SupportedModes = []string{
 	"LSB",
 	"USB",
 	"RTTY",
+	"MSK144",
 }
 
 // SupportedContinents enumerates continent codes used in DX metadata.

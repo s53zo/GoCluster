@@ -21,6 +21,7 @@ type Config struct {
 	UI              UIConfig             `yaml:"ui"`
 	RBN             RBNConfig            `yaml:"rbn"`
 	RBNDigital      RBNConfig            `yaml:"rbn_digital"`
+	HumanTelnet     RBNConfig            `yaml:"human_telnet"`
 	PSKReporter     PSKReporterConfig    `yaml:"pskreporter"`
 	Dedup           DedupConfig          `yaml:"dedup"`
 	Filter          FilterConfig         `yaml:"filter"`
@@ -475,6 +476,9 @@ func Load(filename string) (*Config, error) {
 	if cfg.RBNDigital.SlotBuffer <= 0 {
 		cfg.RBNDigital.SlotBuffer = cfg.RBN.SlotBuffer
 	}
+	if cfg.HumanTelnet.SlotBuffer <= 0 {
+		cfg.HumanTelnet.SlotBuffer = 1000
+	}
 
 	if cfg.PSKReporter.Workers < 0 {
 		cfg.PSKReporter.Workers = 0
@@ -852,6 +856,9 @@ func (c *Config) Print() {
 	}
 	if c.RBNDigital.Enabled {
 		fmt.Printf("RBN Digital (FT4/FT8): %s:%d (as %s, slot_buffer=%d)\n", c.RBNDigital.Host, c.RBNDigital.Port, c.RBNDigital.Callsign, c.RBNDigital.SlotBuffer)
+	}
+	if c.HumanTelnet.Enabled {
+		fmt.Printf("Human/relay telnet: %s:%d (as %s, slot_buffer=%d)\n", c.HumanTelnet.Host, c.HumanTelnet.Port, c.HumanTelnet.Callsign, c.HumanTelnet.SlotBuffer)
 	}
 	if c.PSKReporter.Enabled {
 		workerDesc := "auto"

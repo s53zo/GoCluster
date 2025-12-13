@@ -66,10 +66,10 @@ func TestFormatDXClusterUsesZoneAndGrid(t *testing.T) {
 	}
 
 	got := s.FormatDXCluster()
-	if !strings.Contains(got, "CW 27 dB CQ 04 FN20") {
-		t.Fatalf("expected CQ zone/grid annotation, got %q", got)
+	if !strings.Contains(got, "CW 27 dB CQ 04") {
+		t.Fatalf("expected CQ zone annotation, got %q", got)
 	}
-	if !strings.HasSuffix(strings.TrimRight(got, " "), "V 0454Z") {
+	if !strings.HasSuffix(strings.TrimRight(got, " "), "FN20 V 0454Z") {
 		t.Fatalf("unexpected suffix: %q", got)
 	}
 }
@@ -94,8 +94,8 @@ func TestFormatGridLabelTruncates(t *testing.T) {
 			Grid:   "FN20AA",
 		},
 	}
-	if got := s.formatZoneGridComment(); got != "CQ 05 FN20" {
-		t.Fatalf("expected truncated grid, got %q", got)
+	if got := s.formatZoneGridComment(); got != "CQ 05" {
+		t.Fatalf("expected CQ zone only, got %q", got)
 	}
 }
 
@@ -204,7 +204,7 @@ func TestFormatDXClusterAlignmentNoConfidence(t *testing.T) {
 		t.Fatalf("expected frequency to end at column 24, got %d in %q", freqIdx+len(freqStr)-1, got)
 	}
 
-	commentAnchor := "FT8 -5 CQ 05 FN20"
+	commentAnchor := "FT8 -5 CQ 05"
 	commentIdx := strings.Index(got, commentAnchor)
 	if commentIdx != 40 {
 		t.Fatalf("expected comment to start at column 40, got %d in %q", commentIdx, got)
@@ -213,6 +213,11 @@ func TestFormatDXClusterAlignmentNoConfidence(t *testing.T) {
 	timeIdx := strings.LastIndex(got, "0615Z")
 	if timeIdx != 71 {
 		t.Fatalf("expected time to start at column 71, got %d in %q", timeIdx, got)
+	}
+
+	gridIdx := strings.LastIndex(got, "FN20")
+	if gridIdx != 64 {
+		t.Fatalf("expected grid to start at column 64, got %d in %q", gridIdx, got)
 	}
 }
 
@@ -242,7 +247,7 @@ func TestFormatDXClusterAlignmentWithConfidence(t *testing.T) {
 		t.Fatalf("expected frequency to end at column 24, got %d in %q", freqIdx+len(freqStr)-1, got)
 	}
 
-	commentAnchor := "CW 27 dB CQ 04 FN20"
+	commentAnchor := "CW 27 dB CQ 04"
 	commentIdx := strings.Index(got, commentAnchor)
 	if commentIdx != 40 {
 		t.Fatalf("expected comment to start at column 40, got %d in %q", commentIdx, got)
@@ -254,9 +259,14 @@ func TestFormatDXClusterAlignmentWithConfidence(t *testing.T) {
 	}
 
 	confIdx := strings.LastIndex(got, s.Confidence)
-	expectedConfIdx := timeIdx - len(s.Confidence) - 1 // one space between confidence and time
+	expectedConfIdx := 69
 	if confIdx != expectedConfIdx {
-		t.Fatalf("expected confidence to end at column %d, got %d in %q", expectedConfIdx, confIdx, got)
+		t.Fatalf("expected confidence to start at column %d, got %d in %q", expectedConfIdx, confIdx, got)
+	}
+
+	gridIdx := strings.LastIndex(got, "FN20")
+	if gridIdx != 64 {
+		t.Fatalf("expected grid to start at column 64, got %d in %q", gridIdx, got)
 	}
 }
 

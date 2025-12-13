@@ -15,10 +15,14 @@ import (
 	"sync"
 	"time"
 
+	"os"
+
 	"dxcluster/cty"
 	"dxcluster/skew"
 	"dxcluster/spot"
 	"dxcluster/uls"
+
+	"gopkg.in/yaml.v3"
 )
 
 // precompiled regex avoids the per-line allocation/compile cost when normalizing RBN lines
@@ -68,6 +72,98 @@ type Client struct {
 
 	unlicensedReporter UnlicensedReporter
 	unlicensedQueue    chan unlicensedEvent
+
+	minimalParse bool
+}
+
+type modeAllocation struct {
+	Band      string  `yaml:"band"`
+	LowerKHz  float64 `yaml:"lower_khz"`
+	CWEndKHz  float64 `yaml:"cw_end_khz"`
+	UpperKHz  float64 `yaml:"upper_khz"`
+	VoiceMode string  `yaml:"voice_mode"`
+}
+
+type modeAllocTable struct {
+	Bands []modeAllocation `yaml:"bands"`
+}
+
+var (
+	modeAllocOnce sync.Once
+	modeAlloc     []modeAllocation
+)
+
+const modeAllocPath = "config/mode_allocations.yaml"
+
+// detectModeFromTokens attempts to infer mode from comment tokens; returns empty when unknown.
+func detectModeFromTokens(tokens []string, freqKHz float64) string {
+	for _, tok := range tokens {
+		clean := strings.TrimSpace(strings.Trim(tok, ",.;!"))
+		cleanUpper := strings.ToUpper(clean)
+		switch cleanUpper {
+		case "FT8", "FT-8":
+			return "FT8"
+		case "FT4", "FT-4":
+			return "FT4"
+		case "RTTY":
+			return "RTTY"
+		case "CWT", "CW":
+			return "CW"
+		case "MSK144", "MSK-144", "MSK":
+			return "MSK144"
+		case "USB":
+			return "USB"
+		case "LSB":
+			return "LSB"
+		case "SSB":
+			if freqKHz >= 10000 {
+				return "USB"
+			}
+			return "LSB"
+		}
+	}
+	return ""
+}
+
+func detectSNR(tokens []string, mode string) (int, bool) {
+	for i, tok := range tokens {
+		clean := strings.TrimSpace(strings.Trim(tok, ",.;!"))
+		if clean == "" {
+			continue
+		}
+		lower := strings.ToLower(clean)
+		// Handle two-token pattern: "<num> dB"
+		if lower == "db" && i > 0 {
+			prev := strings.ToLower(strings.TrimSpace(strings.Trim(tokens[i-1], ",.;!")))
+			if prev == "" || strings.Contains(prev, ".") {
+				continue
+			}
+			if snr, err := strconv.Atoi(prev); err == nil && snr >= -200 && snr <= 200 {
+				return snr, true
+			}
+			continue
+		}
+
+		hasDB := strings.HasSuffix(lower, "db")
+		numStr := strings.TrimSuffix(lower, "db")
+		if strings.Contains(numStr, ".") {
+			continue // skip floats (likely frequencies)
+		}
+		// Require an explicit dB marker either in this token or the next one.
+		if !hasDB {
+			if i+1 >= len(tokens) {
+				continue
+			}
+			next := strings.ToLower(strings.TrimSpace(strings.Trim(tokens[i+1], ",.;!")))
+			if next != "db" {
+				continue
+			}
+		}
+		if snr, err := strconv.Atoi(numStr); err == nil && snr >= -200 && snr <= 200 {
+			return snr, true
+		}
+	}
+	return 0, false
 }
 
 // ConfigureCallCache allows callers to tune the normalization cache used for RBN spotters.
@@ -103,6 +199,44 @@ func NewClient(host string, port int, callsign string, name string, lookup *cty.
 		keepSSID:   keepSSID,
 		bufferSize: bufferSize,
 	}
+}
+
+// UseMinimalParser relaxes parsing to accept simple "DE DX FREQ" lines without SNR/comment.
+func (c *Client) UseMinimalParser() {
+	if c != nil {
+		c.minimalParse = true
+	}
+}
+
+func loadModeAllocations() {
+	modeAllocOnce.Do(func() {
+		data, err := os.ReadFile(modeAllocPath)
+		if err != nil {
+			log.Printf("Warning: unable to load mode allocations from %s: %v", modeAllocPath, err)
+			return
+		}
+		var table modeAllocTable
+		if err := yaml.Unmarshal(data, &table); err != nil {
+			log.Printf("Warning: unable to parse mode allocations (%s): %v", modeAllocPath, err)
+			return
+		}
+		modeAlloc = table.Bands
+	})
+}
+
+func guessModeFromAlloc(freqKHz float64) string {
+	loadModeAllocations()
+	for _, b := range modeAlloc {
+		if freqKHz >= b.LowerKHz && freqKHz <= b.UpperKHz {
+			if b.CWEndKHz > 0 && freqKHz <= b.CWEndKHz {
+				return "CW"
+			}
+			if strings.TrimSpace(b.VoiceMode) != "" {
+				return strings.ToUpper(strings.TrimSpace(b.VoiceMode))
+			}
+		}
+	}
+	return ""
 }
 
 // SetUnlicensedReporter installs a best-effort reporter for unlicensed US drops.
@@ -434,6 +568,102 @@ func parseTimeFromRBN(timeStr string) time.Time {
 	return spotTime
 }
 
+// parseMinimalSpot attempts a permissive parse for human/relay feeds where only DE, DX, and frequency are present.
+// Expected tokens: at least two callsigns and one numeric frequency (kHz). Ignores SNR/comment/time.
+func (c *Client) parseMinimalSpot(parts []string, rawLine string) {
+	var (
+		freqKHz float64
+		freqOK  bool
+		calls   []string
+		freqIdx = -1
+		callIdx []int
+	)
+	for i, p := range parts {
+		trimmed := strings.TrimSuffix(strings.TrimSpace(p), ":")
+		if trimmed == "" {
+			continue
+		}
+		if !freqOK {
+			if f, err := strconv.ParseFloat(trimmed, 64); err == nil && f > 0 {
+				freqKHz = f
+				freqOK = true
+				freqIdx = i
+				continue
+			}
+		}
+		if spot.IsValidCallsign(trimmed) {
+			normalized := normalizeRBNCallsign(trimmed)
+			if normalized != "" {
+				calls = append(calls, normalized)
+				callIdx = append(callIdx, i)
+			}
+		}
+	}
+	if !freqOK || len(calls) < 2 {
+		log.Printf("Minimal human spot rejected (needs DE, DX, freq): %s", rawLine)
+		return
+	}
+	deCall := c.normalizeSpotter(calls[0])
+	dxCall := calls[1]
+
+	used := make(map[int]bool)
+	if freqIdx >= 0 {
+		used[freqIdx] = true
+	}
+	if len(callIdx) > 0 {
+		used[callIdx[0]] = true
+		if len(callIdx) > 1 {
+			used[callIdx[1]] = true
+		}
+	}
+	commentTokens := make([]string, 0, len(parts))
+	for i, tok := range parts {
+		if used[i] {
+			continue
+		}
+		commentTokens = append(commentTokens, tok)
+	}
+
+	// Optional CTY enrichment; allow missing info.
+	var dxMeta, deMeta spot.CallMetadata
+	if info, ok := c.fetchCallsignInfo(dxCall); ok {
+		dxMeta = metadataFromPrefix(info)
+	}
+	if info, ok := c.fetchCallsignInfo(deCall); ok {
+		deMeta = metadataFromPrefix(info)
+	}
+
+	mode := detectModeFromTokens(commentTokens, freqKHz)
+	if mode == "" {
+		mode = guessModeFromAlloc(freqKHz)
+	}
+	if mode == "" {
+		mode = "RTTY" // fallback when table missing or out of band
+	}
+
+	s := spot.NewSpot(dxCall, deCall, freqKHz, mode)
+	s.IsHuman = true
+	s.SourceType = spot.SourceUpstream
+	if strings.TrimSpace(c.name) != "" {
+		s.SourceNode = c.name
+	}
+	s.DXMetadata = dxMeta
+	s.DEMetadata = deMeta
+	if snr, ok := detectSNR(commentTokens, mode); ok {
+		s.Report = snr
+	}
+	if len(commentTokens) > 0 {
+		s.Comment = strings.Join(commentTokens, " ")
+	}
+	s.EnsureNormalized()
+
+	select {
+	case c.spotChan <- s:
+	default:
+		log.Printf("%s: Spot channel full (capacity=%d), dropping minimal spot", c.displayName(), cap(c.spotChan))
+	}
+}
+
 // parseSpot parses an RBN spot line into a Spot object
 // Handles two formats:
 //
@@ -446,10 +676,20 @@ func (c *Client) parseSpot(line string) {
 	// Split by spaces
 	parts := strings.Fields(normalized)
 
+	// For minimal/human feeds, bypass strict RBN parsing and use the coarse parser.
+	if c.minimalParse {
+		c.parseMinimalSpot(parts, line)
+		return
+	}
+
 	// Minimum: DX de CALL: FREQ DXCALL MODE DB dB TIME
 	// Example CW: [DX de G4ZFE-#: 10111.0 LZ2PC CW 11 dB 22 WPM CQ 1928Z]
 	// Example FT8: [DX de W3LPL-#: 14074.0 K1ABC FT8 -5 dB 2359Z]
 	if len(parts) < 9 {
+		if c.minimalParse {
+			c.parseMinimalSpot(parts, line)
+			return
+		}
 		log.Printf("RBN spot too short: %s", line)
 		return
 	}
