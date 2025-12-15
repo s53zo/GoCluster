@@ -26,7 +26,7 @@ rbn:
   name: "RBN-CW-RTTY"
   host: "telnet.reversebeacon.net"
   port: 7000
-  callsign: "N2WQ"               # Change this to your callsign!
+  callsign: "N2WQ-2"               # Change this to your callsign!
   slot_buffer: 1000              # Buffer depth between telnet reader and pipeline (per-spot queue)
   keep_ssid_suffix: false        # Broadcast: true preserves SSIDs; false collapses to base-# for display
 
@@ -35,7 +35,7 @@ rbn_digital:
   name: "RBN-FT4-FT8"
   host: "telnet.reversebeacon.net"
   port: 7001
-  callsign: "N2WQ"              # Change this to your callsign!
+  callsign: "N2WQ-2"              # Change this to your callsign!
   slot_buffer: 1000             # Buffer depth between telnet reader and pipeline (FT4/FT8 bursts are spiky)
   keep_ssid_suffix: true        # Broadcast: true preserves SSIDs; false collapses to base-#
 
@@ -45,7 +45,7 @@ human_telnet:
   name: "HUMAN-SPOTS"
   host: "dxs.n2wq.com"
   port: 7300
-  callsign: "N2WQ-33"          # Change this to your callsign or upstream ID
+  callsign: "N2WQ-2"          # Change this to your callsign or upstream ID
   slot_buffer: 1000            # Buffer depth between telnet reader and pipeline
   keep_ssid_suffix: true       # Set false to collapse SSIDs when broadcasting
 
