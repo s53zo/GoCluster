@@ -34,6 +34,10 @@ type PrefixInfo struct {
 type CTYDatabase struct {
 	Data map[string]PrefixInfo
 	Keys []string
+	// trie stores all CTY keys (exact calls and prefixes) in a read-only prefix trie
+	// so longest-prefix matches can be resolved in O(L) time where L is the callsign
+	// length (typically < 15 bytes).
+	trie ctyTrie
 	// cache stores normalized callsign lookups (hits and misses) with a bounded LRU.
 	cacheMu   sync.Mutex
 	cacheList *list.List
@@ -55,6 +59,77 @@ type cacheEntry struct {
 type cacheItem struct {
 	key   string
 	entry cacheEntry
+}
+
+// ctyTrie implements a read-only prefix trie over CTY keys.
+//
+// It enables longest-prefix matching without scanning all known prefixes:
+// walk the callsign bytes from the root; every time we land on a terminal node,
+// remember that key as the best match so far. The last terminal observed is the
+// longest prefix that matches the callsign.
+//
+// Nodes are stored in a slice so child links are small integer indices, keeping
+// memory usage predictable and avoiding pointer-heavy trees.
+type ctyTrie struct {
+	nodes []ctyTrieNode
+}
+
+type ctyTrieNode struct {
+	next        map[byte]int
+	terminalKey string
+}
+
+func buildCTYTrie(keys []string) ctyTrie {
+	tr := ctyTrie{nodes: []ctyTrieNode{{next: make(map[byte]int)}}}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		state := 0
+		for i := 0; i < len(key); i++ {
+			ch := key[i]
+			next := tr.nodes[state].next
+			if next == nil {
+				next = make(map[byte]int)
+				tr.nodes[state].next = next
+			}
+			child, ok := next[ch]
+			if !ok {
+				child = len(tr.nodes)
+				tr.nodes = append(tr.nodes, ctyTrieNode{})
+				next[ch] = child
+			}
+			state = child
+		}
+		tr.nodes[state].terminalKey = key
+	}
+	return tr
+}
+
+func (tr *ctyTrie) longestPrefixKey(cs string) (string, bool) {
+	if tr == nil || len(tr.nodes) == 0 || cs == "" {
+		return "", false
+	}
+	state := 0
+	best := ""
+	for i := 0; i < len(cs); i++ {
+		next := tr.nodes[state].next
+		if next == nil {
+			break
+		}
+		child, ok := next[cs[i]]
+		if !ok {
+			break
+		}
+		state = child
+		if tr.nodes[state].terminalKey != "" {
+			best = tr.nodes[state].terminalKey
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	return best, true
 }
 
 const defaultCacheCapacity = 50000
@@ -80,7 +155,8 @@ func LoadCTYDatabase(path string) (*CTYDatabase, error) {
 
 // LoadCTYDatabaseFromReader decodes CTY data from an io.Reader (exposed for testing).
 // It normalizes keys to uppercase and pre-sorts them longest-first for prefix
-// search speed.
+// search speed (useful for debugging/tests). Longest-prefix lookups are resolved
+// via a read-only trie built once at load time.
 func LoadCTYDatabaseFromReader(r io.ReadSeeker) (*CTYDatabase, error) {
 	data, err := decodeCTYData(r)
 	if err != nil {
@@ -96,9 +172,11 @@ func LoadCTYDatabaseFromReader(r io.ReadSeeker) (*CTYDatabase, error) {
 		}
 		return len(keys[i]) > len(keys[j])
 	})
+	trie := buildCTYTrie(keys)
 	return &CTYDatabase{
 		Data:      data,
 		Keys:      keys,
+		trie:      trie,
 		cacheCap:  defaultCacheCapacity,
 		cacheList: list.New(),
 		cacheMap:  make(map[string]*list.Element, defaultCacheCapacity),
@@ -160,14 +238,9 @@ func (db *CTYDatabase) lookupCallsignNoCache(cs string) (*PrefixInfo, bool) {
 		return clonePrefix(info), true
 	}
 
-	for _, key := range db.Keys {
-		if len(key) > len(cs) {
-			continue
-		}
-		if strings.HasPrefix(cs, key) {
-			info := db.Data[key]
-			return clonePrefix(info), true
-		}
+	if key, ok := db.trie.longestPrefixKey(cs); ok {
+		info := db.Data[key]
+		return clonePrefix(info), true
 	}
 	return nil, false
 }

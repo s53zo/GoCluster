@@ -17,9 +17,11 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
 
 1. **Telnet Server** (`telnet/server.go`) handles client connections, commands, and spot broadcasting using worker goroutines.
 2. **RBN Clients** (`rbn/client.go`) maintain connections to the CW/RTTY (port 7000) and Digital (port 7001) feeds. Each line is parsed, normalized, validated against the CTY database, and enriched before queuing.
-   - The parser no longer assumes rigid column offsets. `splitSpotterToken` first separates the `DX de CALL:freq` token so the spotter callsign stays clean even when the telnet feed glues the dial frequency directly to the colon (`DX de JI1HFJ-#:1294068.2 ...`). The detached fragment is inserted back into the token slice so the rest of the pipeline still sees a proper numeric field.
-   - After token splitting, `findFrequencyField` scans the remaining slices for the first numeric value that looks like a dial frequency (currently `100.0`-`3,000,000.0` kHz). This protects against feeds that echo the spotter call or inject other text ahead of the frequency and eliminates the "`RBN spot missing numeric frequency`" warnings that appeared when a string such as `JJ1QLT` occupied the fixed slot.
-   - The dynamic index returned by `findFrequencyField` is now used to pick the DX call, mode, signal report, CW WPM section, and comment/time window. As a result, even malformed-but-salvageable lines stay in sync, and the skew-correction logic keeps receiving the exact numeric dial value.
+   - Parsing uses a single left-to-right token walk assisted by an Aho–Corasick (AC) keyword scanner so the line only needs to be scanned once.
+   - The parser supports both `DX de CALL: 14074.0 ...` and the glued form `DX de CALL:14074.0 ...` by splitting the spotter token into `DECall` + optional attached frequency.
+   - Frequency is the first token that parses as a plausible dial frequency (currently `100.0`-`3,000,000.0` kHz), rather than assuming a fixed column index.
+   - Mode is taken from the first explicit mode token (`CW`, `USB`, `FT8`, `MSK144`, etc.). If mode is absent, it is inferred from `config/mode_allocations.yaml` (with a simple fallback: `USB` ≥ 10 MHz else `CW`).
+   - Report/SNR is recognized in both `+5 dB` and `-13dB` forms; `HasReport` is set whenever a report is present (including a valid `0 dB`).
    - Ingest burst protection is sized per source via `rbn.slot_buffer` / `rbn_digital.slot_buffer` in `config.yaml`; overflow logs are tagged by source for easier diagnosis.
 3. **PSKReporter MQTT** (`pskreporter/client.go`) subscribes to `pskr/filter/v2/+/+/#` (or one or more `pskr/filter/v2/+/<MODE>/#` topics when `pskreporter.modes` is configured), converts JSON payloads into canonical spots, and applies locator-based metadata. Set `pskreporter.append_spotter_ssid: true` if you want receiver callsigns that lack SSIDs to pick up a `-#` suffix for deduplication.
 4. **CTY Database** (`cty/parser.go` + `data/cty/cty.plist`) performs longest-prefix lookups so both spotters and spotted stations carry continent/country/CQ/ITU/grid metadata.
@@ -27,6 +29,22 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
 6. **Frequency Averager** (`spot/frequency_averager.go`) merges CW/RTTY skimmer reports by averaging corroborating reports within a tolerance and rounding to 0.1 kHz once the minimum corroborators is met.
 7. **Call/Harmonic/License Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections, suppress harmonics, and finally run CTY/FCC license gating right before broadcast/buffering. Harmonic suppression supports a stepped minimum dB delta (configured via `harmonics.min_report_delta_step`) so higher-order harmonics must be progressively weaker. Call correction honours `call_correction.min_snr_cw` / `min_snr_rtty` so marginal decodes can be ignored when counting corroborators. Calls ending in `/B` (standard beacon IDs) are auto-tagged and bypass correction/harmonic/license drops (only user filters can hide them). The license gate re-evaluates CTY on license-normalized calls (e.g., `W6/UT5UF` looks up `UT5UF`) and drops only unlicensed US calls after all corrections; these drops appear in the "Unlicensed US Calls" pane.
 8. **Skimmer Frequency Corrections** (`cmd/rbnskewfetch`, `skew/`, `rbn/client.go`, `pskreporter/client.go`) download SM7IUN's skew list, convert it to JSON, and apply per-spotter multiplicative factors before any callsign normalization for every CW/RTTY skimmer feed.
+
+### Aho–Corasick Spot Parsing (Non-PSKReporter)
+
+Non-PSKReporter sources (RBN CW/RTTY, RBN digital, and upstream/human telnet feeds) arrive as DX-cluster style text lines (e.g., `DX de ...`). The parser in `rbn/client.go` uses a small Aho–Corasick (AC) automaton to recognize keywords in a single pass and drive a left-to-right extraction.
+
+High-level flow:
+
+- **Keyword dictionary**: `DX`, `DE`, `DB`, `WPM`, plus all supported mode tokens (`CW`, `SSB`, `USB`, `LSB`, `RTTY`, `FT4`, `FT8`, `MSK144`, and common variants like `FT-8`).
+- **Automaton build (once)**: patterns are compiled into a trie and failure links are built with a BFS. This runs once and is reused for every line.
+- **Per-line scan**:
+  - Tokenize the raw line on whitespace while tracking token byte offsets.
+  - Run the AC scan over the uppercased line to find keyword hits.
+  - Classify each token by checking for an exact hit that spans the token (fallback: scan the token text itself when whitespace/punctuation causes slight drift).
+- **Single pass extraction**: walk tokens left-to-right, consuming fields as they are discovered: spotter call (and optional `CALL:freq` attachment), frequency, DX call, mode, report (`<signed int> dB` or `<signed int>dB`), time (`HHMMZ`), then treat any remaining unconsumed tokens as the free-form comment.
+- **Mode inference**: when no explicit mode token exists, infer from `config/mode_allocations.yaml` by frequency (fallback: `USB` ≥ 10 MHz else `CW`).
+- **Report semantics**: `HasReport` is strictly “report was present in the source line”, so `0 dB` is distinct from “missing report”.
 
 ### Call-Correction Distance Tuning
 - CW distance can be Morse-aware with weighted/normalized dot-dash costs (configurable via `call_correction.morse_weights`: `insert`, `delete`, `sub`, `scale`; defaults 1/1/2/2).
@@ -111,7 +129,7 @@ The telnet server broadcasts spots as fixed-width DX-cluster lines:
   - Grid: columns 67-70 (4 chars; blank if unknown)
   - Confidence: column 72 (1 char; blank if unknown)
   - Time: columns 74-78 (`HHMMZ`)
-- Any free-form comment text is truncated so it can never push the grid/confidence/time tail.
+- Any free-form comment text is sanitized (tabs/newlines removed) and truncated so it can never push the grid/confidence/time tail; a space always separates the comment area from the fixed tail.
 
 Report formatting:
 

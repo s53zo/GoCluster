@@ -35,6 +35,24 @@ const samplePLIST = `<?xml version="1.0" encoding="UTF-8"?>
 		<key>ExactCallsign</key>
 		<false/>
 	</dict>
+<key>W6</key>
+	<dict>
+		<key>Country</key>
+		<string>Delta</string>
+		<key>Prefix</key>
+		<string>W6</string>
+		<key>ExactCallsign</key>
+		<false/>
+	</dict>
+<key>FO/</key>
+	<dict>
+		<key>Country</key>
+		<string>Slashland</string>
+		<key>Prefix</key>
+		<string>FO/</string>
+		<key>ExactCallsign</key>
+		<false/>
+	</dict>
 </dict>
 </plist>`
 
@@ -159,5 +177,33 @@ func TestLookupMetrics(t *testing.T) {
 	}
 	if metrics.ValidatedFromCache != 1 {
 		t.Fatalf("unexpected validated-from-cache count: %d", metrics.ValidatedFromCache)
+	}
+}
+
+func TestLookupPrefixWithSlashInCallsign(t *testing.T) {
+	db := loadSampleDatabase(t)
+	info, ok := db.LookupCallsign("W6/UT5UF")
+	if !ok {
+		t.Fatalf("expected W6/UT5UF to resolve via prefix")
+	}
+	if info.Prefix != "W6" {
+		t.Fatalf("expected prefix W6, got %q", info.Prefix)
+	}
+	if info.Country != "Delta" {
+		t.Fatalf("expected Delta, got %q", info.Country)
+	}
+}
+
+func TestLookupPrefixWithSlashKey(t *testing.T) {
+	db := loadSampleDatabase(t)
+	info, ok := db.LookupCallsign("FO/ABC")
+	if !ok {
+		t.Fatalf("expected FO/ABC to resolve via slash prefix key")
+	}
+	if info.Prefix != "FO/" {
+		t.Fatalf("expected prefix FO/, got %q", info.Prefix)
+	}
+	if info.Country != "Slashland" {
+		t.Fatalf("expected Slashland, got %q", info.Country)
 	}
 }

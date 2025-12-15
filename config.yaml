@@ -22,7 +22,7 @@ ui:
 
 # Spot sources (ingest)
 rbn:
-  enabled: false
+  enabled: true
   name: "RBN-CW-RTTY"
   host: "telnet.reversebeacon.net"
   port: 7000
