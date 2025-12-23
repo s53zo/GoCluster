@@ -39,6 +39,7 @@ var SupportedModes = []string{
 	"USB",
 	"RTTY",
 	"MSK144",
+	"PSK31",
 }
 
 // SupportedSources enumerates how telnet users can filter on Spot.IsHuman.

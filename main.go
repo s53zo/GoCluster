@@ -631,6 +631,9 @@ func main() {
 	if cfg.RBN.Enabled {
 		rbnClient = rbn.NewClient(cfg.RBN.Host, cfg.RBN.Port, cfg.RBN.Callsign, cfg.RBN.Name, ctyLookup, skewStore, cfg.RBN.KeepSSIDSuffix, cfg.RBN.SlotBuffer)
 		rbnClient.SetUnlicensedReporter(unlicensedReporter)
+		if cfg.RBN.KeepaliveSec > 0 {
+			rbnClient.EnableKeepalive(time.Duration(cfg.RBN.KeepaliveSec) * time.Second)
+		}
 		err = rbnClient.Connect()
 		if err != nil {
 			log.Printf("Warning: Failed to connect to RBN CW/RTTY: %v", err)
@@ -646,6 +649,9 @@ func main() {
 	if cfg.RBNDigital.Enabled {
 		rbnDigitalClient = rbn.NewClient(cfg.RBNDigital.Host, cfg.RBNDigital.Port, cfg.RBNDigital.Callsign, cfg.RBNDigital.Name, ctyLookup, skewStore, cfg.RBNDigital.KeepSSIDSuffix, cfg.RBNDigital.SlotBuffer)
 		rbnDigitalClient.SetUnlicensedReporter(unlicensedReporter)
+		if cfg.RBNDigital.KeepaliveSec > 0 {
+			rbnDigitalClient.EnableKeepalive(time.Duration(cfg.RBNDigital.KeepaliveSec) * time.Second)
+		}
 		err = rbnDigitalClient.Connect()
 		if err != nil {
 			log.Printf("Warning: Failed to connect to RBN Digital: %v", err)
@@ -660,6 +666,10 @@ func main() {
 	if cfg.HumanTelnet.Enabled {
 		humanTelnetClient = rbn.NewClient(cfg.HumanTelnet.Host, cfg.HumanTelnet.Port, cfg.HumanTelnet.Callsign, cfg.HumanTelnet.Name, ctyLookup, skewStore, cfg.HumanTelnet.KeepSSIDSuffix, cfg.HumanTelnet.SlotBuffer)
 		humanTelnetClient.UseMinimalParser()
+		if cfg.HumanTelnet.KeepaliveSec > 0 {
+			// Prevent idle disconnects on upstream telnet feeds by sending periodic CRLF.
+			humanTelnetClient.EnableKeepalive(time.Duration(cfg.HumanTelnet.KeepaliveSec) * time.Second)
+		}
 		humanTelnetClient.SetUnlicensedReporter(unlicensedReporter)
 		err = humanTelnetClient.Connect()
 		if err != nil {

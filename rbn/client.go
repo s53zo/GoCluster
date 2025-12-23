@@ -58,6 +58,7 @@ type Client struct {
 	skewStore *skew.Store
 	reconnect chan struct{}
 	stopOnce  sync.Once
+	writeMu   sync.Mutex
 	keepSSID  bool
 
 	bufferSize int
@@ -66,6 +67,9 @@ type Client struct {
 	unlicensedQueue    chan unlicensedEvent
 
 	minimalParse bool
+
+	keepaliveInterval time.Duration
+	keepaliveDone     chan struct{}
 }
 
 type spotToken struct {
@@ -173,6 +177,17 @@ func (c *Client) UseMinimalParser() {
 	}
 }
 
+// EnableKeepalive configures a periodic CRLF keepalive to prevent idle timeouts on upstream telnet feeds.
+func (c *Client) EnableKeepalive(interval time.Duration) {
+	if c == nil {
+		return
+	}
+	if interval <= 0 {
+		return
+	}
+	c.keepaliveInterval = interval
+}
+
 func parseFrequencyCandidate(tok string) (float64, bool) {
 	if tok == "" {
 		return 0, false
@@ -277,11 +292,15 @@ func (c *Client) establishConnection() error {
 	c.reader = bufio.NewReader(conn)
 	c.writer = bufio.NewWriter(conn)
 	c.connected = true
+	c.keepaliveDone = make(chan struct{})
 
 	log.Printf("%s: connection established", c.displayName())
 
 	// Start login sequence and stream reader for this connection.
 	go c.handleLogin()
+	if c.keepaliveInterval > 0 {
+		go c.keepaliveLoop()
+	}
 	go c.readLoop()
 	return nil
 }
@@ -356,6 +375,9 @@ func (c *Client) readLoop() {
 	}()
 	defer func() {
 		c.connected = false
+		if c.keepaliveDone != nil {
+			close(c.keepaliveDone)
+		}
 		if c.conn != nil {
 			c.conn.Close()
 		}
@@ -734,4 +756,25 @@ func (c *Client) sourceKey() string {
 		return "RBN-DIGITAL"
 	}
 	return "RBN"
+}
+
+// keepaliveLoop sends periodic CRLF to keep upstream telnet feeds from timing out idle sessions.
+func (c *Client) keepaliveLoop() {
+	ticker := time.NewTicker(c.keepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.shutdown:
+			return
+		case <-c.keepaliveDone:
+			return
+		case <-ticker.C:
+			c.writeMu.Lock()
+			if c.writer != nil {
+				_, _ = c.writer.WriteString("\r\n")
+				_ = c.writer.Flush()
+			}
+			c.writeMu.Unlock()
+		}
+	}
 }

@@ -70,3 +70,15 @@ func TestParseSpotCommentBareNumericBecomesReportForDigital(t *testing.T) {
 		t.Fatalf("expected 73 to remain in comment, got %q", result.Comment)
 	}
 }
+
+func TestParseSpotCommentPSK31SetsMode(t *testing.T) {
+	comment := "CQ TEST PSK31"
+	result := ParseSpotComment(comment, 14070.0)
+
+	if result.Mode != "PSK31" {
+		t.Fatalf("expected mode PSK31, got %q", result.Mode)
+	}
+	if strings.TrimSpace(result.Comment) != "CQ TEST" {
+		t.Fatalf("expected comment without mode token, got %q", result.Comment)
+	}
+}

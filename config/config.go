@@ -116,8 +116,9 @@ type RBNConfig struct {
 	Port           int    `yaml:"port"`
 	Callsign       string `yaml:"callsign"`
 	Name           string `yaml:"name"`
-	KeepSSIDSuffix bool   `yaml:"keep_ssid_suffix"` // when true, retain -# SSIDs for dedup/call-correction
-	SlotBuffer     int    `yaml:"slot_buffer"`      // size of ingest slot buffer between telnet reader and pipeline
+	KeepSSIDSuffix bool   `yaml:"keep_ssid_suffix"`  // when true, retain -# SSIDs for dedup/call-correction
+	SlotBuffer     int    `yaml:"slot_buffer"`       // size of ingest slot buffer between telnet reader and pipeline
+	KeepaliveSec   int    `yaml:"keepalive_seconds"` // optional periodic CRLF to keep idle sessions alive (0 disables)
 }
 
 // PSKReporterConfig contains PSKReporter MQTT settings
@@ -574,6 +575,24 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.HumanTelnet.SlotBuffer <= 0 {
 		cfg.HumanTelnet.SlotBuffer = 1000
+	}
+	if cfg.RBN.KeepaliveSec < 0 {
+		cfg.RBN.KeepaliveSec = 0
+	}
+	if cfg.RBNDigital.KeepaliveSec < 0 {
+		cfg.RBNDigital.KeepaliveSec = 0
+	}
+	if cfg.HumanTelnet.KeepaliveSec < 0 {
+		cfg.HumanTelnet.KeepaliveSec = 0
+	}
+	if cfg.RBN.KeepaliveSec == 0 {
+		cfg.RBN.KeepaliveSec = 240
+	}
+	if cfg.RBNDigital.KeepaliveSec == 0 {
+		cfg.RBNDigital.KeepaliveSec = cfg.RBN.KeepaliveSec
+	}
+	if cfg.HumanTelnet.KeepaliveSec == 0 {
+		cfg.HumanTelnet.KeepaliveSec = 240
 	}
 
 	if cfg.PSKReporter.Workers < 0 {
@@ -1082,13 +1101,13 @@ func (c *Config) Print() {
 		c.UI.PaneLines.Harmonics,
 		c.UI.PaneLines.System)
 	if c.RBN.Enabled {
-		fmt.Printf("RBN CW/RTTY: %s:%d (as %s, slot_buffer=%d)\n", c.RBN.Host, c.RBN.Port, c.RBN.Callsign, c.RBN.SlotBuffer)
+		fmt.Printf("RBN CW/RTTY: %s:%d (as %s, slot_buffer=%d keepalive=%ds)\n", c.RBN.Host, c.RBN.Port, c.RBN.Callsign, c.RBN.SlotBuffer, c.RBN.KeepaliveSec)
 	}
 	if c.RBNDigital.Enabled {
-		fmt.Printf("RBN Digital (FT4/FT8): %s:%d (as %s, slot_buffer=%d)\n", c.RBNDigital.Host, c.RBNDigital.Port, c.RBNDigital.Callsign, c.RBNDigital.SlotBuffer)
+		fmt.Printf("RBN Digital (FT4/FT8): %s:%d (as %s, slot_buffer=%d keepalive=%ds)\n", c.RBNDigital.Host, c.RBNDigital.Port, c.RBNDigital.Callsign, c.RBNDigital.SlotBuffer, c.RBNDigital.KeepaliveSec)
 	}
 	if c.HumanTelnet.Enabled {
-		fmt.Printf("Human/relay telnet: %s:%d (as %s, slot_buffer=%d)\n", c.HumanTelnet.Host, c.HumanTelnet.Port, c.HumanTelnet.Callsign, c.HumanTelnet.SlotBuffer)
+		fmt.Printf("Human/relay telnet: %s:%d (as %s, slot_buffer=%d keepalive=%ds)\n", c.HumanTelnet.Host, c.HumanTelnet.Port, c.HumanTelnet.Callsign, c.HumanTelnet.SlotBuffer, c.HumanTelnet.KeepaliveSec)
 	}
 	if c.PSKReporter.Enabled {
 		workerDesc := "auto"
