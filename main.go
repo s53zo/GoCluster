@@ -668,8 +668,18 @@ func main() {
 	// Connect to human/relay telnet feed if enabled (upstream cluster or operator-submitted spots)
 	var humanTelnetClient *rbn.Client
 	if cfg.HumanTelnet.Enabled {
+		rawPassthrough := make(chan string, 256)
+		go func() {
+			for line := range rawPassthrough {
+				if telnetServer != nil {
+					telnetServer.BroadcastRaw(line)
+				}
+			}
+		}()
+
 		humanTelnetClient = rbn.NewClient(cfg.HumanTelnet.Host, cfg.HumanTelnet.Port, cfg.HumanTelnet.Callsign, cfg.HumanTelnet.Name, ctyLookup, skewStore, cfg.HumanTelnet.KeepSSIDSuffix, cfg.HumanTelnet.SlotBuffer)
 		humanTelnetClient.UseMinimalParser()
+		humanTelnetClient.SetRawPassthrough(rawPassthrough)
 		if cfg.HumanTelnet.KeepaliveSec > 0 {
 			// Prevent idle disconnects on upstream telnet feeds by sending periodic CRLF.
 			humanTelnetClient.EnableKeepalive(time.Duration(cfg.HumanTelnet.KeepaliveSec) * time.Second)

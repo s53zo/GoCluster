@@ -70,6 +70,8 @@ type Client struct {
 
 	keepaliveInterval time.Duration
 	keepaliveDone     chan struct{}
+
+	rawChan chan<- string // optional passthrough for non-DX lines (minimal parser only)
 }
 
 type spotToken struct {
@@ -174,6 +176,14 @@ func NewClient(host string, port int, callsign string, name string, lookup func(
 func (c *Client) UseMinimalParser() {
 	if c != nil {
 		c.minimalParse = true
+	}
+}
+
+// SetRawPassthrough installs a channel for relaying non-DX lines when in minimalParse mode.
+// Lines are delivered best-effort using a non-blocking send to avoid wedging ingest.
+func (c *Client) SetRawPassthrough(ch chan<- string) {
+	if c != nil {
+		c.rawChan = ch
 	}
 }
 
@@ -412,6 +422,15 @@ func (c *Client) readLoop() {
 			// Log and parse DX spots
 			if strings.HasPrefix(line, "DX de") {
 				c.parseSpot(line)
+				continue
+			}
+
+			// In minimal mode, forward any non-DX lines (e.g., WCY/WWV) to the raw passthrough.
+			if c.minimalParse && c.rawChan != nil {
+				select {
+				case c.rawChan <- line:
+				default:
+				}
 			}
 		}
 	}

@@ -49,6 +49,7 @@ type session struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	closeOnce    sync.Once
+	overlongPath string
 }
 
 func newSession(conn net.Conn, dir direction, manager *Manager, peer PeerEndpoint, settings sessionSettings) *session {
@@ -76,6 +77,7 @@ func newSession(conn net.Conn, dir direction, manager *Manager, peer PeerEndpoin
 		keepalive:    settings.keepalive,
 		dir:          dir,
 		tsGen:        &timestampGenerator{},
+		overlongPath: "logs/peering_overlong.log",
 	}
 	s.reader = newLineReader(conn, &s.writeMu, settings.maxLine)
 	return s
@@ -119,8 +121,10 @@ func (s *session) Run(ctx context.Context) error {
 		}
 		line, err := s.reader.ReadLine(deadline)
 		if err != nil {
-			if errors.Is(err, ErrLineTooLong) {
+			var tooLong errLineTooLong
+			if errors.As(err, &tooLong) {
 				log.Printf("Peering: line too long from %s, dropping and continuing", s.peer.host)
+				appendOverlongSample(s.overlongPath, s.peer.host, tooLong.preview, tooLong.length)
 				continue
 			}
 			return err
@@ -284,8 +288,10 @@ func (s *session) runOutboundHandshake() error {
 		}
 		line, err := s.reader.ReadLine(deadline)
 		if err != nil {
-			if errors.Is(err, ErrLineTooLong) {
+			var tooLong errLineTooLong
+			if errors.As(err, &tooLong) {
 				log.Printf("%s RX line too long, dropping", logPrefix)
+				appendOverlongSample(s.overlongPath, s.peer.host, tooLong.preview, tooLong.length)
 				continue
 			}
 			return err
