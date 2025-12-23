@@ -397,6 +397,19 @@ func (s *Server) BroadcastSpot(spot *spot.Spot) {
 	}
 }
 
+// BroadcastRaw sends a raw line to all connected clients without formatting.
+// Use this for non-spot PC frames (e.g., PC26) that should pass through unchanged.
+func (s *Server) BroadcastRaw(line string) {
+	if s == nil || strings.TrimSpace(line) == "" {
+		return
+	}
+	s.clientsMutex.RLock()
+	defer s.clientsMutex.RUnlock()
+	for _, client := range s.clients {
+		_ = client.Send(line)
+	}
+}
+
 // broadcastSpot segments clients into shards and enqueues jobs for workers
 func (s *Server) broadcastSpot(spot *spot.Spot) {
 	shards := s.cachedClientShards()

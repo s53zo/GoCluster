@@ -621,6 +621,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to start telnet server: %v", err)
 	}
+	// Hook peering raw passthrough (e.g., PC26) into telnet broadcast once available.
+	if peerManager != nil {
+		peerManager.SetRawBroadcast(telnetServer.BroadcastRaw)
+	}
 
 	// Start the unified output processor once the telnet server is ready
 	go processOutputSpots(deduplicator, secondaryDeduper, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix)

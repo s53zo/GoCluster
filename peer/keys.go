@@ -18,3 +18,7 @@ func dxKey(f *Frame, s *spot.Spot) string {
 func wwvKey(f *Frame) string {
 	return fmt.Sprintf("wwv:%s:%s", f.Type, f.Raw)
 }
+
+func pc26Key(f *Frame) string {
+	return fmt.Sprintf("pc26:%s", f.Raw)
+}

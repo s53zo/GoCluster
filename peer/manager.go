@@ -27,6 +27,7 @@ type Manager struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	listener      net.Listener
+	rawBroadcast  func(string) // optional hook to emit raw lines (e.g., PC26) to telnet clients
 }
 
 func NewManager(cfg config.PeeringConfig, localCall string, ingest chan<- *spot.Spot, maxAgeSeconds int) (*Manager, error) {
@@ -160,6 +161,14 @@ func (m *Manager) HandleFrame(frame *Frame, sess *session) {
 		if m.topology != nil {
 			m.topology.applyLegacy(frame, now)
 		}
+	case "PC26":
+		// PC26 (WWV) passthrough: forward raw line to telnet clients unchanged and re-broadcast to peers.
+		if m.rawBroadcast != nil {
+			m.rawBroadcast(strings.TrimSpace(frame.Raw))
+		}
+		if frame.Hop > 1 && m.dedupe.markSeen(pc26Key(frame), now) {
+			m.forwardFrame(frame, frame.Hop-1, sess, false)
+		}
 	case "PC11", "PC61":
 		spotEntry, err := parseSpotFromFrame(frame, sess.remoteCall)
 		if err == nil {
@@ -213,6 +222,14 @@ func (m *Manager) unregisterSession(s *session) {
 	m.mu.Lock()
 	delete(m.sessions, s.id)
 	m.mu.Unlock()
+}
+
+// SetRawBroadcast installs a callback used to forward raw lines (e.g., PC26) to telnet clients.
+// This is optional; when unset, PC26 is only forwarded to peers.
+func (m *Manager) SetRawBroadcast(fn func(string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rawBroadcast = fn
 }
 
 func (m *Manager) broadcastSpot(s *spot.Spot, hop int, origin string, exclude *session) {

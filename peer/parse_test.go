@@ -6,7 +6,7 @@ import (
 )
 
 func TestParsePC11IgnoresCommentTimeToken(t *testing.T) {
-	line := "PC11^14074.0^DXCALL^23-Dec-2025^2001Z^CQ 1800Z TEST^DECALL^ORIGIN"
+	line := "PC11^14074.0^K1ABC^23-Dec-2025^2001Z^CQ 1800Z TEST^W1XYZ^ORIGIN"
 	frame, err := ParseFrame(line)
 	if err != nil {
 		t.Fatalf("ParseFrame error: %v", err)
