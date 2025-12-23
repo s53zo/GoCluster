@@ -25,6 +25,7 @@ type Config struct {
 	RBNDigital      RBNConfig            `yaml:"rbn_digital"`
 	HumanTelnet     RBNConfig            `yaml:"human_telnet"`
 	PSKReporter     PSKReporterConfig    `yaml:"pskreporter"`
+	Archive         ArchiveConfig        `yaml:"archive"`
 	Dedup           DedupConfig          `yaml:"dedup"`
 	Filter          FilterConfig         `yaml:"filter"`
 	Stats           StatsConfig          `yaml:"stats"`
@@ -138,6 +139,19 @@ type PSKReporterConfig struct {
 }
 
 const defaultPSKReporterTopic = "pskr/filter/v2/+/+/#"
+
+// ArchiveConfig controls optional SQLite archival of broadcasted spots.
+type ArchiveConfig struct {
+	Enabled                bool   `yaml:"enabled"`
+	DBPath                 string `yaml:"db_path"`
+	QueueSize              int    `yaml:"queue_size"`
+	BatchSize              int    `yaml:"batch_size"`
+	BatchIntervalMS        int    `yaml:"batch_interval_ms"`
+	CleanupIntervalSeconds int    `yaml:"cleanup_interval_seconds"`
+	RetentionFTSeconds     int    `yaml:"retention_ft_seconds"`     // FT8/FT4 retention
+	RetentionDefaultSeconds int   `yaml:"retention_default_seconds"` // All other modes
+	BusyTimeoutMS          int    `yaml:"busy_timeout_ms"`
+}
 
 // PeeringConfig controls DXSpider node-to-node peering.
 type PeeringConfig struct {
@@ -600,6 +614,32 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.PSKReporter.SpotChannelSize <= 0 {
 		cfg.PSKReporter.SpotChannelSize = 25000
+	}
+
+	// Archive defaults keep the writer lightweight and non-blocking.
+	if cfg.Archive.QueueSize <= 0 {
+		cfg.Archive.QueueSize = 10000
+	}
+	if cfg.Archive.BatchSize <= 0 {
+		cfg.Archive.BatchSize = 500
+	}
+	if cfg.Archive.BatchIntervalMS <= 0 {
+		cfg.Archive.BatchIntervalMS = 200
+	}
+	if cfg.Archive.CleanupIntervalSeconds <= 0 {
+		cfg.Archive.CleanupIntervalSeconds = 3600 // hourly
+	}
+	if cfg.Archive.RetentionFTSeconds <= 0 {
+		cfg.Archive.RetentionFTSeconds = 3600 // 1 hour by default for FT modes
+	}
+	if cfg.Archive.RetentionDefaultSeconds <= 0 {
+		cfg.Archive.RetentionDefaultSeconds = 86400 // 1 day for other modes
+	}
+	if strings.TrimSpace(cfg.Archive.DBPath) == "" {
+		cfg.Archive.DBPath = "data/archive/spots.db"
+	}
+	if cfg.Archive.BusyTimeoutMS <= 0 {
+		cfg.Archive.BusyTimeoutMS = 1000
 	}
 
 	if cfg.Stats.DisplayIntervalSeconds <= 0 {
@@ -1108,6 +1148,16 @@ func (c *Config) Print() {
 	}
 	if c.HumanTelnet.Enabled {
 		fmt.Printf("Human/relay telnet: %s:%d (as %s, slot_buffer=%d keepalive=%ds)\n", c.HumanTelnet.Host, c.HumanTelnet.Port, c.HumanTelnet.Callsign, c.HumanTelnet.SlotBuffer, c.HumanTelnet.KeepaliveSec)
+	}
+	if c.Archive.Enabled {
+		fmt.Printf("Archive: %s (queue=%d batch=%d/%dms cleanup=%ds retain_ft=%ds retain_other=%ds)\n",
+			c.Archive.DBPath,
+			c.Archive.QueueSize,
+			c.Archive.BatchSize,
+			c.Archive.BatchIntervalMS,
+			c.Archive.CleanupIntervalSeconds,
+			c.Archive.RetentionFTSeconds,
+			c.Archive.RetentionDefaultSeconds)
 	}
 	if c.PSKReporter.Enabled {
 		workerDesc := "auto"

@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"dxcluster/archive"
 	"dxcluster/bandmap"
 	"dxcluster/buffer"
 	"dxcluster/commands"
@@ -627,7 +628,19 @@ func main() {
 	}
 
 	// Start the unified output processor once the telnet server is ready
-	go processOutputSpots(deduplicator, secondaryDeduper, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix)
+	var archiveWriter *archive.Writer
+	if cfg.Archive.Enabled {
+		if w, err := archive.NewWriter(cfg.Archive); err != nil {
+			log.Printf("Warning: archive disabled due to init error: %v", err)
+		} else {
+			archiveWriter = w
+			archiveWriter.Start()
+			log.Printf("Archive: writing to %s (batch=%d/%dms queue=%d cleanup=%ds ft_retention=%ds other_retention=%ds)", cfg.Archive.DBPath, cfg.Archive.BatchSize, cfg.Archive.BatchIntervalMS, cfg.Archive.QueueSize, cfg.Archive.CleanupIntervalSeconds, cfg.Archive.RetentionFTSeconds, cfg.Archive.RetentionDefaultSeconds)
+			defer archiveWriter.Stop()
+		}
+	}
+
+	go processOutputSpots(deduplicator, secondaryDeduper, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
 	// RBN spots go INTO the deduplicator input channel
@@ -1040,6 +1053,7 @@ func processOutputSpots(
 	refresher *adaptiveRefresher,
 	spotterReliability spot.SpotterReliability,
 	broadcastKeepSSID bool,
+	archiveWriter *archive.Writer,
 ) {
 	outputChan := deduplicator.GetOutputChannel()
 
@@ -1217,6 +1231,10 @@ func processOutputSpots(
 			// failed to drop them.
 			if isStale(s, spotPolicy) {
 				return
+			}
+
+			if archiveWriter != nil {
+				archiveWriter.Enqueue(s)
 			}
 
 			if telnet != nil {

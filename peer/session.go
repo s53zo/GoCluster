@@ -359,6 +359,7 @@ func (s *session) runOutboundHandshake() error {
 			if frame, err := ParseFrame(line); err == nil && s.manager != nil {
 				s.manager.HandleFrame(frame, s)
 			}
+			log.Printf("%s established via incoming spots (pc9x=%v)", logPrefix, s.pc9x)
 			return nil
 		}
 		if waitInit {
