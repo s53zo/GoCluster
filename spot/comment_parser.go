@@ -23,6 +23,7 @@ const (
 	acTokenMode
 	acTokenDB
 	acTokenWPM
+	acTokenBPS
 )
 
 type acPattern struct {
@@ -161,6 +162,7 @@ func classifyTokenWithFallback(matchIndex map[int][]acMatch, tok commentToken) (
 var keywordPatterns = []acPattern{
 	{word: "DB", kind: acTokenDB},
 	{word: "WPM", kind: acTokenWPM},
+	{word: "BPS", kind: acTokenBPS},
 	{word: "CW", kind: acTokenMode, mode: "CW"},
 	{word: "CWT", kind: acTokenMode, mode: "CW"},
 	{word: "RTTY", kind: acTokenMode, mode: "RTTY"},
@@ -328,7 +330,7 @@ func buildComment(tokens []commentToken, consumed []bool) string {
 	return strings.Join(parts, " ")
 }
 
-// ParseSpotComment extracts mode, report, time tokens, and a cleaned comment.
+// ParseSpotComment extracts mode, report, time tokens, speed tags (WPM/BPS), and a cleaned comment.
 func ParseSpotComment(comment string, freq float64) CommentParseResult {
 	comment = strings.TrimSpace(comment)
 	if comment == "" {
@@ -344,7 +346,8 @@ func ParseSpotComment(comment string, freq float64) CommentParseResult {
 		report          int
 		hasReport       bool
 		timeToken       string
-		wpmStr          string
+		speedValue      string
+		speedUnit       string
 		pendingNumIdx   = -1
 		pendingNumValue int
 	)
@@ -369,8 +372,10 @@ func ParseSpotComment(comment string, freq float64) CommentParseResult {
 			consumed[idx] = true
 			continue
 		}
-		if timeToken == "" && isTimeToken(clean) {
-			timeToken = clean
+		if isTimeToken(clean) {
+			if timeToken == "" {
+				timeToken = clean
+			}
 			consumed[idx] = true
 			pendingNumIdx = -1
 			continue
@@ -395,9 +400,14 @@ func ParseSpotComment(comment string, freq float64) CommentParseResult {
 				}
 				consumed[idx] = true
 				continue
-			case acTokenWPM:
-				if wpmStr == "" && pendingNumIdx >= 0 {
-					wpmStr = tokens[pendingNumIdx].clean
+			case acTokenWPM, acTokenBPS:
+				if speedValue == "" && pendingNumIdx >= 0 {
+					speedValue = tokens[pendingNumIdx].clean
+					if pat.kind == acTokenWPM {
+						speedUnit = "WPM"
+					} else {
+						speedUnit = "BPS"
+					}
 					consumed[idx] = true
 					consumed[pendingNumIdx] = true
 					pendingNumIdx = -1
@@ -433,11 +443,12 @@ func ParseSpotComment(comment string, freq float64) CommentParseResult {
 			}
 		}
 	}
-	if wpmStr != "" {
+	if speedValue != "" && speedUnit != "" {
+		speedLabel := speedValue + " " + speedUnit
 		if cleaned != "" {
-			cleaned = wpmStr + " WPM " + cleaned
+			cleaned = speedLabel + " " + cleaned
 		} else {
-			cleaned = wpmStr + " WPM"
+			cleaned = speedLabel
 		}
 	}
 

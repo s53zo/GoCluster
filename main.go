@@ -585,7 +585,7 @@ func main() {
 	// Start peering manager (DXSpider PC protocol) if enabled.
 	var peerManager *peer.Manager
 	if cfg.Peering.Enabled {
-		pm, err := peer.NewManager(cfg.Peering, cfg.Peering.LocalCallsign, deduplicator.GetInputChannel())
+		pm, err := peer.NewManager(cfg.Peering, cfg.Peering.LocalCallsign, deduplicator.GetInputChannel(), cfg.SpotPolicy.MaxAgeSeconds)
 		if err != nil {
 			log.Fatalf("Failed to init peering manager: %v", err)
 		}
@@ -635,7 +635,7 @@ func main() {
 		if err != nil {
 			log.Printf("Warning: Failed to connect to RBN CW/RTTY: %v", err)
 		} else {
-			go processRBNSpots(rbnClient, deduplicator, "RBN-CW")
+			go processRBNSpots(rbnClient, deduplicator, "RBN-CW", cfg.SpotPolicy)
 			log.Println("RBN CW/RTTY client feeding spots into unified dedup engine")
 		}
 	}
@@ -650,7 +650,7 @@ func main() {
 		if err != nil {
 			log.Printf("Warning: Failed to connect to RBN Digital: %v", err)
 		} else {
-			go processRBNSpots(rbnDigitalClient, deduplicator, "RBN-FT")
+			go processRBNSpots(rbnDigitalClient, deduplicator, "RBN-FT", cfg.SpotPolicy)
 			log.Println("RBN Digital (FT4/FT8) client feeding spots into unified dedup engine")
 		}
 	}
@@ -665,7 +665,7 @@ func main() {
 		if err != nil {
 			log.Printf("Warning: Failed to connect to human/relay telnet feed: %v", err)
 		} else {
-			go processHumanTelnetSpots(humanTelnetClient, deduplicator, "HUMAN-TELNET")
+			go processHumanTelnetSpots(humanTelnetClient, deduplicator, "HUMAN-TELNET", cfg.SpotPolicy)
 			log.Println("Human/relay telnet client feeding spots into unified dedup engine")
 		}
 	}
@@ -684,7 +684,7 @@ func main() {
 		if err != nil {
 			log.Printf("Warning: Failed to connect to PSKReporter: %v", err)
 		} else {
-			go processPSKRSpots(pskrClient, deduplicator)
+			go processPSKRSpots(pskrClient, deduplicator, cfg.SpotPolicy)
 			log.Println("PSKReporter client feeding spots into unified dedup engine")
 		}
 	}
@@ -851,7 +851,8 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *
 		if secondary != nil {
 			secProcessed, secDupes, secCache := secondary.GetStats()
 			_ = secCache
-			secondaryLine = fmt.Sprintf("Secondary dedup: %s in / %s out", humanize.Comma(int64(secProcessed)), humanize.Comma(int64(secDupes)))
+			forwarded := secProcessed - secDupes
+			secondaryLine = fmt.Sprintf("Secondary dedup: %s in / %s dup / %s fwd", humanize.Comma(int64(secProcessed)), humanize.Comma(int64(secDupes)), humanize.Comma(int64(forwarded)))
 		} else {
 			secondaryLine = "Secondary dedup: disabled"
 		}
@@ -899,12 +900,15 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *
 // processRBNSpots receives spots from RBN and sends to deduplicator
 // This is the UNIFIED ARCHITECTURE path
 // RBN → Deduplicator Input Channel
-func processRBNSpots(client *rbn.Client, deduplicator *dedup.Deduplicator, source string) {
+func processRBNSpots(client *rbn.Client, deduplicator *dedup.Deduplicator, source string, spotPolicy config.SpotPolicy) {
 	spotChan := client.GetSpotChannel()
 	dedupInput := deduplicator.GetInputChannel()
 	var drops atomic.Uint64
 
 	for spot := range spotChan {
+		if isStale(spot, spotPolicy) {
+			continue
+		}
 		// Non-blocking send to avoid wedging ingest if dedup blocks.
 		select {
 		case dedupInput <- spot:
@@ -919,7 +923,7 @@ func processRBNSpots(client *rbn.Client, deduplicator *dedup.Deduplicator, sourc
 }
 
 // processHumanTelnetSpots marks incoming telnet spots as human-sourced and sends them into dedup.
-func processHumanTelnetSpots(client *rbn.Client, deduplicator *dedup.Deduplicator, source string) {
+func processHumanTelnetSpots(client *rbn.Client, deduplicator *dedup.Deduplicator, source string, spotPolicy config.SpotPolicy) {
 	spotChan := client.GetSpotChannel()
 	dedupInput := deduplicator.GetInputChannel()
 	var drops atomic.Uint64
@@ -934,6 +938,9 @@ func processHumanTelnetSpots(client *rbn.Client, deduplicator *dedup.Deduplicato
 			if strings.TrimSpace(sp.Mode) == "" {
 				sp.Mode = "RTTY" // temporary default until mode parser is added
 				sp.EnsureNormalized()
+			}
+			if isStale(sp, spotPolicy) {
+				continue
 			}
 		}
 		select {
@@ -950,12 +957,15 @@ func processHumanTelnetSpots(client *rbn.Client, deduplicator *dedup.Deduplicato
 
 // processPSKRSpots receives spots from PSKReporter and sends to deduplicator
 // PSKReporter → Deduplicator Input Channel
-func processPSKRSpots(client *pskreporter.Client, deduplicator *dedup.Deduplicator) {
+func processPSKRSpots(client *pskreporter.Client, deduplicator *dedup.Deduplicator, spotPolicy config.SpotPolicy) {
 	spotChan := client.GetSpotChannel()
 	dedupInput := deduplicator.GetInputChannel()
 	var drops atomic.Uint64
 
 	for spot := range spotChan {
+		if isStale(spot, spotPolicy) {
+			continue
+		}
 		// Non-blocking send to avoid backing up the PSK worker pool when dedup is slow.
 		select {
 		case dedupInput <- spot:
@@ -966,6 +976,18 @@ func processPSKRSpots(client *pskreporter.Client, deduplicator *dedup.Deduplicat
 			}
 		}
 	}
+}
+
+// isStale enforces the global max_age_seconds guard before deduplication so old
+// spots are dropped early and do not consume dedupe/window resources.
+func isStale(s *spot.Spot, policy config.SpotPolicy) bool {
+	if s == nil || policy.MaxAgeSeconds <= 0 {
+		return false
+	}
+	if s.Time.IsZero() {
+		return false
+	}
+	return time.Since(s.Time) > time.Duration(policy.MaxAgeSeconds)*time.Second
 }
 
 // processOutputSpots receives deduplicated spots and distributes them
@@ -1163,6 +1185,13 @@ func processOutputSpots(
 
 			// Broadcast-only dedupe: ring/history already updated above.
 			if secondary != nil && !secondary.ShouldForward(s) {
+				return
+			}
+
+			// Final fan-out guards (symmetry with peer belt-and-suspenders): do not
+			// deliver stale spots to any downstream sink, even if an upstream stage
+			// failed to drop them.
+			if isStale(s, spotPolicy) {
 				return
 			}
 

@@ -14,21 +14,22 @@ import (
 )
 
 type Manager struct {
-	cfg        config.PeeringConfig
-	localCall  string
-	ingest     chan<- *spot.Spot
-	topology   *topologyStore
-	sessions   map[string]*session
-	mu         sync.RWMutex
-	allowIPs   []*net.IPNet
-	allowCalls map[string]struct{}
-	dedupe     *dedupeCache
-	ctx        context.Context
-	cancel     context.CancelFunc
-	listener   net.Listener
+	cfg           config.PeeringConfig
+	localCall     string
+	ingest        chan<- *spot.Spot
+	maxAgeSeconds int
+	topology      *topologyStore
+	sessions      map[string]*session
+	mu            sync.RWMutex
+	allowIPs      []*net.IPNet
+	allowCalls    map[string]struct{}
+	dedupe        *dedupeCache
+	ctx           context.Context
+	cancel        context.CancelFunc
+	listener      net.Listener
 }
 
-func NewManager(cfg config.PeeringConfig, localCall string, ingest chan<- *spot.Spot) (*Manager, error) {
+func NewManager(cfg config.PeeringConfig, localCall string, ingest chan<- *spot.Spot, maxAgeSeconds int) (*Manager, error) {
 	if strings.TrimSpace(localCall) == "" {
 		return nil, fmt.Errorf("peering local callsign is empty")
 	}
@@ -58,14 +59,15 @@ func NewManager(cfg config.PeeringConfig, localCall string, ingest chan<- *spot.
 	}
 
 	return &Manager{
-		cfg:        cfg,
-		localCall:  strings.ToUpper(strings.TrimSpace(localCall)),
-		ingest:     ingest,
-		topology:   topo,
-		sessions:   make(map[string]*session),
-		allowIPs:   allowIPs,
-		allowCalls: allowCalls,
-		dedupe:     newDedupeCache(10 * time.Minute),
+		cfg:           cfg,
+		localCall:     strings.ToUpper(strings.TrimSpace(localCall)),
+		ingest:        ingest,
+		maxAgeSeconds: maxAgeSeconds,
+		topology:      topo,
+		sessions:      make(map[string]*session),
+		allowIPs:      allowIPs,
+		allowCalls:    allowCalls,
+		dedupe:        newDedupeCache(10 * time.Minute),
 	}, nil
 }
 
@@ -182,6 +184,12 @@ func (m *Manager) ingestSpot(s *spot.Spot) {
 	if m == nil || s == nil || m.ingest == nil {
 		return
 	}
+	if m.maxAgeSeconds > 0 {
+		if age := time.Since(s.Time); age > time.Duration(m.maxAgeSeconds)*time.Second {
+			// Drop stale spots before they enter the shared pipeline to avoid wasting dedupe/work.
+			return
+		}
+	}
 	select {
 	case m.ingest <- s:
 	default:
@@ -210,6 +218,12 @@ func (m *Manager) unregisterSession(s *session) {
 func (m *Manager) broadcastSpot(s *spot.Spot, hop int, origin string, exclude *session) {
 	if m == nil || s == nil {
 		return
+	}
+	if m.maxAgeSeconds > 0 {
+		if age := time.Since(s.Time); age > time.Duration(m.maxAgeSeconds)*time.Second {
+			// Belt-and-suspenders: never forward stale spots to peers.
+			return
+		}
 	}
 	if strings.TrimSpace(origin) == "" {
 		origin = m.localCall

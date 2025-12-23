@@ -9,10 +9,6 @@ import (
 	"dxcluster/spot"
 )
 
-var modeTokens = []string{
-	"CW", "RTTY", "FT8", "FT4", "MSK144", "MSK", "USB", "LSB", "SSB", "AM", "FM",
-}
-
 // parseSpotFromFrame converts PC61/PC11 into a Spot.
 func parseSpotFromFrame(frame *Frame, fallbackOrigin string) (*spot.Spot, error) {
 	if frame == nil {
@@ -47,16 +43,17 @@ func parsePC11(fields []string, hop int, fallbackOrigin string) (*spot.Spot, err
 		origin = fallbackOrigin
 	}
 	ts := parsePCDateTime(date, timeStr)
-	mode, report, hasReport, cleaned := parseCommentModeReport(comment, freq)
-	s := spot.NewSpot(dx, spotter, freq, mode)
+	parsed := spot.ParseSpotComment(comment, freq)
+	// PC11 timestamps are authoritative; ignore any comment time tokens.
+	s := spot.NewSpot(dx, spotter, freq, parsed.Mode)
 	s.Time = ts
-	s.Comment = cleaned
+	s.Comment = parsed.Comment
 	s.SourceType = spot.SourceUpstream
 	s.SourceNode = origin
-	s.Report = report
-	s.HasReport = hasReport
+	s.Report = parsed.Report
+	s.HasReport = parsed.HasReport
 	// Heuristic: treat spots without an SNR/report as human-originated.
-	s.IsHuman = !hasReport
+	s.IsHuman = !parsed.HasReport
 	if hop > 0 {
 		s.TTL = uint8(hop)
 	}
@@ -83,15 +80,16 @@ func parsePC61(fields []string, hop int, fallbackOrigin string) (*spot.Spot, err
 	}
 	// fields[7] user IP present but not stored in Spot; could be logged later.
 	ts := parsePCDateTime(date, timeStr)
-	mode, report, hasReport, cleaned := parseCommentModeReport(comment, freq)
-	s := spot.NewSpot(dx, spotter, freq, mode)
+	parsed := spot.ParseSpotComment(comment, freq)
+	// PC61 timestamps are authoritative; ignore any comment time tokens.
+	s := spot.NewSpot(dx, spotter, freq, parsed.Mode)
 	s.Time = ts
-	s.Comment = cleaned
+	s.Comment = parsed.Comment
 	s.SourceType = spot.SourceUpstream
 	s.SourceNode = origin
-	s.Report = report
-	s.HasReport = hasReport
-	s.IsHuman = !hasReport
+	s.Report = parsed.Report
+	s.HasReport = parsed.HasReport
+	s.IsHuman = !parsed.HasReport
 	if hop > 0 {
 		s.TTL = uint8(hop)
 	}
@@ -110,93 +108,4 @@ func parsePCDateTime(dateStr, timeStr string) time.Time {
 	return time.Now().UTC()
 }
 
-func parseCommentModeReport(comment string, freq float64) (string, int, bool, string) {
-	comment = strings.ReplaceAll(comment, "^", " ")
-	comment = strings.ReplaceAll(comment, "\r", " ")
-	comment = strings.ReplaceAll(comment, "\n", " ")
-	fields := strings.Fields(comment)
-	if len(fields) == 0 {
-		return spot.FinalizeMode("", freq), 0, false, ""
-	}
-
-	var mode string
-	var report int
-	var hasReport bool
-	cleaned := make([]string, 0, len(fields))
-
-	skipNext := false
-	for i, tok := range fields {
-		if skipNext {
-			skipNext = false
-			continue
-		}
-		upper := strings.ToUpper(tok)
-		if mode == "" {
-			if m := matchModeToken(upper); m != "" {
-				mode = m
-				continue
-			}
-		}
-		if !hasReport {
-			if v, ok := parseInlineDB(upper); ok {
-				report = v
-				hasReport = true
-				continue
-			}
-			if v, ok := parseSignedInt(tok); ok {
-				if i+1 < len(fields) && strings.EqualFold(fields[i+1], "DB") {
-					report = v
-					hasReport = true
-					skipNext = true
-					continue
-				}
-			}
-		}
-		cleaned = append(cleaned, tok)
-	}
-	mode = spot.FinalizeMode(mode, freq)
-	return mode, report, hasReport, strings.Join(cleaned, " ")
-}
-
-func matchModeToken(token string) string {
-	for _, m := range modeTokens {
-		if token == m {
-			return m
-		}
-	}
-	if token == "MSK" {
-		return "MSK144"
-	}
-	return ""
-}
-
-func parseSignedInt(tok string) (int, bool) {
-	if tok == "" {
-		return 0, false
-	}
-	if tok[0] == '+' {
-		tok = tok[1:]
-	}
-	v, err := strconv.Atoi(tok)
-	if err != nil {
-		return 0, false
-	}
-	return v, true
-}
-
-func parseInlineDB(tok string) (int, bool) {
-	if len(tok) < 3 {
-		return 0, false
-	}
-	lower := strings.ToLower(tok)
-	if !strings.HasSuffix(lower, "db") {
-		return 0, false
-	}
-	val := tok[:len(tok)-2]
-	return parseSignedInt(val)
-}
-
-// guessMode defers to the shared mode allocation logic so peering matches human spot ingestion.
-func guessMode(freq float64) string {
-	return spot.FinalizeMode("", freq)
-}
+// Comment parsing is centralized in spot.ParseSpotComment.

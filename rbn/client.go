@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -69,7 +68,6 @@ type Client struct {
 	minimalParse bool
 }
 
-
 type spotToken struct {
 	raw       string
 	clean     string
@@ -124,18 +122,6 @@ func tokenizeSpotLine(line string) []spotToken {
 		})
 	}
 	return tokens
-}
-
-func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // ConfigureCallCache allows callers to tune the normalization cache used for RBN spotters.
@@ -199,62 +185,6 @@ func parseFrequencyCandidate(tok string) (float64, bool) {
 		return 0, false
 	}
 	return f, true
-}
-
-func parseSignedInt(tok string) (int, bool) {
-	if tok == "" {
-		return 0, false
-	}
-	if strings.Contains(tok, ".") {
-		return 0, false
-	}
-	v, err := strconv.Atoi(tok)
-	if err != nil {
-		return 0, false
-	}
-	if v < -200 || v > 200 {
-		return 0, false
-	}
-	return v, true
-}
-
-func parseInlineSNR(tok string) (int, bool) {
-	lower := strings.ToLower(strings.TrimSpace(tok))
-	if !strings.HasSuffix(lower, "db") {
-		return 0, false
-	}
-	numStr := strings.TrimSuffix(lower, "db")
-	if strings.Contains(numStr, ".") || numStr == "" {
-		return 0, false
-	}
-	v, err := strconv.Atoi(numStr)
-	if err != nil || v < -200 || v > 200 {
-		return 0, false
-	}
-	return v, true
-}
-
-func peelTimePrefix(tok string) (string, string) {
-	if len(tok) < 5 {
-		return "", tok
-	}
-	prefix := tok[:5]
-	if isTimeToken(prefix) {
-		return prefix, strings.TrimSpace(tok[5:])
-	}
-	return "", tok
-}
-
-func isTimeToken(tok string) bool {
-	if len(tok) != 5 || tok[4] != 'Z' {
-		return false
-	}
-	for i := 0; i < 4; i++ {
-		if tok[i] < '0' || tok[i] > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 func extractCallAndFreq(tok spotToken) (string, float64, bool) {
@@ -570,10 +500,10 @@ func buildComment(tokens []spotToken, consumed []bool) string {
 	return strings.Join(parts, " ")
 }
 
-// parseSpot converts a DX cluster-style telnet line into a canonical Spot using
-// a single left-to-right pass paired with an Aho-Corasick keyword scan.
-// The AC automaton tags structural tokens (DX/DE, modes, dB, WPM) so we can
-// peel fields without multiple rescans or regex passes.
+// parseSpot converts a DX cluster-style telnet line into a canonical Spot.
+// Structural fields (DE/DX/freq/time) are parsed locally; comment parsing
+// (mode/report/time token handling) is delegated to spot.ParseSpotComment so
+// RBN/human/peer inputs stay consistent.
 func (c *Client) parseSpot(line string) {
 	line = strings.TrimSpace(line)
 	if line == "" {

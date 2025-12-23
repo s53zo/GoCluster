@@ -47,7 +47,7 @@ func (r *lineReader) ReadLine(deadline time.Time) (string, error) {
 				r.buf = r.buf[:0]
 				return "", ErrLineTooLong
 			}
-			if idx := bytesIndexLine(r.buf); idx >= 0 {
+			if idx := bytesIndexLineCRLF(r.buf); idx >= 0 {
 				line := string(trimLine(r.buf[:idx]))
 				r.buf = append([]byte{}, r.buf[idx:]...)
 				return line, nil
@@ -77,6 +77,25 @@ func trimLine(b []byte) []byte {
 		}
 	}
 	return b
+}
+
+// bytesIndexLineCRLF returns the index after the first line terminator.
+// It treats either '\n' or '\r' as a terminator, and consumes a CRLF pair
+// together so the trailing '\n' does not generate an empty line on the next read.
+func bytesIndexLineCRLF(b []byte) int {
+	for i, c := range b {
+		if c == '\n' {
+			return i + 1
+		}
+		if c == '\r' {
+			// If the next byte is '\n', consume it as well.
+			if i+1 < len(b) && b[i+1] == '\n' {
+				return i + 2
+			}
+			return i + 1
+		}
+	}
+	return -1
 }
 
 var ErrLineTooLong = fmt.Errorf("line too long")
