@@ -161,22 +161,20 @@ func (m *Manager) HandleFrame(frame *Frame, sess *session) {
 		if m.topology != nil {
 			m.topology.applyLegacy(frame, now)
 		}
-	case "PC26":
-		// PC26 (WWV) passthrough: forward raw line to telnet clients unchanged and re-broadcast to peers.
-		if m.rawBroadcast != nil {
-			m.rawBroadcast(strings.TrimSpace(frame.Raw))
-		}
-		if frame.Hop > 1 && m.dedupe.markSeen(pc26Key(frame), now) {
-			m.forwardFrame(frame, frame.Hop-1, sess, false)
-		}
-	case "PC11", "PC61":
+	case "PC26", "PC11", "PC61":
 		spotEntry, err := parseSpotFromFrame(frame, sess.remoteCall)
 		if err == nil {
 			m.ingestSpot(spotEntry)
 			if frame.Hop > 1 {
 				key := dxKey(frame, spotEntry)
 				if m.dedupe.markSeen(key, now) {
-					m.broadcastSpot(spotEntry, frame.Hop-1, spotEntry.SourceNode, sess)
+					if frame.Type == "PC26" {
+						// Preserve merge semantics by forwarding PC26; pc9x peers only. Telnet clients
+						// see the formatted spot via normal broadcast after ingest.
+						m.forwardFrame(frame, frame.Hop-1, sess, true)
+					} else {
+						m.broadcastSpot(spotEntry, frame.Hop-1, spotEntry.SourceNode, sess)
+					}
 				}
 			}
 		}
@@ -391,6 +389,7 @@ func (m *Manager) sessionSettings(peer PeerEndpoint) sessionSettings {
 		initTimeout:   time.Duration(m.cfg.Timeouts.InitSeconds) * time.Second,
 		idleTimeout:   time.Duration(m.cfg.Timeouts.IdleSeconds) * time.Second,
 		keepalive:     time.Duration(m.cfg.KeepaliveSeconds) * time.Second,
+		configEvery:   time.Duration(m.cfg.ConfigSeconds) * time.Second,
 		writeQueue:    m.cfg.WriteQueueSize,
 		maxLine:       m.cfg.MaxLineLength,
 		password:      peer.password,

@@ -100,16 +100,43 @@ func (t *topologyStore) applyPC92(frame *Frame, now time.Time) {
 		return
 	}
 	fields := frame.payloadFields()
+	// Expected payload fields (after "PC92^"):
+	//   0: origin node
+	//   1: timestamp
+	//   2: record type (A/C/D/K)
+	//   3+: node entries: <bitmap><call>:<version>[:<build>[:<ip>]]
 	if len(fields) < 3 {
 		return
 	}
-	entry := strings.TrimSpace(fields[1])
-	if entry == "" {
-		entry = strings.TrimSpace(fields[2])
+	origin := strings.TrimSpace(fields[0])
+	if origin == "" {
+		origin = frame.Type // fallback; should not happen
 	}
-	bitmap, call, version, build, ip := parsePC92Entry(entry)
-	_, _ = t.db.Exec(`insert into peer_nodes(origin, bitmap, call, version, build, ip, updated_at) values(?,?,?,?,?,?,?)`,
-		frame.Type, bitmap, call, version, build, ip, now.Unix())
+	recordType := strings.TrimSpace(fields[2])
+	entries := fields[3:]
+	if len(entries) == 0 {
+		return
+	}
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if isHopField(entry) {
+			continue
+		}
+		bitmap, call, version, build, ip := parsePC92Entry(entry)
+		if strings.TrimSpace(call) == "" {
+			continue
+		}
+		updatedAt := now.Unix()
+		if strings.EqualFold(recordType, "D") {
+			// Delete record type: remove matching origin+call rows.
+			_, _ = t.db.Exec(`delete from peer_nodes where origin = ? and call = ?`, origin, call)
+			continue
+		}
+		t.upsertPeerNode(origin, bitmap, call, version, build, ip, updatedAt)
+	}
 }
 
 func (t *topologyStore) applyLegacy(frame *Frame, now time.Time) {
@@ -118,6 +145,30 @@ func (t *topologyStore) applyLegacy(frame *Frame, now time.Time) {
 	}
 	_, _ = t.db.Exec(`insert into peer_nodes(origin, bitmap, call, version, build, ip, updated_at) values(?,?,?,?,?,?,?)`,
 		frame.Type, 0, "", "", "", "", now.Unix())
+}
+
+func (t *topologyStore) upsertPeerNode(origin string, bitmap int, call, version, build, ip string, updatedAt int64) {
+	if t == nil {
+		return
+	}
+	// Best-effort upsert: delete any existing row for origin+call, then insert fresh state.
+	_, _ = t.db.Exec(`delete from peer_nodes where origin = ? and call = ?`, origin, call)
+	_, _ = t.db.Exec(`insert into peer_nodes(origin, bitmap, call, version, build, ip, updated_at) values(?,?,?,?,?,?,?)`,
+		origin, bitmap, call, version, build, ip, updatedAt)
+}
+
+// isHopField returns true when the token is the trailing hop marker (e.g., H27).
+func isHopField(token string) bool {
+	token = strings.TrimSpace(strings.ToUpper(token))
+	if !strings.HasPrefix(token, "H") || len(token) < 2 {
+		return false
+	}
+	for i := 1; i < len(token); i++ {
+		if token[i] < '0' || token[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (t *topologyStore) prune(now time.Time) {

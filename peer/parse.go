@@ -20,6 +20,8 @@ func parseSpotFromFrame(frame *Frame, fallbackOrigin string) (*spot.Spot, error)
 		return parsePC11(fields, frame.Hop, fallbackOrigin)
 	case "PC61":
 		return parsePC61(fields, frame.Hop, fallbackOrigin)
+	case "PC26":
+		return parsePC26(fields, frame.Hop, fallbackOrigin)
 	default:
 		return nil, fmt.Errorf("unsupported frame type: %s", frame.Type)
 	}
@@ -107,6 +109,19 @@ func parsePC61(fields []string, hop int, fallbackOrigin string) (*spot.Spot, err
 	}
 	s.RefreshBeaconFlag()
 	return s, nil
+}
+
+// parsePC26 handles merge DX spots (same layout as PC11 with an optional empty slot before hop).
+func parsePC26(fields []string, hop int, fallbackOrigin string) (*spot.Spot, error) {
+	// PC26: freq, dx, date, time, comment, spotter, origin, [empty], hop
+	if len(fields) < 7 {
+		return nil, fmt.Errorf("pc26: insufficient fields")
+	}
+	// Drop legacy placeholder slot if present (index 7).
+	if len(fields) >= 8 && strings.TrimSpace(fields[7]) == "" {
+		fields = append([]string{}, fields[:7]...)
+	}
+	return parsePC11(fields, hop, fallbackOrigin)
 }
 
 func parsePCDateTime(dateStr, timeStr string) time.Time {

@@ -169,6 +169,9 @@ type PeeringConfig struct {
 	NodeCount        int             `yaml:"node_count"`
 	UserCount        int             `yaml:"user_count"`
 	KeepaliveSeconds int             `yaml:"keepalive_seconds"`
+	// ConfigSeconds drives periodic PC92 C refresh frames; peers drop topology if
+	// they miss several config periods. 0 disables.
+	ConfigSeconds    int             `yaml:"config_seconds"`
 	WriteQueueSize   int             `yaml:"write_queue_size"`
 	MaxLineLength    int             `yaml:"max_line_length"`
 	Peers            []PeeringPeer   `yaml:"peers"`
@@ -900,6 +903,10 @@ func Load(path string) (*Config, error) {
 		// Applies to both PC92 (pc9x) and PC51 (legacy) keepalives.
 		cfg.Peering.KeepaliveSeconds = 30
 	}
+	if cfg.Peering.ConfigSeconds <= 0 {
+		// Periodic PC92 C "config" refresh; DXSpider peers purge config after missing several periods.
+		cfg.Peering.ConfigSeconds = 180
+	}
 	if cfg.Peering.WriteQueueSize <= 0 {
 		cfg.Peering.WriteQueueSize = 256
 	}
@@ -1195,13 +1202,14 @@ func (c *Config) Print() {
 		fmt.Printf("Default sources: %s\n", strings.Join(c.Filter.DefaultSources, ", "))
 	}
 	if c.Peering.Enabled {
-		fmt.Printf("Peering: listen_port=%d peers=%d hop=%d keepalive=%ds topology=%s retention=%dh\n",
-			c.Peering.ListenPort,
-			len(c.Peering.Peers),
-			c.Peering.HopCount,
-			c.Peering.KeepaliveSeconds,
-			c.Peering.Topology.DBPath,
-			c.Peering.Topology.RetentionHours)
+	fmt.Printf("Peering: listen_port=%d peers=%d hop=%d keepalive=%ds config=%ds topology=%s retention=%dh\n",
+		c.Peering.ListenPort,
+		len(c.Peering.Peers),
+		c.Peering.HopCount,
+		c.Peering.KeepaliveSeconds,
+		c.Peering.ConfigSeconds,
+		c.Peering.Topology.DBPath,
+		c.Peering.Topology.RetentionHours)
 	}
 	fmt.Printf("Stats interval: %ds\n", c.Stats.DisplayIntervalSeconds)
 	status := "disabled"

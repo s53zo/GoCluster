@@ -44,6 +44,7 @@ type session struct {
 	initTimeout  time.Duration
 	idleTimeout  time.Duration
 	keepalive    time.Duration
+	configEvery  time.Duration
 	dir          direction
 	tsGen        *timestampGenerator
 	ctx          context.Context
@@ -75,6 +76,7 @@ func newSession(conn net.Conn, dir direction, manager *Manager, peer PeerEndpoin
 		initTimeout:  settings.initTimeout,
 		idleTimeout:  settings.idleTimeout,
 		keepalive:    settings.keepalive,
+		configEvery:  settings.configEvery,
 		dir:          dir,
 		tsGen:        &timestampGenerator{},
 		overlongPath: "logs/peering_overlong.log",
@@ -209,6 +211,13 @@ func (s *session) close() {
 func (s *session) keepaliveLoop() {
 	ticker := time.NewTicker(s.keepalive)
 	defer ticker.Stop()
+	var cfgC <-chan time.Time
+	var cfgTicker *time.Ticker
+	if s.configEvery > 0 {
+		cfgTicker = time.NewTicker(s.configEvery)
+		cfgC = cfgTicker.C
+		defer cfgTicker.Stop()
+	}
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -220,6 +229,13 @@ func (s *session) keepaliveLoop() {
 				_ = s.sendLine(line)
 			} else {
 				line := fmt.Sprintf("PC51^%s^%s^1^", s.remoteCall, s.localCall)
+				_ = s.sendLine(line)
+			}
+		case <-cfgC:
+			// Periodic PC92 C config refresh to keep topology alive on peers; DXSpider
+			// purges nodes that miss several config intervals.
+			if s.pc9x {
+				line := s.buildPC92Config()
 				_ = s.sendLine(line)
 			}
 		}
@@ -487,6 +503,12 @@ func (s *session) buildPC92Keepalive() string {
 	return fmt.Sprintf("PC92^%s^%s^K^%s^%d^%d^H%d^", s.localCall, ts, entry, s.nodeCount, s.userCount, s.hopCount)
 }
 
+func (s *session) buildPC92Config() string {
+	entry := s.pc92Entry()
+	ts := s.tsGen.Next()
+	return fmt.Sprintf("PC92^%s^%s^C^%s^H%d^", s.localCall, ts, entry, s.hopCount)
+}
+
 func (s *session) pc92Entry() string {
 	entry := fmt.Sprintf("%d%s:%s", s.pc92Bitmap, s.localCall, s.nodeVersion)
 	if strings.TrimSpace(s.nodeBuild) != "" {
@@ -548,6 +570,7 @@ type sessionSettings struct {
 	initTimeout   time.Duration
 	idleTimeout   time.Duration
 	keepalive     time.Duration
+	configEvery   time.Duration
 	writeQueue    int
 	maxLine       int
 	password      string
