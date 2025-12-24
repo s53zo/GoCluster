@@ -5,6 +5,7 @@ package commands
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	"dxcluster/buffer"
@@ -12,17 +13,25 @@ import (
 	"dxcluster/spot"
 )
 
+// archiveReader is the minimal interface the archive layer exposes for read paths.
+type archiveReader interface {
+	Recent(limit int) ([]*spot.Spot, error)
+}
+
 // Processor handles telnet command parsing and replies that rely on shared state
 // (recent spots in the ring buffer).
 type Processor struct {
 	spotBuffer *buffer.RingBuffer
+	archive    archiveReader
 }
 
 // NewProcessor wraps the shared ring buffer so SHOW/DX commands can read from
-// the central spot store.
-func NewProcessor(buf *buffer.RingBuffer) *Processor {
+// the central spot store. When an archive reader is provided, SHOW/DX prefers
+// the database and falls back to the ring buffer on errors or when empty.
+func NewProcessor(buf *buffer.RingBuffer, archive archiveReader) *Processor {
 	return &Processor{
 		spotBuffer: buf,
+		archive:    archive,
 	}
 }
 
@@ -133,7 +142,7 @@ func (p *Processor) handleShow(args []string) string {
 	}
 }
 
-// handleShowDX renders the most recent N spots from the shared ring buffer.
+// handleShowDX renders the most recent N spots (archive when enabled, otherwise ring buffer).
 func (p *Processor) handleShowDX(args []string) string {
 	count := 10 // Default count
 
@@ -146,12 +155,25 @@ func (p *Processor) handleShowDX(args []string) string {
 		}
 	}
 
-	// Get recent spots
-	spots := p.spotBuffer.GetRecent(count)
+	// Prefer archive for history; fall back to ring buffer.
+	var spots []*spot.Spot
+	if p.archive != nil {
+		if rows, err := p.archive.Recent(count); err != nil {
+			log.Printf("SHOW DX: archive query failed, falling back to ring buffer: %v", err)
+		} else {
+			spots = rows
+		}
+	}
+	if len(spots) == 0 && p.spotBuffer != nil {
+		spots = p.spotBuffer.GetRecent(count)
+	}
 
 	if len(spots) == 0 {
 		return "No spots available.\n"
 	}
+
+	// Display oldest first so the most recent spot is last in the list.
+	reverseSpotsInPlace(spots)
 
 	// Build response
 	var result strings.Builder
@@ -161,4 +183,12 @@ func (p *Processor) handleShowDX(args []string) string {
 	}
 
 	return result.String()
+}
+
+// reverseSpotsInPlace flips the order of the provided slice so callers can
+// present chronological output even when sources return newest-first.
+func reverseSpotsInPlace(spots []*spot.Spot) {
+	for i, j := 0, len(spots)-1; i < j; i, j = i+1, j-1 {
+		spots[i], spots[j] = spots[j], spots[i]
+	}
 }

@@ -597,8 +597,21 @@ func main() {
 		log.Printf("Peering: listen_port=%d peers=%d hop=%d keepalive=%ds", cfg.Peering.ListenPort, len(cfg.Peering.Peers), cfg.Peering.HopCount, cfg.Peering.KeepaliveSeconds)
 	}
 
-	// Create command processor
-	processor := commands.NewProcessor(spotBuffer)
+	// Initialize archive writer (optional) before wiring consumers that need read access.
+	var archiveWriter *archive.Writer
+	if cfg.Archive.Enabled {
+		if w, err := archive.NewWriter(cfg.Archive); err != nil {
+			log.Printf("Warning: archive disabled due to init error: %v", err)
+		} else {
+			archiveWriter = w
+			archiveWriter.Start()
+			log.Printf("Archive: writing to %s (batch=%d/%dms queue=%d cleanup=%ds ft_retention=%ds other_retention=%ds)", cfg.Archive.DBPath, cfg.Archive.BatchSize, cfg.Archive.BatchIntervalMS, cfg.Archive.QueueSize, cfg.Archive.CleanupIntervalSeconds, cfg.Archive.RetentionFTSeconds, cfg.Archive.RetentionDefaultSeconds)
+			defer archiveWriter.Stop()
+		}
+	}
+
+	// Create command processor (SHOW/DX reads from archive when available, otherwise ring buffer)
+	processor := commands.NewProcessor(spotBuffer, archiveWriter)
 
 	// Create and start telnet server
 	telnetServer := telnet.NewServer(telnet.ServerOptions{
@@ -628,18 +641,6 @@ func main() {
 	}
 
 	// Start the unified output processor once the telnet server is ready
-	var archiveWriter *archive.Writer
-	if cfg.Archive.Enabled {
-		if w, err := archive.NewWriter(cfg.Archive); err != nil {
-			log.Printf("Warning: archive disabled due to init error: %v", err)
-		} else {
-			archiveWriter = w
-			archiveWriter.Start()
-			log.Printf("Archive: writing to %s (batch=%d/%dms queue=%d cleanup=%ds ft_retention=%ds other_retention=%ds)", cfg.Archive.DBPath, cfg.Archive.BatchSize, cfg.Archive.BatchIntervalMS, cfg.Archive.QueueSize, cfg.Archive.CleanupIntervalSeconds, cfg.Archive.RetentionFTSeconds, cfg.Archive.RetentionDefaultSeconds)
-			defer archiveWriter.Stop()
-		}
-	}
-
 	go processOutputSpots(deduplicator, secondaryDeduper, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)

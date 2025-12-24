@@ -167,7 +167,7 @@ Both the RBN (standard and digital) and PSKReporter feeds run the same normaliza
 Telnet clients can issue commands via the prompt once logged in. The processor, located in `commands/processor.go`, supports the following general commands:
 
 - `HELP` / `H` – display the help text that includes short summaries and valid bands/modes at the bottom of the message.
-- `SHOW DX [N]` / `SHOW/DX [N]` - stream the most recent `N` spots directly from the shared ring buffer (`N` ranges from 1-100, default 10). The command accepts the alias `SH DX` as well.
+- `SHOW DX [N]` / `SHOW/DX [N]` - stream the most recent `N` spots (`N` ranges from 1-100, default 10). When the SQLite archive is enabled, results come from the archive (newest-first); otherwise they fall back to the in-memory ring buffer. The command accepts the alias `SH DX` as well.
 - `BYE`, `QUIT`, `EXIT` - request a graceful logout; the server replies with `73!` and closes the connection.
 
 Filter management commands are implemented directly in `telnet/server.go` and operate on each client's `filter.Filter`. They can be used at any time and fall into `PASS`, `REJECT`, and `SHOW FILTER` groups:

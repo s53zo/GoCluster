@@ -233,3 +233,82 @@ func DropDB(path string) error {
 	}
 	return os.Remove(path)
 }
+
+// Recent returns the most recent N spots from the archive, ordered newest-first.
+// It is intentionally simple and read-only so callers (e.g., SHOW/DX) can
+// retrieve history without depending on the in-memory ring buffer. When the
+// archive is disabled, callers should fall back to the ring buffer before
+// invoking this method.
+func (w *Writer) Recent(limit int) ([]*spot.Spot, error) {
+	if w == nil || w.db == nil {
+		return nil, fmt.Errorf("archive: writer is nil")
+	}
+	if limit <= 0 {
+		return []*spot.Spot{}, nil
+	}
+	rows, err := w.db.Query(`select ts, dx, de, freq, mode, report, has_report, comment, source, source_node, ttl, is_beacon, dx_grid, de_grid, confidence, band from spots order by ts desc limit ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("archive: query recent: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]*spot.Spot, 0, limit)
+	for rows.Next() {
+		var (
+			ts         int64
+			dx         string
+			de         string
+			freq       float64
+			mode       string
+			report     int
+			hasReport  int
+			comment    string
+			source     string
+			sourceNode string
+			ttl        int
+			isBeacon   int
+			dxGrid     string
+			deGrid     string
+			conf       string
+			band       string
+		)
+		if err := rows.Scan(&ts, &dx, &de, &freq, &mode, &report, &hasReport, &comment, &source, &sourceNode, &ttl, &isBeacon, &dxGrid, &deGrid, &conf, &band); err != nil {
+			return nil, fmt.Errorf("archive: scan recent: %w", err)
+		}
+		s := &spot.Spot{
+			DXCall:     dx,
+			DECall:     de,
+			Frequency:  freq,
+			Mode:       mode,
+			Report:     report,
+			Time:       time.Unix(ts, 0).UTC(),
+			Comment:    comment,
+			SourceType: spot.SourceType(source),
+			SourceNode: sourceNode,
+			TTL:        uint8(clampToByte(ttl)),
+			IsBeacon:   isBeacon > 0,
+			HasReport:  hasReport > 0,
+			Confidence: conf,
+			Band:       band,
+		}
+		s.DXMetadata.Grid = dxGrid
+		s.DEMetadata.Grid = deGrid
+		s.EnsureNormalized()
+		s.RefreshBeaconFlag()
+		results = append(results, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("archive: iterate recent: %w", err)
+	}
+	return results, nil
+}
+
+func clampToByte(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return v
+}
