@@ -2,7 +2,6 @@ package peer
 
 import (
 	"net"
-	"sync"
 	"time"
 )
 
@@ -10,7 +9,7 @@ type lineReader struct {
 	conn    net.Conn
 	parser  *telnetParser
 	buf     []byte
-	writeMu *sync.Mutex
+	replyFn func([]byte)
 	maxLine int
 }
 
@@ -24,12 +23,12 @@ func (e errLineTooLong) Error() string {
 	return "line too long"
 }
 
-func newLineReader(conn net.Conn, writeMu *sync.Mutex, maxLine int) *lineReader {
+func newLineReader(conn net.Conn, maxLine int, replyFn func([]byte)) *lineReader {
 	return &lineReader{
 		conn:    conn,
 		parser:  &telnetParser{},
 		buf:     make([]byte, 0, maxLine),
-		writeMu: writeMu,
+		replyFn: replyFn,
 		maxLine: maxLine,
 	}
 }
@@ -43,11 +42,9 @@ func (r *lineReader) ReadLine(deadline time.Time) (string, error) {
 		n, err := r.conn.Read(chunk)
 		if n > 0 {
 			out, replies := r.parser.Feed(chunk[:n])
-			if len(replies) > 0 {
+			if len(replies) > 0 && r.replyFn != nil {
 				for _, rep := range replies {
-					r.writeMu.Lock()
-					_, _ = r.conn.Write(rep)
-					r.writeMu.Unlock()
+					r.replyFn(rep)
 				}
 			}
 			r.buf = append(r.buf, out...)

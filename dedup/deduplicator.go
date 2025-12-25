@@ -5,7 +5,9 @@ package dedup
 
 import (
 	"log"
+	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"dxcluster/spot"
@@ -22,6 +24,7 @@ type Deduplicator struct {
 	outputChan      chan *spot.Spot
 	shutdown        chan struct{}
 	cleanupInterval time.Duration
+	lastProcessed   atomic.Int64
 }
 
 // cacheShard keeps a portion of the dedup cache guarded by its own lock.
@@ -109,41 +112,67 @@ func (d *Deduplicator) process() {
 			log.Println("Deduplicator: Process loop stopped")
 			return
 		case s := <-d.inputChan:
-			hash := s.Hash32()
-			shard := d.shardFor(hash)
-
-			shard.mu.Lock()
-			shard.processedCount++
-
-			dup, lastSeen := isDuplicateLocked(shard.cache, hash, s.Time, d.window)
-			if dup {
-				upgradeToReported := s.HasReport && !lastSeen.hasReport
-				// Optionally favor the stronger SNR when a duplicate collides within the window.
-				stronger := d.preferStronger && s.Report > lastSeen.snr
-				if upgradeToReported || stronger {
-					// Replace the cached timestamp/SNR with the stronger or newly reported spot and forward it.
-					shard.cache[hash] = cachedEntry{when: s.Time, snr: s.Report, hasReport: s.HasReport}
-					shard.mu.Unlock()
-				} else {
-					shard.duplicateCount++
-					shard.mu.Unlock()
-					continue // Skip duplicate (logging handled by stats display)
-				}
-			} else {
-				// Add to cache
-				shard.cache[hash] = cachedEntry{when: s.Time, snr: s.Report, hasReport: s.HasReport}
-				shard.mu.Unlock()
+			if s == nil {
+				continue
 			}
-
-			// Send to output channel
-			select {
-			case d.outputChan <- s:
-				// Successfully sent
-			default:
-				log.Println("Deduplicator: Output channel full, dropping spot")
-			}
+			d.lastProcessed.Store(time.Now().UTC().UnixNano())
+			d.processSpot(s)
 		}
 	}
+}
+
+func (d *Deduplicator) processSpot(s *spot.Spot) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Deduplicator: panic processing spot: %v\n%s", r, debug.Stack())
+		}
+	}()
+	hash := s.Hash32()
+	shard := d.shardFor(hash)
+
+	shard.mu.Lock()
+	shard.processedCount++
+
+	dup, lastSeen := isDuplicateLocked(shard.cache, hash, s.Time, d.window)
+	if dup {
+		upgradeToReported := s.HasReport && !lastSeen.hasReport
+		// Optionally favor the stronger SNR when a duplicate collides within the window.
+		stronger := d.preferStronger && s.Report > lastSeen.snr
+		if upgradeToReported || stronger {
+			// Replace the cached timestamp/SNR with the stronger or newly reported spot and forward it.
+			shard.cache[hash] = cachedEntry{when: s.Time, snr: s.Report, hasReport: s.HasReport}
+			shard.mu.Unlock()
+		} else {
+			shard.duplicateCount++
+			shard.mu.Unlock()
+			return // Skip duplicate (logging handled by stats display)
+		}
+	} else {
+		// Add to cache
+		shard.cache[hash] = cachedEntry{when: s.Time, snr: s.Report, hasReport: s.HasReport}
+		shard.mu.Unlock()
+	}
+
+	// Send to output channel
+	select {
+	case d.outputChan <- s:
+		// Successfully sent
+	default:
+		log.Println("Deduplicator: Output channel full, dropping spot")
+	}
+}
+
+// LastProcessedAt returns the timestamp of the most recent spot seen by the deduper.
+// A zero time means no spots have been processed yet.
+func (d *Deduplicator) LastProcessedAt() time.Time {
+	if d == nil {
+		return time.Time{}
+	}
+	ns := d.lastProcessed.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns).UTC()
 }
 
 // isDuplicateLocked checks if a spot is a duplicate within a shard.

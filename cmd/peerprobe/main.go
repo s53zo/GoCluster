@@ -5,21 +5,22 @@
 package main
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"strconv"
 
-	"dxcluster/config"
 	"dxcluster/peer"
 	"dxcluster/rbn"
 	"dxcluster/spot"
+
+	"github.com/ziutek/telnet"
 
 	_ "unsafe" // for go:linkname to reuse the real spot parser
 )
@@ -27,31 +28,72 @@ import (
 //go:linkname parseSpotFromFrame dxcluster/peer.parseSpotFromFrame
 func parseSpotFromFrame(frame *peer.Frame, fallbackOrigin string) (*spot.Spot, error)
 
+type probeConfig struct {
+	peerHost       string
+	peerPort       int
+	peerRemoteCall string
+	localCall      string
+	password       string
+	preferPC9x     bool
+	nodeVersion    string
+	nodeBuild      string
+	legacyVersion  string
+	pc92Bitmap     int
+	hopCount       int
+	keepaliveSec   int
+	idleSec        int
+	loginSec       int
+	initSec        int
+	maxLine        int
+}
+
 func main() {
-	cfgPath := flag.String("config", "data/config", "Path to config directory or file")
 	clusterHost := flag.String("cluster_host", "localhost", "Host for telnet cluster comparison (hostname or host:port)")
 	clusterPort := flag.Int("cluster_port", 0, "Port for telnet cluster comparison (optional when cluster_host includes port)")
 	clusterCall := flag.String("cluster_call", "LZ3ZZ", "Callsign to use when logging into cluster telnet")
 	windowMinutes := flag.Int("window_minutes", 3, "Matching window (minutes) between peer and telnet spots")
+	peerHost := flag.String("peer_host", "dxs.n2wq.com", "Peer host")
+	peerPort := flag.Int("peer_port", 7300, "Peer port")
+	peerRemote := flag.String("peer_remote_call", "*", "Peer remote callsign (used in PC51)")
+	localCall := flag.String("peer_local_call", "N0CALL", "Local callsign for peer login")
+	peerPass := flag.String("peer_password", "", "Peer password (optional)")
+	preferPC9x := flag.Bool("prefer_pc9x", true, "Prefer pc9x mode if offered")
+	keepaliveSec := flag.Int("keepalive_seconds", 30, "Keepalive interval seconds")
+	idleSec := flag.Int("idle_seconds", 600, "Idle read deadline seconds")
+	loginSec := flag.Int("login_timeout", 10, "Login timeout seconds")
+	initSec := flag.Int("init_timeout", 20, "Init timeout seconds")
+	maxLine := flag.Int("max_line_length", 4096, "Max line length to accept from peer")
+	nodeVer := flag.String("node_version", "5457", "Node version to advertise in PC92")
+	nodeBuild := flag.String("node_build", "", "Node build to advertise in PC92")
+	legacyVer := flag.String("legacy_version", "1.57", "Legacy version to advertise in PC19")
+	pc92Bitmap := flag.Int("pc92_bitmap", 5, "PC92 bitmap")
+	hopCount := flag.Int("hop_count", 99, "Hop count to advertise")
 	flag.Parse()
 
-	cfg, err := loadConfig(*cfgPath)
-	if err != nil {
-		log.Fatalf("config load: %v", err)
-	}
-	if !cfg.Peering.Enabled {
-		log.Fatalf("peering is disabled in config")
-	}
-	peerCfg, ok := firstEnabledPeer(cfg.Peering.Peers)
-	if !ok {
-		log.Fatalf("no enabled peers found")
+	cfg := probeConfig{
+		peerHost:       *peerHost,
+		peerPort:       *peerPort,
+		peerRemoteCall: strings.TrimSpace(*peerRemote),
+		localCall:      strings.ToUpper(strings.TrimSpace(*localCall)),
+		password:       *peerPass,
+		preferPC9x:     *preferPC9x,
+		nodeVersion:    *nodeVer,
+		nodeBuild:      *nodeBuild,
+		legacyVersion:  *legacyVer,
+		pc92Bitmap:     *pc92Bitmap,
+		hopCount:       *hopCount,
+		keepaliveSec:   *keepaliveSec,
+		idleSec:        *idleSec,
+		loginSec:       *loginSec,
+		initSec:        *initSec,
+		maxLine:        *maxLine,
 	}
 
 	peerEvents := make(chan spotEvent, 1024)
 	telnetEvents := make(chan spotEvent, 1024)
 
 	// Start telnet tap to our cluster using the existing minimal parser from rbn.Client.
-	clusterHostName, clusterHostPort, err := resolveClusterEndpoint(*clusterHost, *clusterPort, cfg.Telnet.Port)
+	clusterHostName, clusterHostPort, err := resolveClusterEndpoint(*clusterHost, *clusterPort, 7300)
 	if err != nil {
 		log.Fatalf("invalid cluster endpoint: %v", err)
 	}
@@ -59,28 +101,28 @@ func main() {
 
 	// Start peer loop (auto-reconnect on EOF) in background.
 	tsGen := &timestampGenerator{}
-	go peerLoop(cfg, peerEvents, peerCfg, tsGen)
+	go peerLoop(cfg, peerEvents, tsGen)
 
 	matchWindow := time.Duration(*windowMinutes) * time.Minute
 	runMatcher(matchWindow, peerEvents, telnetEvents)
 }
 
-func loadConfig(path string) (*config.Config, error) {
-	cfg, err := config.Load(path)
-	if err != nil {
-		return nil, err
-	}
-	return cfg, nil
-}
-
 // readPeerFeed consumes PC frames from the peer connection and emits spot events for PC11/PC61.
 // It also replies to PC51 pings to keep the session alive. On read error, it reports the error
 // to errOut and returns so the caller can reconnect.
-func readPeerFeed(conn net.Conn, reader *lineReader, writer *bufio.Writer, writeMu *sync.Mutex, pc9x bool, localCall string, fallbackOrigin string, tsGen *timestampGenerator, out chan<- spotEvent, errOut chan<- error) {
+func readPeerFeed(conn net.Conn, reader *lineReader, writeMu *sync.Mutex, localCall string, fallbackOrigin string, tsGen *timestampGenerator, idleTimeout time.Duration, out chan<- spotEvent, errOut chan<- error) {
 	for {
-		_ = conn.SetReadDeadline(time.Time{})
-		line, err := reader.ReadLine()
+		var deadline time.Time
+		if idleTimeout > 0 {
+			deadline = time.Now().Add(idleTimeout)
+		}
+		line, err := reader.ReadLine(deadline)
 		if err != nil {
+			var tooLong errLineTooLong
+			if errors.As(err, &tooLong) {
+				log.Printf("peerprobe: line too long (%d bytes), dropping and continuing", tooLong.length)
+				continue
+			}
 			if errOut != nil {
 				errOut <- err
 			}
@@ -96,7 +138,12 @@ func readPeerFeed(conn net.Conn, reader *lineReader, writer *bufio.Writer, write
 		}
 		switch frame.Type {
 		case "PC51":
-			handlePeerPing(frame, writeMu, writer, localCall, pc9x, tsGen)
+			handlePeerPing(frame, writeMu, conn, localCall)
+			log.Printf("KEEPALIVE RECV %s", frame.Raw)
+		case "PC92":
+			if fields := payloadFields(frame.Fields); len(fields) >= 3 && strings.EqualFold(strings.TrimSpace(fields[2]), "K") {
+				log.Printf("KEEPALIVE RECV %s", frame.Raw)
+			}
 		case "PC11", "PC61":
 			if s, err := parseSpotFromFrame(frame, fallbackOrigin); err == nil {
 				s.RefreshBeaconFlag()
@@ -265,20 +312,29 @@ func spotKey(s *spot.Spot) string {
 }
 
 // keepaliveLoop sends periodic keepalives to prevent remote idle timeouts.
-func keepaliveLoop(writeMu *sync.Mutex, writer *bufio.Writer, pc9x bool, cfg config.PeeringConfig, peerCfg config.PeeringPeer, tsGen *timestampGenerator, stop <-chan struct{}) {
-	// The probe sends its own keepalives every 30 seconds to mirror common DXSpider expectations.
-	interval := 30 * time.Second
+func keepaliveLoop(writeMu *sync.Mutex, conn net.Conn, pc9x bool, cfg probeConfig, tsGen *timestampGenerator, stop <-chan struct{}) {
+	interval := time.Duration(cfg.keepaliveSec) * time.Second
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
+			// Always emit PC51 pings so peers expecting legacy liveness see activity even on pc9x.
+			pc51 := fmt.Sprintf("PC51^%s^%s^1^", cfg.peerRemoteCall, cfg.localCall)
+			log.Printf("KEEPALIVE SEND %s", pc51)
+			_ = sendLine(writeMu, conn, pc51)
+			// For pc9x sessions, also send a PC92 keepalive to refresh topology.
 			if pc9x {
-				entry := pc92Entry(cfg.LocalCallsign, cfg.NodeVersion, cfg.NodeBuild, cfg.PC92Bitmap)
+				entry := pc92Entry(cfg.localCall, cfg.nodeVersion, cfg.nodeBuild, cfg.pc92Bitmap)
 				ts := tsGen.Next()
-				_ = sendLine(writeMu, writer, fmt.Sprintf("PC92^%s^%s^K^%s^%d^%d^H%d^", cfg.LocalCallsign, ts, entry, cfg.NodeCount, cfg.UserCount, cfg.HopCount))
-			} else {
-				_ = sendLine(writeMu, writer, fmt.Sprintf("PC51^%s^%s^1^", peerCfg.RemoteCallsign, cfg.LocalCallsign))
+				nodes := liveNodeCountProbe()
+				users := liveUserCountProbe()
+				pc92k := fmt.Sprintf("PC92^%s^%s^K^%s^%d^%d^H%d^", cfg.localCall, ts, entry, nodes, users, cfg.hopCount)
+				log.Printf("KEEPALIVE SEND %s", pc92k)
+				_ = sendLine(writeMu, conn, pc92k)
 			}
 		case <-stop:
 			return
@@ -286,9 +342,9 @@ func keepaliveLoop(writeMu *sync.Mutex, writer *bufio.Writer, pc9x bool, cfg con
 	}
 }
 
-// handlePeerPing responds to PC51 ping frames.
-func handlePeerPing(frame *peer.Frame, writeMu *sync.Mutex, writer *bufio.Writer, localCall string, pc9x bool, tsGen *timestampGenerator) {
-	fields := frame.Fields
+// handlePeerPing responds to PC51 ping frames with a PC51 ack, matching the production session logic.
+func handlePeerPing(frame *peer.Frame, writeMu *sync.Mutex, conn net.Conn, localCall string) {
+	fields := payloadFields(frame.Fields)
 	if len(fields) < 3 {
 		return
 	}
@@ -298,16 +354,14 @@ func handlePeerPing(frame *peer.Frame, writeMu *sync.Mutex, writer *bufio.Writer
 	if flag != "1" {
 		return
 	}
-	if localCall != "" && !strings.EqualFold(toNode, localCall) && toNode != "*" {
+	call := strings.TrimSpace(localCall)
+	if call != "" && !strings.EqualFold(toNode, call) && toNode != "*" && toNode != "" {
+		log.Printf("Peering: PC51 ping addressed to %q (local %q); skipping response", toNode, call)
 		return
 	}
-	if pc9x {
-		entry := pc92Entry(localCall, "", "", 0)
-		ts := tsGen.Next()
-		_ = sendLine(writeMu, writer, fmt.Sprintf("PC92^%s^%s^K^%s^0^0^H0^", localCall, ts, entry))
-	} else {
-		_ = sendLine(writeMu, writer, fmt.Sprintf("PC51^%s^%s^0^", fromNode, toNode))
-	}
+	resp := fmt.Sprintf("PC51^%s^%s^0^", fromNode, toNode)
+	log.Printf("Peering: PC51 ping from %s to %s; sending ACK", fromNode, toNode)
+	_ = sendLine(writeMu, conn, resp)
 }
 
 // resolveClusterEndpoint derives host and port from flag inputs, allowing cluster_host to include port.
@@ -370,13 +424,14 @@ func formatDelay(d time.Duration) string {
 		sign = "-"
 		d = -d
 	}
+	d = d.Round(time.Second)
 	return fmt.Sprintf("%s%s", sign, d)
 }
 
 // peerLoop maintains the peer connection with auto-reconnect on errors.
-func peerLoop(cfg *config.Config, peerEvents chan<- spotEvent, peerCfg config.PeeringPeer, tsGen *timestampGenerator) {
+func peerLoop(cfg probeConfig, peerEvents chan<- spotEvent, tsGen *timestampGenerator) {
 	for {
-		if err := runPeerSession(cfg, peerEvents, peerCfg, tsGen); err != nil {
+		if err := runPeerSession(cfg, peerEvents, tsGen); err != nil {
 			log.Printf("Peer session ended: %v; reconnecting in 5s", err)
 			time.Sleep(5 * time.Second)
 			continue
@@ -385,27 +440,27 @@ func peerLoop(cfg *config.Config, peerEvents chan<- spotEvent, peerCfg config.Pe
 	}
 }
 
-func runPeerSession(cfg *config.Config, peerEvents chan<- spotEvent, peerCfg config.PeeringPeer, tsGen *timestampGenerator) error {
-	addr := net.JoinHostPort(peerCfg.Host, fmt.Sprintf("%d", peerCfg.Port))
-	conn, err := net.DialTimeout("tcp", addr, time.Duration(cfg.Peering.Timeouts.LoginSeconds)*time.Second)
+func runPeerSession(cfg probeConfig, peerEvents chan<- spotEvent, tsGen *timestampGenerator) error {
+	addr := net.JoinHostPort(cfg.peerHost, fmt.Sprintf("%d", cfg.peerPort))
+	conn, err := telnet.DialTimeout("tcp", addr, time.Duration(cfg.loginSec)*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
 
-	reader := newLineReader(conn, cfg.Peering.MaxLineLength)
-	writer := bufio.NewWriter(conn)
 	writeMu := &sync.Mutex{}
+	reader := newLineReader(conn, cfg.maxLine)
+	idleTimeout := time.Duration(cfg.idleSec) * time.Second
 
 	// Send credentials immediately to match common DXSpider expectations (banner often precedes prompts).
-	if cfg.Peering.LocalCallsign != "" {
-		_ = sendLine(writeMu, writer, cfg.Peering.LocalCallsign)
+	if cfg.localCall != "" {
+		_ = sendLine(writeMu, conn, cfg.localCall)
 	}
-	if peerCfg.Password != "" {
-		_ = sendLine(writeMu, writer, peerCfg.Password)
+	if cfg.password != "" {
+		_ = sendLine(writeMu, conn, cfg.password)
 	}
 
-	established, pc9x, err := handshake(context.Background(), reader, writeMu, writer, cfg, peerCfg, tsGen)
+	established, pc9x, err := handshake(context.Background(), reader, writeMu, conn, cfg, tsGen)
 	if err != nil {
 		return fmt.Errorf("handshake: %w", err)
 	}
@@ -415,40 +470,28 @@ func runPeerSession(cfg *config.Config, peerEvents chan<- spotEvent, peerCfg con
 	log.Printf("Handshake established (pc9x=%v). Reading frames...", pc9x)
 
 	stopKA := make(chan struct{})
-	go keepaliveLoop(writeMu, writer, pc9x, cfg.Peering, peerCfg, tsGen, stopKA)
+	go keepaliveLoop(writeMu, conn, pc9x, cfg, tsGen, stopKA)
 
 	errCh := make(chan error, 1)
-	go readPeerFeed(conn, reader, writer, writeMu, pc9x, cfg.Peering.LocalCallsign, peerCfg.RemoteCallsign, tsGen, peerEvents, errCh)
+	go readPeerFeed(conn, reader, writeMu, cfg.localCall, cfg.peerRemoteCall, tsGen, idleTimeout, peerEvents, errCh)
 
 	err = <-errCh
 	close(stopKA)
 	return err
 }
 
-func firstEnabledPeer(peers []config.PeeringPeer) (config.PeeringPeer, bool) {
-	for _, p := range peers {
-		if p.Enabled {
-			return p, true
-		}
-	}
-	return config.PeeringPeer{}, false
-}
-
-func handshake(ctx context.Context, reader *lineReader, writeMu *sync.Mutex, writer *bufio.Writer, cfg *config.Config, peerCfg config.PeeringPeer, tsGen *timestampGenerator) (bool, bool, error) {
+func handshake(ctx context.Context, reader *lineReader, writeMu *sync.Mutex, conn net.Conn, cfg probeConfig, tsGen *timestampGenerator) (bool, bool, error) {
 	initSent := false
-	sentCall := cfg.Peering.LocalCallsign != ""
-	sentPass := peerCfg.Password == ""
+	sentCall := cfg.localCall != ""
+	sentPass := cfg.password == ""
 	pc9x := false
-	deadline := time.Now().Add(time.Duration(cfg.Peering.Timeouts.LoginSeconds+cfg.Peering.Timeouts.InitSeconds) * time.Second)
+	deadline := time.Now().Add(time.Duration(cfg.loginSec+cfg.initSec) * time.Second)
 
 	for {
 		if time.Now().After(deadline) {
 			return false, pc9x, fmt.Errorf("handshake timeout")
 		}
-		if err := connDeadline(reader.conn, deadline); err != nil {
-			return false, pc9x, err
-		}
-		line, err := reader.ReadLine()
+		line, err := reader.ReadLine(deadline)
 		if err != nil {
 			return false, pc9x, err
 		}
@@ -458,33 +501,33 @@ func handshake(ctx context.Context, reader *lineReader, writeMu *sync.Mutex, wri
 		log.Printf("HS RX %s", line)
 		switch {
 		case strings.Contains(line, "PC18^"):
-			pc9x = peerCfg.PreferPC9x && strings.Contains(strings.ToLower(line), "pc9x")
-			if !sentCall && cfg.Peering.LocalCallsign != "" {
-				sendLine(writeMu, writer, cfg.Peering.LocalCallsign)
+			pc9x = cfg.preferPC9x && strings.Contains(strings.ToLower(line), "pc9x")
+			if !sentCall && cfg.localCall != "" {
+				sendLine(writeMu, conn, cfg.localCall)
 				sentCall = true
 			}
-			if peerCfg.Password != "" && !sentPass {
-				sendLine(writeMu, writer, peerCfg.Password)
+			if cfg.password != "" && !sentPass {
+				sendLine(writeMu, conn, cfg.password)
 				sentPass = true
 			}
-			if !initSent && sentCall && (peerCfg.Password == "" || sentPass) {
-				if err := sendInit(writeMu, writer, cfg.Peering.LocalCallsign, pc9x, cfg.Peering.NodeVersion, cfg.Peering.NodeBuild, cfg.Peering.LegacyVersion, cfg.Peering.PC92Bitmap, cfg.Peering.NodeCount, cfg.Peering.UserCount, cfg.Peering.HopCount, tsGen); err != nil {
+			if !initSent && sentCall && (cfg.password == "" || sentPass) {
+				if err := sendInit(writeMu, conn, cfg.localCall, pc9x, cfg.nodeVersion, cfg.nodeBuild, cfg.legacyVersion, cfg.pc92Bitmap, 1, 0, cfg.hopCount, tsGen); err != nil {
 					return false, pc9x, err
 				}
 				initSent = true
 			}
 		case strings.HasPrefix(strings.ToUpper(line), "PC19^") || strings.HasPrefix(strings.ToUpper(line), "PC16^") || strings.HasPrefix(strings.ToUpper(line), "PC17^") || strings.HasPrefix(strings.ToUpper(line), "PC21^"):
-			pc9x = peerCfg.PreferPC9x
-			if !sentCall && cfg.Peering.LocalCallsign != "" {
-				sendLine(writeMu, writer, cfg.Peering.LocalCallsign)
+			pc9x = cfg.preferPC9x
+			if !sentCall && cfg.localCall != "" {
+				sendLine(writeMu, conn, cfg.localCall)
 				sentCall = true
 			}
-			if peerCfg.Password != "" && !sentPass {
-				sendLine(writeMu, writer, peerCfg.Password)
+			if cfg.password != "" && !sentPass {
+				sendLine(writeMu, conn, cfg.password)
 				sentPass = true
 			}
-			if !initSent && sentCall && (peerCfg.Password == "" || sentPass) {
-				if err := sendInit(writeMu, writer, cfg.Peering.LocalCallsign, pc9x, cfg.Peering.NodeVersion, cfg.Peering.NodeBuild, cfg.Peering.LegacyVersion, cfg.Peering.PC92Bitmap, cfg.Peering.NodeCount, cfg.Peering.UserCount, cfg.Peering.HopCount, tsGen); err != nil {
+			if !initSent && sentCall && (cfg.password == "" || sentPass) {
+				if err := sendInit(writeMu, conn, cfg.localCall, pc9x, cfg.nodeVersion, cfg.nodeBuild, cfg.legacyVersion, cfg.pc92Bitmap, 1, 0, cfg.hopCount, tsGen); err != nil {
 					return false, pc9x, err
 				}
 				initSent = true
@@ -499,39 +542,35 @@ func handshake(ctx context.Context, reader *lineReader, writeMu *sync.Mutex, wri
 	}
 }
 
-func connDeadline(conn net.Conn, deadline time.Time) error {
-	return conn.SetReadDeadline(deadline)
-}
-
-func sendInit(mu *sync.Mutex, w *bufio.Writer, localCall string, pc9x bool, nodeVersion, nodeBuild, legacy string, pc92Bitmap, nodeCount, userCount, hopCount int, tsGen *timestampGenerator) error {
+func sendInit(mu *sync.Mutex, conn net.Conn, localCall string, pc9x bool, nodeVersion, nodeBuild, legacy string, pc92Bitmap, nodeCount, userCount, hopCount int, tsGen *timestampGenerator) error {
 	if pc9x {
 		entry := pc92Entry(localCall, nodeVersion, nodeBuild, pc92Bitmap)
 		ts := tsGen.Next()
-		if err := sendLine(mu, w, fmt.Sprintf("PC92^%s^%s^A^^%s^H%d^", localCall, ts, entry, hopCount)); err != nil {
+		if err := sendLine(mu, conn, fmt.Sprintf("PC92^%s^%s^A^^%s^H%d^", localCall, ts, entry, hopCount)); err != nil {
 			return err
 		}
-		if err := sendLine(mu, w, fmt.Sprintf("PC92^%s^%s^K^%s^%d^%d^H%d^", localCall, tsGen.Next(), entry, nodeCount, userCount, hopCount)); err != nil {
+		nodes := liveNodeCountProbe()
+		users := liveUserCountProbe()
+		if err := sendLine(mu, conn, fmt.Sprintf("PC92^%s^%s^K^%s^%d^%d^H%d^", localCall, tsGen.Next(), entry, nodes, users, hopCount)); err != nil {
 			return err
 		}
-		return sendLine(mu, w, "PC20^")
+		return sendLine(mu, conn, "PC20^")
 	}
 	line := fmt.Sprintf("PC19^1^%s^0^%s^H%d^", localCall, legacy, hopCount)
-	if err := sendLine(mu, w, line); err != nil {
+	if err := sendLine(mu, conn, line); err != nil {
 		return err
 	}
-	return sendLine(mu, w, "PC20^")
+	return sendLine(mu, conn, "PC20^")
 }
 
-func sendLine(mu *sync.Mutex, w *bufio.Writer, line string) error {
+func sendLine(mu *sync.Mutex, conn net.Conn, line string) error {
 	if !strings.HasSuffix(line, "\n") {
 		line += "\r\n"
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if _, err := w.WriteString(line); err != nil {
-		return err
-	}
-	return w.Flush()
+	_, err := conn.Write([]byte(line))
+	return err
 }
 
 func pc92Entry(localCall, nodeVersion, nodeBuild string, bitmap int) string {
@@ -542,57 +581,95 @@ func pc92Entry(localCall, nodeVersion, nodeBuild string, bitmap int) string {
 	return entry
 }
 
-// --- line reader (copied from peer/reader.go to mirror the production parser) ---
+// liveNodeCountProbe mirrors the cluster's "1 + active peers" logic; the probe only
+// maintains one peer session, so we report 1 (self). Adjust here if the probe gains
+// more endpoints.
+func liveNodeCountProbe() int {
+	return 1
+}
+
+// liveUserCountProbe mirrors the cluster's live telnet user count; the probe has no
+// telnet listeners, so we report 0.
+func liveUserCountProbe() int {
+	return 0
+}
+
+// payloadFields returns non-hop payload fields with trailing empties preserved.
+func payloadFields(fields []string) []string {
+	if len(fields) == 0 {
+		return fields
+	}
+	out := make([]string, len(fields))
+	copy(out, fields)
+	last := strings.TrimSpace(out[len(out)-1])
+	if strings.HasPrefix(last, "H") || strings.HasPrefix(last, "h") {
+		out = out[:len(out)-1]
+	}
+	return out
+}
+
+// --- line reader (mirrors peer/reader.go to match production parsing) ---
+// The probe now relies on the external telnet library to strip IAC sequences
+// and respond to negotiations, so this reader only handles frame splitting.
 
 type lineReader struct {
-	conn   net.Conn
-	parser *telnetParser
-	buf    []byte
-	maxLen int
+	conn    net.Conn
+	buf     []byte
+	maxLine int
 }
 
-func newLineReader(conn net.Conn, maxLen int) *lineReader {
-	if maxLen <= 0 {
-		maxLen = 4096
+// errLineTooLong carries a preview and length when a frame exceeds maxLine.
+type errLineTooLong struct {
+	preview string
+	length  int
+}
+
+func (e errLineTooLong) Error() string {
+	return "line too long"
+}
+
+func newLineReader(conn net.Conn, maxLine int) *lineReader {
+	if maxLine <= 0 {
+		maxLine = 4096
 	}
 	return &lineReader{
-		conn:   conn,
-		parser: &telnetParser{},
-		buf:    make([]byte, 0, maxLen),
-		maxLen: maxLen,
+		conn:    conn,
+		buf:     make([]byte, 0, maxLine),
+		maxLine: maxLine,
 	}
 }
 
-func (r *lineReader) ReadLine() (string, error) {
+func (r *lineReader) ReadLine(deadline time.Time) (string, error) {
+	if err := r.conn.SetReadDeadline(deadline); err != nil {
+		return "", err
+	}
 	for {
 		chunk := make([]byte, 1024)
 		n, err := r.conn.Read(chunk)
 		if n > 0 {
-			out, replies := r.parser.Feed(chunk[:n])
-			if len(replies) > 0 {
-				for _, rep := range replies {
-					_, _ = r.conn.Write(rep)
-				}
-			}
-			r.buf = append(r.buf, out...)
+			r.buf = append(r.buf, chunk[:n]...)
 			for {
 				r.buf = trimLeadingTerminators(r.buf)
 				if len(r.buf) == 0 {
 					break
 				}
+				// Prefer explicit terminators (~, CRLF, CR, LF) when present.
 				if idx, size := bytesIndexTerminator(r.buf); idx >= 0 {
 					line := string(trimLine(r.buf[:idx]))
 					r.buf = append([]byte{}, r.buf[idx+size:]...)
 					return line, nil
 				}
+				// Resync: discard leading noise until a valid PCxx^ frame start that follows a terminator.
+				// This avoids splitting on "^PC" sequences that might appear inside payload fields.
 				if start := bytesIndexFrameStart(r.buf); start > 0 {
 					r.buf = r.buf[start:]
 					continue
 				}
-				if len(r.buf) > r.maxLen && r.maxLen > 0 {
+				if len(r.buf) > r.maxLine && r.maxLine > 0 {
+					// Drop the current buffer to avoid unbounded growth; caller can choose to continue.
 					preview := string(r.buf)
 					r.buf = r.buf[:0]
-					return "", fmt.Errorf("line too long: %d bytes (preview: %q)", len(preview), preview)
+					return "", errLineTooLong{preview: preview, length: len(preview)}
 				}
 				break
 			}
@@ -614,6 +691,7 @@ func trimLine(b []byte) []byte {
 	return b
 }
 
+// trimLeadingTerminators discards any leading CR/LF/~ bytes so frames start cleanly.
 func trimLeadingTerminators(b []byte) []byte {
 	for len(b) > 0 {
 		if isTerminator(b[0]) {
@@ -629,6 +707,8 @@ func isTerminator(b byte) bool {
 	return b == '\n' || b == '\r' || b == '~'
 }
 
+// bytesIndexTerminator returns the index and width of the first terminator (~, CRLF, CR, LF).
+// We prefer ~ as a hard frame end; CR/LF are legacy telnet line ends.
 func bytesIndexTerminator(b []byte) (int, int) {
 	for i := 0; i < len(b); i++ {
 		switch b[i] {
@@ -646,6 +726,7 @@ func bytesIndexTerminator(b []byte) (int, int) {
 	return -1, 0
 }
 
+// bytesIndexFrameStart finds a valid PCxx^ frame start at buffer start or after a terminator.
 func bytesIndexFrameStart(b []byte) int {
 	if isFrameStartAt(b, 0) {
 		return 0
@@ -672,15 +753,6 @@ func isFrameStartAt(b []byte, i int) bool {
 		return false
 	}
 	return b[i+4] == '^'
-}
-
-// telnetParser strips telnet IAC sequences and returns clean payload bytes plus replies.
-// telnetParser strips telnet IAC sequences and returns clean payload bytes plus replies.
-// For this probe we pass through bytes as-is to mirror the RBN/human ingest behavior.
-type telnetParser struct{}
-
-func (p *telnetParser) Feed(input []byte) (output []byte, replies [][]byte) {
-	return input, nil
 }
 
 // timestampGenerator mirrors the session helper to produce PC92 timestamps.

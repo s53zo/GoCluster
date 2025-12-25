@@ -638,10 +638,13 @@ func main() {
 	// Hook peering raw passthrough (e.g., PC26) into telnet broadcast once available.
 	if peerManager != nil {
 		peerManager.SetRawBroadcast(telnetServer.BroadcastRaw)
+		peerManager.SetUserCountProvider(telnetServer.GetClientCount)
 	}
 
 	// Start the unified output processor once the telnet server is ready
-	go processOutputSpots(deduplicator, secondaryDeduper, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter)
+	var lastOutput atomic.Int64
+	go processOutputSpots(deduplicator, secondaryDeduper, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput)
+	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
 	// RBN spots go INTO the deduplicator input channel
@@ -1055,6 +1058,7 @@ func processOutputSpots(
 	spotterReliability spot.SpotterReliability,
 	broadcastKeepSSID bool,
 	archiveWriter *archive.Writer,
+	lastOutput *atomic.Int64,
 ) {
 	outputChan := deduplicator.GetOutputChannel()
 
@@ -1234,6 +1238,10 @@ func processOutputSpots(
 				return
 			}
 
+			if lastOutput != nil {
+				lastOutput.Store(time.Now().UTC().UnixNano())
+			}
+
 			if archiveWriter != nil {
 				archiveWriter.Enqueue(s)
 			}
@@ -1251,6 +1259,60 @@ func processOutputSpots(
 			}
 		}()
 	}
+}
+
+// startPipelineHealthMonitor logs warnings when the output pipeline or dedup
+// goroutine appear stalled. It is intentionally lightweight and non-blocking.
+func startPipelineHealthMonitor(ctx context.Context, dedup *dedup.Deduplicator, lastOutput *atomic.Int64, peerManager *peer.Manager) {
+	const (
+		checkInterval      = 30 * time.Second
+		outputStallWarning = 2 * time.Minute
+	)
+	ticker := time.NewTicker(checkInterval)
+	go func() {
+		defer ticker.Stop()
+		var lastReconnects uint64
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				now := time.Now().UTC()
+				if lastOutput != nil {
+					ns := lastOutput.Load()
+					if ns > 0 {
+						age := now.Sub(time.Unix(0, ns))
+						if age > outputStallWarning {
+							reconnects := uint64(0)
+							if peerManager != nil {
+								reconnects = peerManager.ReconnectCount()
+							}
+							dedupStamp := "unknown"
+							if dedup != nil {
+								if last := dedup.LastProcessedAt(); !last.IsZero() {
+									dedupStamp = last.UTC().Format(time.RFC3339)
+								}
+							}
+							log.Printf("Warning: output pipeline idle for %s (dedup_last=%s, peer_reconnects=%d)", age, dedupStamp, reconnects)
+						}
+					}
+				}
+				if peerManager != nil {
+					if reconnects := peerManager.ReconnectCount(); reconnects != lastReconnects {
+						log.Printf("Peering: outbound reconnects=%d", reconnects)
+						lastReconnects = reconnects
+					}
+				}
+				if dedup != nil {
+					if last := dedup.LastProcessedAt(); !last.IsZero() {
+						if age := now.Sub(last); age > outputStallWarning {
+							log.Printf("Warning: deduplicator idle for %s", age)
+						}
+					}
+				}
+			}
+		}
+	}()
 }
 
 // collapseSSIDForBroadcast trims SSID fragments so clients see a single
@@ -1998,16 +2060,19 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		flushInterval = 60 * time.Second
 	}
 	metrics := &gridMetrics{}
-	storeForMissCheck := (*gridstore.Store)(nil)
-	if dbCheckOnMiss {
-		storeForMissCheck = store
-	}
+	// Synchronous DB reads are disabled on the hot path to keep output non-blocking.
+	// dbCheckOnMiss now gates async cache backfill instead of in-band reads.
+	asyncLookupEnabled := dbCheckOnMiss
 	type update struct {
 		call string
 		grid string
 	}
 	updates := make(chan update, 8192)
 	done := make(chan struct{})
+	lookupQueue := make(chan string, 4096)
+	lookupDone := make(chan struct{})
+	var lookupPendingMu sync.Mutex
+	lookupPending := make(map[string]struct{})
 
 	go func() {
 		defer close(done)
@@ -2038,6 +2103,7 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 				}
 				batch = append(batch, rec)
 			}
+			start := time.Now()
 			if err := store.UpsertBatch(batch); err != nil {
 				if gridstore.IsBusyError(err) {
 					// Keep the batch in-memory so a later flush can retry after the lock clears.
@@ -2047,6 +2113,9 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 				log.Printf("Warning: gridstore batch upsert failed (dropping %d pending): %v", len(batch), err)
 				clear(pending)
 				return
+			}
+			if elapsed := time.Since(start); elapsed > time.Second {
+				log.Printf("Gridstore: batch upsert %d records in %s", len(batch), elapsed)
 			}
 			metrics.learnedTotal.Add(uint64(len(batch)))
 			clear(pending)
@@ -2082,9 +2151,9 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		if call == "" || len(grid) < 4 {
 			return
 		}
-		// A/B knob: by passing store=nil we skip the cache-miss SQLite read and
-		// always enqueue updates on cache miss (extra writes, less tail-latency).
-		if cache != nil && !cache.shouldUpdate(call, grid, storeForMissCheck) {
+		// Skip synchronous SQLite reads on cache miss; treat it as an update to keep
+		// the output path non-blocking (extra writes are acceptable).
+		if cache != nil && !cache.shouldUpdate(call, grid, nil) {
 			return
 		}
 		select {
@@ -2097,6 +2166,10 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 	stopFn := func() {
 		close(updates)
 		<-done
+		if asyncLookupEnabled {
+			close(lookupQueue)
+			<-lookupDone
+		}
 	}
 
 	lookupFn := func(call string) (string, bool) {
@@ -2109,21 +2182,42 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 				return grid, true
 			}
 		}
-		if store == nil {
-			return "", false
+		// Cache miss: enqueue async lookup to avoid blocking output.
+		if asyncLookupEnabled {
+			lookupPendingMu.Lock()
+			if _, exists := lookupPending[call]; !exists {
+				lookupPending[call] = struct{}{}
+				select {
+				case lookupQueue <- call:
+				default:
+					delete(lookupPending, call)
+				}
+			}
+			lookupPendingMu.Unlock()
 		}
-		rec, err := store.Get(call)
-		if err != nil || rec == nil || !rec.Grid.Valid {
-			return "", false
-		}
-		grid := strings.ToUpper(strings.TrimSpace(rec.Grid.String))
-		if grid == "" {
-			return "", false
-		}
-		if cache != nil {
-			cache.add(call, grid)
-		}
-		return grid, true
+		return "", false
+	}
+
+	if asyncLookupEnabled {
+		go func() {
+			defer close(lookupDone)
+			for call := range lookupQueue {
+				rec, err := store.Get(call)
+				if err == nil && rec != nil && rec.Grid.Valid {
+					grid := strings.ToUpper(strings.TrimSpace(rec.Grid.String))
+					if grid != "" && cache != nil {
+						cache.add(call, grid)
+					}
+				} else if err != nil && !gridstore.IsBusyError(err) {
+					log.Printf("Warning: gridstore async lookup failed for %s: %v", call, err)
+				}
+				lookupPendingMu.Lock()
+				delete(lookupPending, call)
+				lookupPendingMu.Unlock()
+			}
+		}()
+	} else {
+		close(lookupDone)
 	}
 
 	return updateFn, metrics, stopFn, lookupFn

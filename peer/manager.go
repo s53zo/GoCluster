@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"dxcluster/config"
@@ -27,8 +28,31 @@ type Manager struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	listener      net.Listener
+	pc92Ch        chan pc92Work
+	legacyCh      chan legacyWork
 	rawBroadcast  func(string) // optional hook to emit raw lines (e.g., PC26) to telnet clients
+	reconnects    atomic.Uint64
+	userCountFn   func() int
 }
+
+// pc92Work wraps an inbound PC92 frame with the time it was observed so topology
+// updates can be applied off the socket read goroutine.
+type pc92Work struct {
+	frame *Frame
+	ts    time.Time
+}
+
+// legacyWork wraps legacy topology frames so disk I/O never blocks the read loop.
+type legacyWork struct {
+	frame *Frame
+	ts    time.Time
+}
+
+const (
+	defaultPC92Queue   = 64
+	defaultLegacyQueue = 64
+	maxPC92Bytes       = 64 * 1024 // safety guardrail for jumbo topology frames
+)
 
 func NewManager(cfg config.PeeringConfig, localCall string, ingest chan<- *spot.Spot, maxAgeSeconds int) (*Manager, error) {
 	if strings.TrimSpace(localCall) == "" {
@@ -96,8 +120,18 @@ func (m *Manager) Start(ctx context.Context) error {
 		go m.runOutbound(peer)
 	}
 
-	if m.topology != nil && m.cfg.Topology.PersistIntervalSeconds > 0 {
-		go m.maintenanceLoop()
+	// Always run maintenance to prune the peer dedupe cache even when topology
+	// persistence is disabled.
+	go m.maintenanceLoop()
+
+	// Topology updates are handled off the session read goroutine to prevent
+	// large PC92 maps from stalling spot delivery. The channel is deliberately
+	// bounded; oversize or overflow frames are dropped with a warning.
+	if m.topology != nil {
+		m.pc92Ch = make(chan pc92Work, defaultPC92Queue)
+		go m.topologyWorker()
+		m.legacyCh = make(chan legacyWork, defaultLegacyQueue)
+		go m.legacyWorker()
 	}
 	return nil
 }
@@ -151,15 +185,27 @@ func (m *Manager) HandleFrame(frame *Frame, sess *session) {
 	now := time.Now().UTC()
 	switch frame.Type {
 	case "PC92":
-		if m.topology != nil {
-			m.topology.applyPC92Frame(frame, now)
+		if m.topology != nil && m.pc92Ch != nil {
+			if len(frame.Raw) > maxPC92Bytes {
+				log.Printf("Peering: dropping PC92 (%d bytes) from %s: over size limit", len(frame.Raw), sessionLabel(sess))
+			} else {
+				select {
+				case m.pc92Ch <- pc92Work{frame: frame, ts: now}:
+				default:
+					log.Printf("Peering: dropping PC92 from %s: topology queue full", sessionLabel(sess))
+				}
+			}
 		}
 		if frame.Hop > 1 && m.dedupe.markSeen(pc92Key(frame), now) {
 			m.forwardFrame(frame, frame.Hop-1, sess, true)
 		}
 	case "PC19", "PC16", "PC17", "PC21":
-		if m.topology != nil {
-			m.topology.applyLegacy(frame, now)
+		if m.topology != nil && m.legacyCh != nil {
+			select {
+			case m.legacyCh <- legacyWork{frame: frame, ts: now}:
+			default:
+				log.Printf("Peering: dropping legacy %s from %s: topology queue full", frame.Type, sessionLabel(sess))
+			}
 		}
 	case "PC26", "PC11", "PC61":
 		spotEntry, err := parseSpotFromFrame(frame, sess.remoteCall)
@@ -370,9 +416,44 @@ func (m *Manager) runOutbound(peer PeerEndpoint) {
 		if err := sess.Run(m.ctx); err != nil && m.ctx.Err() == nil {
 			log.Printf("Peering: session to %s ended: %v", addr, err)
 		}
+		m.reconnects.Add(1)
 		delay := backoff.Next()
 		time.Sleep(delay)
 	}
+}
+
+// ReconnectCount returns the number of outbound peer reconnect attempts.
+func (m *Manager) ReconnectCount() uint64 {
+	if m == nil {
+		return 0
+	}
+	return m.reconnects.Load()
+}
+
+// SetUserCountProvider wires a live user count callback (e.g., from the telnet server)
+// so PC92 K keepalives can advertise current users instead of a static config value.
+func (m *Manager) SetUserCountProvider(fn func() int) {
+	if m == nil {
+		return
+	}
+	m.userCountFn = fn
+}
+
+// liveNodeCount returns 1 (self) plus the number of active peer sessions.
+func (m *Manager) liveNodeCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return 1 + len(m.sessions)
+}
+
+// liveUserCount returns the current telnet client count when provided, otherwise falls back to config.
+func (m *Manager) liveUserCount() int {
+	if m.userCountFn != nil {
+		if v := m.userCountFn(); v >= 0 {
+			return v
+		}
+	}
+	return m.cfg.UserCount
 }
 
 func (m *Manager) sessionSettings(peer PeerEndpoint) sessionSettings {
@@ -425,4 +506,62 @@ func (m *Manager) maintenanceLoop() {
 			}
 		}
 	}
+}
+
+// topologyWorker applies PC92 frames off the socket read goroutine so spot
+// traffic never blocks behind topology I/O. Oversize/overflow drops happen at
+// enqueue time; this worker best-effort applies what it receives.
+func (m *Manager) topologyWorker() {
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case work := <-m.pc92Ch:
+			if m.topology == nil || work.frame == nil {
+				continue
+			}
+			start := time.Now()
+			m.topology.applyPC92Frame(work.frame, work.ts)
+			if dur := time.Since(start); dur > 2*time.Second {
+				log.Printf("Peering: PC92 apply slow (%s) from %s", dur.Truncate(time.Millisecond), pc92Origin(work.frame))
+			}
+		}
+	}
+}
+
+// legacyWorker applies legacy topology frames off the socket read goroutine so
+// synchronous SQLite calls never delay keepalive handling.
+func (m *Manager) legacyWorker() {
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case work := <-m.legacyCh:
+			if m.topology == nil || work.frame == nil {
+				continue
+			}
+			m.topology.applyLegacy(work.frame, work.ts)
+		}
+	}
+}
+
+func pc92Origin(f *Frame) string {
+	if f == nil {
+		return ""
+	}
+	fields := f.payloadFields()
+	if len(fields) > 0 {
+		return strings.TrimSpace(fields[0])
+	}
+	return ""
+}
+
+func sessionLabel(s *session) string {
+	if s == nil {
+		return ""
+	}
+	if strings.TrimSpace(s.remoteCall) != "" {
+		return s.remoteCall
+	}
+	return s.id
 }

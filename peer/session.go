@@ -19,69 +19,79 @@ const (
 	dirOutbound
 )
 
+const (
+	defaultPriorityQueue = 32
+)
+
 type session struct {
-	id           string
-	conn         net.Conn
-	reader       *lineReader
-	writer       *bufio.Writer
-	writeCh      chan string
-	writeMu      sync.Mutex
-	manager      *Manager
-	peer         PeerEndpoint
-	localCall    string
-	remoteCall   string
-	pc9x         bool
-	preferPC9x   bool
-	password     string
-	nodeVersion  string
-	nodeBuild    string
-	legacyVer    string
-	pc92Bitmap   int
-	nodeCount    int
-	userCount    int
-	hopCount     int
-	loginTimeout time.Duration
-	initTimeout  time.Duration
-	idleTimeout  time.Duration
-	keepalive    time.Duration
-	configEvery  time.Duration
-	dir          direction
-	tsGen        *timestampGenerator
-	ctx          context.Context
-	cancel       context.CancelFunc
-	closeOnce    sync.Once
-	overlongPath string
+	id             string
+	conn           net.Conn
+	reader         *lineReader
+	writer         *bufio.Writer
+	writeCh        chan string
+	priorityLineCh chan string
+	priorityRawCh  chan []byte
+	writeMu        sync.Mutex
+	manager        *Manager
+	peer           PeerEndpoint
+	localCall      string
+	remoteCall     string
+	pc9x           bool
+	preferPC9x     bool
+	password       string
+	nodeVersion    string
+	nodeBuild      string
+	legacyVer      string
+	pc92Bitmap     int
+	nodeCount      int
+	userCount      int
+	hopCount       int
+	loginTimeout   time.Duration
+	initTimeout    time.Duration
+	idleTimeout    time.Duration
+	keepalive      time.Duration
+	configEvery    time.Duration
+	dir            direction
+	tsGen          *timestampGenerator
+	ctx            context.Context
+	cancel         context.CancelFunc
+	closeOnce      sync.Once
+	overlongPath   string
 }
 
 func newSession(conn net.Conn, dir direction, manager *Manager, peer PeerEndpoint, settings sessionSettings) *session {
 	writer := bufio.NewWriter(conn)
 	s := &session{
-		id:           peer.ID(),
-		conn:         conn,
-		writer:       writer,
-		writeCh:      make(chan string, settings.writeQueue),
-		manager:      manager,
-		peer:         peer,
-		localCall:    settings.localCall,
-		preferPC9x:   settings.preferPC9x,
-		password:     settings.password,
-		nodeVersion:  settings.nodeVersion,
-		nodeBuild:    settings.nodeBuild,
-		legacyVer:    settings.legacyVersion,
-		pc92Bitmap:   settings.pc92Bitmap,
-		nodeCount:    settings.nodeCount,
-		userCount:    settings.userCount,
-		hopCount:     settings.hopCount,
-		loginTimeout: settings.loginTimeout,
-		initTimeout:  settings.initTimeout,
-		idleTimeout:  settings.idleTimeout,
-		keepalive:    settings.keepalive,
-		configEvery:  settings.configEvery,
-		dir:          dir,
-		tsGen:        &timestampGenerator{},
-		overlongPath: "logs/peering_overlong.log",
+		id:             peer.ID(),
+		conn:           conn,
+		writer:         writer,
+		writeCh:        make(chan string, settings.writeQueue),
+		priorityLineCh: make(chan string, defaultPriorityQueue),
+		priorityRawCh:  make(chan []byte, defaultPriorityQueue),
+		manager:        manager,
+		peer:           peer,
+		localCall:      settings.localCall,
+		preferPC9x:     settings.preferPC9x,
+		password:       settings.password,
+		nodeVersion:    settings.nodeVersion,
+		nodeBuild:      settings.nodeBuild,
+		legacyVer:      settings.legacyVersion,
+		pc92Bitmap:     settings.pc92Bitmap,
+		nodeCount:      settings.nodeCount,
+		userCount:      settings.userCount,
+		hopCount:       settings.hopCount,
+		loginTimeout:   settings.loginTimeout,
+		initTimeout:    settings.initTimeout,
+		idleTimeout:    settings.idleTimeout,
+		keepalive:      settings.keepalive,
+		configEvery:    settings.configEvery,
+		dir:            dir,
+		tsGen:          &timestampGenerator{},
+		overlongPath:   "logs/peering_overlong.log",
 	}
-	s.reader = newLineReader(conn, &s.writeMu, settings.maxLine)
+	s.reader = newLineReader(conn, settings.maxLine, func(data []byte) {
+		_ = s.sendPriorityRaw(data)
+	})
 	return s
 }
 
@@ -151,6 +161,33 @@ func (s *session) writerLoop() {
 		select {
 		case <-s.ctx.Done():
 			return
+		case raw, ok := <-s.priorityRawCh:
+			if !ok {
+				return
+			}
+			_ = s.writeRaw(raw)
+			continue
+		case line, ok := <-s.priorityLineCh:
+			if !ok {
+				return
+			}
+			_ = s.writeLine(line)
+			continue
+		default:
+		}
+		select {
+		case <-s.ctx.Done():
+			return
+		case raw, ok := <-s.priorityRawCh:
+			if !ok {
+				return
+			}
+			_ = s.writeRaw(raw)
+		case line, ok := <-s.priorityLineCh:
+			if !ok {
+				return
+			}
+			_ = s.writeLine(line)
 		case line, ok := <-s.writeCh:
 			if !ok {
 				return
@@ -168,6 +205,47 @@ func (s *session) sendLine(line string) error {
 		return nil
 	default:
 		return errors.New("peer: write queue full")
+	}
+}
+
+// sendPriorityLine enqueues a line ahead of normal traffic so PC51 ACKs don't
+// sit behind a large spot backlog. It never blocks the read loop.
+func (s *session) sendPriorityLine(line string) bool {
+	if s == nil {
+		return false
+	}
+	if s.ctx != nil {
+		select {
+		case <-s.ctx.Done():
+			return false
+		default:
+		}
+	}
+	select {
+	case s.priorityLineCh <- line:
+		return true
+	default:
+		return false
+	}
+}
+
+// sendPriorityRaw enqueues telnet negotiation replies without blocking.
+func (s *session) sendPriorityRaw(data []byte) bool {
+	if s == nil || len(data) == 0 {
+		return false
+	}
+	if s.ctx != nil {
+		select {
+		case <-s.ctx.Done():
+			return false
+		default:
+		}
+	}
+	select {
+	case s.priorityRawCh <- data:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -199,6 +277,18 @@ func (s *session) writeLine(line string) error {
 	return s.writer.Flush()
 }
 
+func (s *session) writeRaw(data []byte) error {
+	if s.conn == nil {
+		return errors.New("peer: nil conn")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if _, err := s.writer.Write(data); err != nil {
+		return err
+	}
+	return s.writer.Flush()
+}
+
 func (s *session) close() {
 	s.closeOnce.Do(func() {
 		if s.conn != nil {
@@ -223,12 +313,13 @@ func (s *session) keepaliveLoop() {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
-			// Heartbeat driven by peering.keepalive_seconds: PC92 K for pc9x, PC51 for legacy.
+			// Always emit PC51 pings so peers that still expect legacy liveness
+			// see activity even when the session uses pc9x.
+			line := fmt.Sprintf("PC51^%s^%s^1^", s.remoteCall, s.localCall)
+			_ = s.sendLine(line)
+			// For pc9x sessions, also send a PC92 keepalive to refresh topology.
 			if s.pc9x {
 				line := s.buildPC92Keepalive()
-				_ = s.sendLine(line)
-			} else {
-				line := fmt.Sprintf("PC51^%s^%s^1^", s.remoteCall, s.localCall)
 				_ = s.sendLine(line)
 			}
 		case <-cfgC:
@@ -255,10 +346,14 @@ func (s *session) handlePing(frame *Frame) {
 	}
 	call := strings.TrimSpace(s.localCall)
 	if call != "" && !strings.EqualFold(toNode, call) && toNode != "*" && toNode != "" {
+		log.Printf("Peering: PC51 ping addressed to %q (local %q); skipping response", toNode, call)
 		return
 	}
 	resp := fmt.Sprintf("PC51^%s^%s^0^", fromNode, toNode)
-	_ = s.sendLine(resp)
+	log.Printf("Peering: PC51 ping from %s to %s; sending ACK", fromNode, toNode)
+	if !s.sendPriorityLine(resp) {
+		log.Printf("Peering: PC51 ACK to %s dropped: priority queue full", toNode)
+	}
 }
 
 func (s *session) runOutboundHandshake() error {
@@ -470,7 +565,15 @@ func (s *session) runInboundHandshake() error {
 }
 
 func (s *session) sendPC18() error {
-	info := fmt.Sprintf("PC18^gocluster peer pc9x^%s^", s.nodeVersion)
+	// DXSpider peers classify remote software based on the PC18 banner. Include the
+	// literal "DXSpider Version: <ver>" prefix so their regex matches and we are
+	// treated as a known sort, while still advertising our own variant/build after
+	// the required fields.
+	if strings.TrimSpace(s.nodeBuild) != "" {
+		info := fmt.Sprintf("PC18^DXSpider Version: %s Build: %s gocluster pc9x^%s^", s.nodeVersion, s.nodeBuild, s.nodeVersion)
+		return s.sendLine(info)
+	}
+	info := fmt.Sprintf("PC18^DXSpider Version: %s gocluster pc9x^%s^", s.nodeVersion, s.nodeVersion)
 	return s.sendLine(info)
 }
 
@@ -500,7 +603,19 @@ func (s *session) buildPC92Add() string {
 func (s *session) buildPC92Keepalive() string {
 	entry := s.pc92Entry()
 	ts := s.tsGen.Next()
-	return fmt.Sprintf("PC92^%s^%s^K^%s^%d^%d^H%d^", s.localCall, ts, entry, s.nodeCount, s.userCount, s.hopCount)
+	nodes := s.nodeCount
+	users := s.userCount
+	if s.manager != nil {
+		nodes = s.manager.liveNodeCount()
+		users = s.manager.liveUserCount()
+	}
+	if nodes <= 0 {
+		nodes = 1
+	}
+	if users < 0 {
+		users = 0
+	}
+	return fmt.Sprintf("PC92^%s^%s^K^%s^%d^%d^H%d^", s.localCall, ts, entry, nodes, users, s.hopCount)
 }
 
 func (s *session) buildPC92Config() string {
