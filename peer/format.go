@@ -10,6 +10,7 @@ import (
 // formatPC61 renders a DX spot as PC61 (preferred for PC9X peers).
 func formatPC61(s *spot.Spot, origin string, hop int) string {
 	comment := sanitizeComment(s.Comment)
+	spotterIP := strings.TrimSpace(s.SpotterIP)
 	return fmt.Sprintf("PC61^%.1f^%s^%s^%s^%s^%s^%s^%s^H%d^",
 		s.Frequency,
 		s.DXCall,
@@ -18,7 +19,7 @@ func formatPC61(s *spot.Spot, origin string, hop int) string {
 		comment,
 		s.DECall,
 		origin,
-		"", // user IP omitted
+		spotterIP,
 		hop,
 	)
 }

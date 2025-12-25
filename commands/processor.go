@@ -6,6 +6,7 @@ package commands
 import (
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
 	"dxcluster/buffer"
@@ -23,15 +24,19 @@ type archiveReader interface {
 type Processor struct {
 	spotBuffer *buffer.RingBuffer
 	archive    archiveReader
+	spotInput  chan<- *spot.Spot
 }
 
 // NewProcessor wraps the shared ring buffer so SHOW/DX commands can read from
 // the central spot store. When an archive reader is provided, SHOW/DX prefers
 // the database and falls back to the ring buffer on errors or when empty.
-func NewProcessor(buf *buffer.RingBuffer, archive archiveReader) *Processor {
+// spotInput is optional; when provided, DX commands enqueue human spots into
+// the shared deduplication pipeline.
+func NewProcessor(buf *buffer.RingBuffer, archive archiveReader, spotInput chan<- *spot.Spot) *Processor {
 	return &Processor{
 		spotBuffer: buf,
 		archive:    archive,
+		spotInput:  spotInput,
 	}
 }
 
@@ -39,11 +44,25 @@ func NewProcessor(buf *buffer.RingBuffer, archive archiveReader) *Processor {
 // to write back to the client. A response of "BYE" signals the caller to close
 // the session.
 func (p *Processor) ProcessCommand(cmd string) string {
+	return p.ProcessCommandForClient(cmd, "", "")
+}
+
+// ProcessCommandForClient behaves like ProcessCommand but also accepts the
+// client's callsign so DX commands can be posted with a proper spotter ID.
+func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterIP string) string {
 	cmd = strings.TrimSpace(cmd)
 
 	// Empty command
 	if cmd == "" {
 		return ""
+	}
+
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return ""
+	}
+	if strings.EqualFold(fields[0], "DX") {
+		return p.handleDX(fields, spotter, spotterIP)
 	}
 
 	// Split into parts
@@ -69,6 +88,7 @@ func (p *Processor) ProcessCommand(cmd string) string {
 func (p *Processor) handleHelp() string {
 	return fmt.Sprintf(`Available commands:
 HELP                 - Show this help
+DX <freq> <call> <comment> - Post a spot (frequency in kHz)
 SHOW/DX [count]      - Show last N DX spots (default: 10)
 BYE                  - Disconnect
 
@@ -124,6 +144,46 @@ Examples:
 	PASS MODE FT8
 	PASS CONFIDENCE P,V
 `, strings.Join(filter.SupportedModes, ", "), strings.Join(spot.SupportedBandNames(), ", "))
+}
+
+func (p *Processor) handleDX(fields []string, spotter string, spotterIP string) string {
+	spotter = strings.TrimSpace(spotter)
+	if spotter == "" {
+		return "DX command requires a logged-in callsign.\n"
+	}
+	if !spot.IsValidCallsign(spotter) {
+		return "DX command requires a valid callsign.\n"
+	}
+	if len(fields) < 4 {
+		return "Usage: DX <frequency> <callsign> <comment>\n"
+	}
+	freq, err := strconv.ParseFloat(fields[1], 64)
+	if err != nil || freq <= 0 {
+		return "Invalid frequency. Use a kHz value like 7001.0.\n"
+	}
+	dx := strings.TrimSpace(fields[2])
+	if !spot.IsValidCallsign(dx) {
+		return "Invalid DX callsign.\n"
+	}
+	comment := strings.TrimSpace(strings.Join(fields[3:], " "))
+	parsed := spot.ParseSpotComment(comment, freq)
+	s := spot.NewSpot(dx, spotter, freq, parsed.Mode)
+	s.Comment = parsed.Comment
+	s.Report = parsed.Report
+	s.HasReport = parsed.HasReport
+	s.SourceNode = strings.ToUpper(spotter)
+	s.SpotterIP = strings.TrimSpace(spotterIP)
+
+	if p.spotInput == nil {
+		return "Spot input is not configured on this cluster.\n"
+	}
+	select {
+	case p.spotInput <- s:
+		return "Spot queued.\n"
+	default:
+		log.Printf("DX command: dedup input full, dropping spot from %s", spotter)
+		return "Spot queue full; try again.\n"
+	}
 }
 
 // handleShow routes SHOW subcommands; only SHOW/DX is currently supported.

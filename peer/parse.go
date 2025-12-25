@@ -92,7 +92,7 @@ func parsePC61(fields []string, hop int, fallbackOrigin string) (*spot.Spot, err
 	if !spot.IsValidCallsign(spotter) {
 		return nil, fmt.Errorf("pc61: invalid DE callsign")
 	}
-	// fields[7] user IP present but not stored in Spot; could be logged later.
+	spotterIP := strings.TrimSpace(fields[7])
 	ts := parsePCDateTime(date, timeStr)
 	parsed := spot.ParseSpotComment(comment, freq)
 	// PC61 timestamps are authoritative; ignore any comment time tokens.
@@ -101,6 +101,7 @@ func parsePC61(fields []string, hop int, fallbackOrigin string) (*spot.Spot, err
 	s.Comment = parsed.Comment
 	s.SourceType = spot.SourceUpstream
 	s.SourceNode = origin
+	s.SpotterIP = spotterIP
 	s.Report = parsed.Report
 	s.HasReport = parsed.HasReport
 	s.IsHuman = !parsed.HasReport

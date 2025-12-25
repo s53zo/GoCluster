@@ -13,6 +13,45 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// TelnetTransportNative uses the built-in telnet/IAC handling.
+	TelnetTransportNative = "native"
+	// TelnetTransportZiutek uses the external ziutek/telnet transport for IAC handling.
+	TelnetTransportZiutek = "ziutek"
+	// TelnetEchoServer enables server-side echo (telnet clients disable local echo).
+	TelnetEchoServer = "server"
+	// TelnetEchoLocal requests local echo on the client (server does not echo).
+	TelnetEchoLocal = "local"
+	// TelnetEchoOff disables server echo and requests client echo off (best-effort).
+	TelnetEchoOff = "off"
+)
+
+func normalizeTelnetTransport(value string) (string, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "" {
+		return TelnetTransportNative, true
+	}
+	switch trimmed {
+	case TelnetTransportNative, TelnetTransportZiutek:
+		return trimmed, true
+	default:
+		return "", false
+	}
+}
+
+func normalizeTelnetEchoMode(value string) (string, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "" {
+		return TelnetEchoServer, true
+	}
+	switch trimmed {
+	case TelnetEchoServer, TelnetEchoLocal, TelnetEchoOff:
+		return trimmed, true
+	default:
+		return "", false
+	}
+}
+
 // Config represents the complete cluster configuration. The struct maps
 // directly to the YAML files on disk (either a single file or a merged set
 // from a directory) and is enriched with defaults during Load so downstream
@@ -67,11 +106,16 @@ type TelnetConfig struct {
 	WelcomeMessage    string `yaml:"welcome_message"`
 	DuplicateLoginMsg string `yaml:"duplicate_login_message"`
 	LoginGreeting     string `yaml:"login_greeting"` // Supports <CALL> and <CLUSTER> substitution
-	BroadcastWorkers  int    `yaml:"broadcast_workers"`
-	BroadcastQueue    int    `yaml:"broadcast_queue_size"`
-	WorkerQueue       int    `yaml:"worker_queue_size"`
-	ClientBuffer      int    `yaml:"client_buffer_size"`
-	SkipHandshake     bool   `yaml:"skip_handshake"`
+	// Transport selects the telnet parser/negotiation backend ("native" or "ziutek").
+	Transport string `yaml:"transport"`
+	// EchoMode controls whether the server echoes input or requests local echo.
+	// Supported values: "server" (default), "local", "off".
+	EchoMode         string `yaml:"echo_mode"`
+	BroadcastWorkers int    `yaml:"broadcast_workers"`
+	BroadcastQueue   int    `yaml:"broadcast_queue_size"`
+	WorkerQueue      int    `yaml:"worker_queue_size"`
+	ClientBuffer     int    `yaml:"client_buffer_size"`
+	SkipHandshake    bool   `yaml:"skip_handshake"`
 	// BroadcastBatchIntervalMS controls telnet broadcast micro-batching. 0 disables batching.
 	BroadcastBatchIntervalMS int `yaml:"broadcast_batch_interval_ms"`
 	// KeepaliveSeconds, when >0, emits a periodic CRLF to all connected clients to keep idle
@@ -115,14 +159,16 @@ type UIPaneLines struct {
 
 // RBNConfig contains Reverse Beacon Network settings
 type RBNConfig struct {
-	Enabled        bool   `yaml:"enabled"`
-	Host           string `yaml:"host"`
-	Port           int    `yaml:"port"`
-	Callsign       string `yaml:"callsign"`
-	Name           string `yaml:"name"`
-	KeepSSIDSuffix bool   `yaml:"keep_ssid_suffix"`  // when true, retain -# SSIDs for dedup/call-correction
-	SlotBuffer     int    `yaml:"slot_buffer"`       // size of ingest slot buffer between telnet reader and pipeline
-	KeepaliveSec   int    `yaml:"keepalive_seconds"` // optional periodic CRLF to keep idle sessions alive (0 disables)
+	Enabled  bool   `yaml:"enabled"`
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Callsign string `yaml:"callsign"`
+	Name     string `yaml:"name"`
+	// TelnetTransport selects the telnet parser/negotiation backend ("native" or "ziutek").
+	TelnetTransport string `yaml:"telnet_transport"`
+	KeepSSIDSuffix  bool   `yaml:"keep_ssid_suffix"`  // when true, retain -# SSIDs for dedup/call-correction
+	SlotBuffer      int    `yaml:"slot_buffer"`       // size of ingest slot buffer between telnet reader and pipeline
+	KeepaliveSec    int    `yaml:"keepalive_seconds"` // optional periodic CRLF to keep idle sessions alive (0 disables)
 }
 
 // PSKReporterConfig contains PSKReporter MQTT settings
@@ -145,40 +191,45 @@ const defaultPSKReporterTopic = "pskr/filter/v2/+/+/#"
 
 // ArchiveConfig controls optional SQLite archival of broadcasted spots.
 type ArchiveConfig struct {
-	Enabled                bool   `yaml:"enabled"`
-	DBPath                 string `yaml:"db_path"`
-	QueueSize              int    `yaml:"queue_size"`
-	BatchSize              int    `yaml:"batch_size"`
-	BatchIntervalMS        int    `yaml:"batch_interval_ms"`
-	CleanupIntervalSeconds int    `yaml:"cleanup_interval_seconds"`
-	RetentionFTSeconds     int    `yaml:"retention_ft_seconds"`     // FT8/FT4 retention
-	RetentionDefaultSeconds int   `yaml:"retention_default_seconds"` // All other modes
-	BusyTimeoutMS          int    `yaml:"busy_timeout_ms"`
+	Enabled                 bool   `yaml:"enabled"`
+	DBPath                  string `yaml:"db_path"`
+	QueueSize               int    `yaml:"queue_size"`
+	BatchSize               int    `yaml:"batch_size"`
+	BatchIntervalMS         int    `yaml:"batch_interval_ms"`
+	CleanupIntervalSeconds  int    `yaml:"cleanup_interval_seconds"`
+	RetentionFTSeconds      int    `yaml:"retention_ft_seconds"`      // FT8/FT4 retention
+	RetentionDefaultSeconds int    `yaml:"retention_default_seconds"` // All other modes
+	BusyTimeoutMS           int    `yaml:"busy_timeout_ms"`
 }
 
 // PeeringConfig controls DXSpider node-to-node peering.
 type PeeringConfig struct {
-	Enabled          bool            `yaml:"enabled"`
-	LocalCallsign    string          `yaml:"local_callsign"`
-	ListenPort       int             `yaml:"listen_port"`
-	HopCount         int             `yaml:"hop_count"`
-	NodeVersion      string          `yaml:"node_version"`
-	NodeBuild        string          `yaml:"node_build"`
-	LegacyVersion    string          `yaml:"legacy_version"`
-	PC92Bitmap       int             `yaml:"pc92_bitmap"`
-	NodeCount        int             `yaml:"node_count"`
-	UserCount        int             `yaml:"user_count"`
-	KeepaliveSeconds int             `yaml:"keepalive_seconds"`
+	Enabled       bool   `yaml:"enabled"`
+	LocalCallsign string `yaml:"local_callsign"`
+	ListenPort    int    `yaml:"listen_port"`
+	HopCount      int    `yaml:"hop_count"`
+	NodeVersion   string `yaml:"node_version"`
+	NodeBuild     string `yaml:"node_build"`
+	LegacyVersion string `yaml:"legacy_version"`
+	PC92Bitmap    int    `yaml:"pc92_bitmap"`
+	NodeCount     int    `yaml:"node_count"`
+	UserCount     int    `yaml:"user_count"`
+	// TelnetTransport selects the telnet parser/negotiation backend ("native" or "ziutek").
+	TelnetTransport  string `yaml:"telnet_transport"`
+	KeepaliveSeconds int    `yaml:"keepalive_seconds"`
 	// ConfigSeconds drives periodic PC92 C refresh frames; peers drop topology if
 	// they miss several config periods. 0 disables.
-	ConfigSeconds    int             `yaml:"config_seconds"`
-	WriteQueueSize   int             `yaml:"write_queue_size"`
-	MaxLineLength    int             `yaml:"max_line_length"`
-	Peers            []PeeringPeer   `yaml:"peers"`
-	Timeouts         PeeringTimeouts `yaml:"timeouts"`
-	Backoff          PeeringBackoff  `yaml:"backoff"`
-	Topology         PeeringTopology `yaml:"topology"`
-	ACL              PeeringACL      `yaml:"acl"`
+	ConfigSeconds  int `yaml:"config_seconds"`
+	WriteQueueSize int `yaml:"write_queue_size"`
+	MaxLineLength  int `yaml:"max_line_length"`
+	// PC92MaxBytes caps how much of a PC92 topology frame we will buffer/parse.
+	// Set to 0 to use a safe default derived from max_line_length.
+	PC92MaxBytes int             `yaml:"pc92_max_bytes"`
+	Peers        []PeeringPeer   `yaml:"peers"`
+	Timeouts     PeeringTimeouts `yaml:"timeouts"`
+	Backoff      PeeringBackoff  `yaml:"backoff"`
+	Topology     PeeringTopology `yaml:"topology"`
+	ACL          PeeringACL      `yaml:"acl"`
 }
 
 type PeeringPeer struct {
@@ -867,12 +918,37 @@ func Load(path string) (*Config, error) {
 	if cfg.Telnet.CommandLineLimit <= 0 {
 		cfg.Telnet.CommandLineLimit = 128
 	}
+	if transport, ok := normalizeTelnetTransport(cfg.Telnet.Transport); ok {
+		cfg.Telnet.Transport = transport
+	} else {
+		return nil, fmt.Errorf("invalid telnet.transport %q (expected %q or %q)", cfg.Telnet.Transport, TelnetTransportNative, TelnetTransportZiutek)
+	}
+	if echoMode, ok := normalizeTelnetEchoMode(cfg.Telnet.EchoMode); ok {
+		cfg.Telnet.EchoMode = echoMode
+	} else {
+		return nil, fmt.Errorf("invalid telnet.echo_mode %q (expected %q, %q, or %q)", cfg.Telnet.EchoMode, TelnetEchoServer, TelnetEchoLocal, TelnetEchoOff)
+	}
 	// Provide operator-facing telnet prompts even when omitted from YAML.
 	if strings.TrimSpace(cfg.Telnet.DuplicateLoginMsg) == "" {
 		cfg.Telnet.DuplicateLoginMsg = "Another login for your callsign connected. This session is being closed (multiple logins are not allowed)."
 	}
 	if strings.TrimSpace(cfg.Telnet.LoginGreeting) == "" {
 		cfg.Telnet.LoginGreeting = "Hello <CALL>, you are now connected to <CLUSTER>."
+	}
+	if transport, ok := normalizeTelnetTransport(cfg.RBN.TelnetTransport); ok {
+		cfg.RBN.TelnetTransport = transport
+	} else {
+		return nil, fmt.Errorf("invalid rbn.telnet_transport %q (expected %q or %q)", cfg.RBN.TelnetTransport, TelnetTransportNative, TelnetTransportZiutek)
+	}
+	if transport, ok := normalizeTelnetTransport(cfg.RBNDigital.TelnetTransport); ok {
+		cfg.RBNDigital.TelnetTransport = transport
+	} else {
+		return nil, fmt.Errorf("invalid rbn_digital.telnet_transport %q (expected %q or %q)", cfg.RBNDigital.TelnetTransport, TelnetTransportNative, TelnetTransportZiutek)
+	}
+	if transport, ok := normalizeTelnetTransport(cfg.HumanTelnet.TelnetTransport); ok {
+		cfg.HumanTelnet.TelnetTransport = transport
+	} else {
+		return nil, fmt.Errorf("invalid human_telnet.telnet_transport %q (expected %q or %q)", cfg.HumanTelnet.TelnetTransport, TelnetTransportNative, TelnetTransportZiutek)
 	}
 	if strings.TrimSpace(cfg.Peering.LocalCallsign) == "" {
 		cfg.Peering.LocalCallsign = cfg.Server.NodeID
@@ -898,6 +974,11 @@ func Load(path string) (*Config, error) {
 	if cfg.Peering.UserCount < 0 {
 		cfg.Peering.UserCount = 0
 	}
+	if transport, ok := normalizeTelnetTransport(cfg.Peering.TelnetTransport); ok {
+		cfg.Peering.TelnetTransport = transport
+	} else {
+		return nil, fmt.Errorf("invalid peering.telnet_transport %q (expected %q or %q)", cfg.Peering.TelnetTransport, TelnetTransportNative, TelnetTransportZiutek)
+	}
 	if cfg.Peering.KeepaliveSeconds <= 0 {
 		// Default to a short heartbeat to keep remote DXSpider peers from idling us out.
 		// Applies to both PC92 (pc9x) and PC51 (legacy) keepalives.
@@ -912,6 +993,15 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Peering.MaxLineLength <= 0 {
 		cfg.Peering.MaxLineLength = 4096
+	}
+	if cfg.Peering.PC92MaxBytes <= 0 {
+		cfg.Peering.PC92MaxBytes = cfg.Peering.MaxLineLength
+		if cfg.Peering.PC92MaxBytes > 16384 {
+			cfg.Peering.PC92MaxBytes = 16384
+		}
+	}
+	if cfg.Peering.MaxLineLength > 0 && cfg.Peering.PC92MaxBytes > cfg.Peering.MaxLineLength {
+		cfg.Peering.PC92MaxBytes = cfg.Peering.MaxLineLength
 	}
 	if cfg.Peering.Timeouts.LoginSeconds <= 0 {
 		cfg.Peering.Timeouts.LoginSeconds = 15
@@ -928,9 +1018,7 @@ func Load(path string) (*Config, error) {
 	if cfg.Peering.Backoff.MaxMS <= 0 {
 		cfg.Peering.Backoff.MaxMS = 300000
 	}
-	if strings.TrimSpace(cfg.Peering.Topology.DBPath) == "" {
-		cfg.Peering.Topology.DBPath = "data/peers/topology.db"
-	}
+	cfg.Peering.Topology.DBPath = strings.TrimSpace(cfg.Peering.Topology.DBPath)
 	if cfg.Peering.Topology.RetentionHours <= 0 {
 		cfg.Peering.Topology.RetentionHours = 24
 	}
@@ -1138,8 +1226,10 @@ func (c *Config) Print() {
 	if c.Telnet.BroadcastWorkers > 0 {
 		workerDesc = fmt.Sprintf("%d", c.Telnet.BroadcastWorkers)
 	}
-	fmt.Printf("Telnet: port %d (broadcast workers=%s queue=%d worker_queue=%d client_buffer=%d skip_handshake=%t)\n",
+	fmt.Printf("Telnet: port %d (transport=%s echo_mode=%s broadcast workers=%s queue=%d worker_queue=%d client_buffer=%d skip_handshake=%t)\n",
 		c.Telnet.Port,
+		c.Telnet.Transport,
+		c.Telnet.EchoMode,
 		workerDesc,
 		c.Telnet.BroadcastQueue,
 		c.Telnet.WorkerQueue,
@@ -1156,13 +1246,31 @@ func (c *Config) Print() {
 		c.UI.PaneLines.Harmonics,
 		c.UI.PaneLines.System)
 	if c.RBN.Enabled {
-		fmt.Printf("RBN CW/RTTY: %s:%d (as %s, slot_buffer=%d keepalive=%ds)\n", c.RBN.Host, c.RBN.Port, c.RBN.Callsign, c.RBN.SlotBuffer, c.RBN.KeepaliveSec)
+		fmt.Printf("RBN CW/RTTY: %s:%d (as %s, transport=%s slot_buffer=%d keepalive=%ds)\n",
+			c.RBN.Host,
+			c.RBN.Port,
+			c.RBN.Callsign,
+			c.RBN.TelnetTransport,
+			c.RBN.SlotBuffer,
+			c.RBN.KeepaliveSec)
 	}
 	if c.RBNDigital.Enabled {
-		fmt.Printf("RBN Digital (FT4/FT8): %s:%d (as %s, slot_buffer=%d keepalive=%ds)\n", c.RBNDigital.Host, c.RBNDigital.Port, c.RBNDigital.Callsign, c.RBNDigital.SlotBuffer, c.RBNDigital.KeepaliveSec)
+		fmt.Printf("RBN Digital (FT4/FT8): %s:%d (as %s, transport=%s slot_buffer=%d keepalive=%ds)\n",
+			c.RBNDigital.Host,
+			c.RBNDigital.Port,
+			c.RBNDigital.Callsign,
+			c.RBNDigital.TelnetTransport,
+			c.RBNDigital.SlotBuffer,
+			c.RBNDigital.KeepaliveSec)
 	}
 	if c.HumanTelnet.Enabled {
-		fmt.Printf("Human/relay telnet: %s:%d (as %s, slot_buffer=%d keepalive=%ds)\n", c.HumanTelnet.Host, c.HumanTelnet.Port, c.HumanTelnet.Callsign, c.HumanTelnet.SlotBuffer, c.HumanTelnet.KeepaliveSec)
+		fmt.Printf("Human/relay telnet: %s:%d (as %s, transport=%s slot_buffer=%d keepalive=%ds)\n",
+			c.HumanTelnet.Host,
+			c.HumanTelnet.Port,
+			c.HumanTelnet.Callsign,
+			c.HumanTelnet.TelnetTransport,
+			c.HumanTelnet.SlotBuffer,
+			c.HumanTelnet.KeepaliveSec)
 	}
 	if c.Archive.Enabled {
 		fmt.Printf("Archive: %s (queue=%d batch=%d/%dms cleanup=%ds retain_ft=%ds retain_other=%ds)\n",
@@ -1202,14 +1310,15 @@ func (c *Config) Print() {
 		fmt.Printf("Default sources: %s\n", strings.Join(c.Filter.DefaultSources, ", "))
 	}
 	if c.Peering.Enabled {
-	fmt.Printf("Peering: listen_port=%d peers=%d hop=%d keepalive=%ds config=%ds topology=%s retention=%dh\n",
-		c.Peering.ListenPort,
-		len(c.Peering.Peers),
-		c.Peering.HopCount,
-		c.Peering.KeepaliveSeconds,
-		c.Peering.ConfigSeconds,
-		c.Peering.Topology.DBPath,
-		c.Peering.Topology.RetentionHours)
+		fmt.Printf("Peering: listen_port=%d peers=%d hop=%d transport=%s keepalive=%ds config=%ds topology=%s retention=%dh\n",
+			c.Peering.ListenPort,
+			len(c.Peering.Peers),
+			c.Peering.HopCount,
+			c.Peering.TelnetTransport,
+			c.Peering.KeepaliveSeconds,
+			c.Peering.ConfigSeconds,
+			c.Peering.Topology.DBPath,
+			c.Peering.Topology.RetentionHours)
 	}
 	fmt.Printf("Stats interval: %ds\n", c.Stats.DisplayIntervalSeconds)
 	status := "disabled"

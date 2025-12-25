@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	ztelnet "github.com/ziutek/telnet"
 )
 
 type direction int
@@ -20,7 +22,8 @@ const (
 )
 
 const (
-	defaultPriorityQueue = 32
+	defaultPriorityQueue     = 32
+	defaultPeerWriteDeadline = 2 * time.Second
 )
 
 type session struct {
@@ -60,7 +63,19 @@ type session struct {
 }
 
 func newSession(conn net.Conn, dir direction, manager *Manager, peer PeerEndpoint, settings sessionSettings) *session {
-	writer := bufio.NewWriter(conn)
+	useZiutek := strings.EqualFold(settings.telnetTransport, "ziutek")
+	writerConn := conn
+	readFn := conn.Read
+	if useZiutek {
+		if tconn, err := ztelnet.NewConn(conn); err == nil {
+			writerConn = tconn
+			readFn = tconn.Read
+		} else {
+			log.Printf("Peering: failed to wrap telnet transport: %v", err)
+			useZiutek = false
+		}
+	}
+	writer := bufio.NewWriter(writerConn)
 	s := &session{
 		id:             peer.ID(),
 		conn:           conn,
@@ -89,9 +104,13 @@ func newSession(conn net.Conn, dir direction, manager *Manager, peer PeerEndpoin
 		tsGen:          &timestampGenerator{},
 		overlongPath:   "logs/peering_overlong.log",
 	}
-	s.reader = newLineReader(conn, settings.maxLine, func(data []byte) {
-		_ = s.sendPriorityRaw(data)
-	})
+	if useZiutek {
+		s.reader = newLineReaderWithTransport(conn, settings.maxLine, settings.pc92MaxBytes, readFn, nil, nil)
+	} else {
+		s.reader = newLineReaderWithTransport(conn, settings.maxLine, settings.pc92MaxBytes, readFn, &telnetParser{}, func(data []byte) {
+			_ = s.sendPriorityRaw(data)
+		})
+	}
 	return s
 }
 
@@ -255,6 +274,9 @@ func (s *session) sendRaw(data []byte) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := s.conn.SetWriteDeadline(time.Now().Add(defaultPeerWriteDeadline)); err != nil {
+		return err
+	}
 	if _, err := s.writer.Write(data); err != nil {
 		return err
 	}
@@ -270,6 +292,9 @@ func (s *session) writeLine(line string) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := s.conn.SetWriteDeadline(time.Now().Add(defaultPeerWriteDeadline)); err != nil {
+		return err
+	}
 	_, err := s.writer.WriteString(line)
 	if err != nil {
 		return err
@@ -283,6 +308,9 @@ func (s *session) writeRaw(data []byte) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := s.conn.SetWriteDeadline(time.Now().Add(defaultPeerWriteDeadline)); err != nil {
+		return err
+	}
 	if _, err := s.writer.Write(data); err != nil {
 		return err
 	}
@@ -672,21 +700,23 @@ func (g *timestampGenerator) Next() string {
 }
 
 type sessionSettings struct {
-	localCall     string
-	preferPC9x    bool
-	nodeVersion   string
-	nodeBuild     string
-	legacyVersion string
-	pc92Bitmap    int
-	nodeCount     int
-	userCount     int
-	hopCount      int
-	loginTimeout  time.Duration
-	initTimeout   time.Duration
-	idleTimeout   time.Duration
-	keepalive     time.Duration
-	configEvery   time.Duration
-	writeQueue    int
-	maxLine       int
-	password      string
+	localCall       string
+	preferPC9x      bool
+	nodeVersion     string
+	nodeBuild       string
+	legacyVersion   string
+	pc92Bitmap      int
+	nodeCount       int
+	userCount       int
+	hopCount        int
+	telnetTransport string
+	loginTimeout    time.Duration
+	initTimeout     time.Duration
+	idleTimeout     time.Duration
+	keepalive       time.Duration
+	configEvery     time.Duration
+	writeQueue      int
+	maxLine         int
+	pc92MaxBytes    int
+	password        string
 }

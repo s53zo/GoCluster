@@ -6,11 +6,15 @@ import (
 )
 
 type lineReader struct {
-	conn    net.Conn
-	parser  *telnetParser
-	buf     []byte
-	replyFn func([]byte)
-	maxLine int
+	conn     net.Conn
+	readFn   func([]byte) (int, error)
+	parser   *telnetParser
+	buf      []byte
+	replyFn  func([]byte)
+	maxLine  int
+	pc92Max  int
+	dropping bool
+	readBuf  []byte
 }
 
 // errLineTooLong carries a preview and length when a frame exceeds maxLine.
@@ -23,13 +27,26 @@ func (e errLineTooLong) Error() string {
 	return "line too long"
 }
 
-func newLineReader(conn net.Conn, maxLine int, replyFn func([]byte)) *lineReader {
+func newLineReader(conn net.Conn, maxLine int, pc92Max int, replyFn func([]byte)) *lineReader {
+	return newLineReaderWithTransport(conn, maxLine, pc92Max, conn.Read, &telnetParser{}, replyFn)
+}
+
+// newLineReaderWithTransport allows callers to supply a read function that already
+// strips IAC sequences (e.g., external telnet library). When parser is nil, data
+// is treated as already-clean payload bytes.
+func newLineReaderWithTransport(conn net.Conn, maxLine int, pc92Max int, readFn func([]byte) (int, error), parser *telnetParser, replyFn func([]byte)) *lineReader {
+	if readFn == nil {
+		readFn = conn.Read
+	}
 	return &lineReader{
 		conn:    conn,
-		parser:  &telnetParser{},
+		readFn:  readFn,
+		parser:  parser,
 		buf:     make([]byte, 0, maxLine),
 		replyFn: replyFn,
 		maxLine: maxLine,
+		pc92Max: pc92Max,
+		readBuf: make([]byte, 4096),
 	}
 }
 
@@ -38,45 +55,75 @@ func (r *lineReader) ReadLine(deadline time.Time) (string, error) {
 		return "", err
 	}
 	for {
-		chunk := make([]byte, 1024)
-		n, err := r.conn.Read(chunk)
-		if n > 0 {
-			out, replies := r.parser.Feed(chunk[:n])
-			if len(replies) > 0 && r.replyFn != nil {
-				for _, rep := range replies {
-					r.replyFn(rep)
-				}
+		if !r.dropping {
+			line, err, ready := r.tryReadLine()
+			if ready {
+				return line, err
 			}
-			r.buf = append(r.buf, out...)
-			for {
-				r.buf = trimLeadingTerminators(r.buf)
-				if len(r.buf) == 0 {
-					break
+		}
+		n, err := r.readFn(r.readBuf)
+		if n > 0 {
+			data := r.readBuf[:n]
+			if r.parser != nil {
+				out, replies := r.parser.Feed(data)
+				if len(replies) > 0 && r.replyFn != nil {
+					for _, rep := range replies {
+						r.replyFn(rep)
+					}
 				}
-				// Prefer explicit terminators (~, CRLF, CR, LF) when present.
-				if idx, size := bytesIndexTerminator(r.buf); idx >= 0 {
-					line := string(trimLine(r.buf[:idx]))
-					r.buf = append([]byte{}, r.buf[idx+size:]...)
-					return line, nil
+				data = out
+			}
+			if r.dropping {
+				if idx, size := bytesIndexTerminator(data); idx >= 0 {
+					r.dropping = false
+					r.buf = append(r.buf[:0], data[idx+size:]...)
 				}
-				// Resync: discard leading noise until a valid PCxx^ frame start that follows a terminator.
-				// This avoids splitting on "^PC" sequences that might appear inside payload fields.
-				if start := bytesIndexFrameStart(r.buf); start > 0 {
-					r.buf = r.buf[start:]
-					continue
-				}
-				if len(r.buf) > r.maxLine && r.maxLine > 0 {
-					// Drop the current buffer to avoid unbounded growth; caller can choose to continue.
-					preview := string(r.buf)
-					r.buf = r.buf[:0]
-					return "", errLineTooLong{preview: preview, length: len(preview)}
-				}
-				break
+			} else {
+				r.buf = append(r.buf, data...)
 			}
 		}
 		if err != nil {
 			return "", err
 		}
+	}
+}
+
+func (r *lineReader) tryReadLine() (string, error, bool) {
+	for {
+		r.buf = trimLeadingTerminators(r.buf)
+		if len(r.buf) == 0 {
+			return "", nil, false
+		}
+		// Prefer explicit terminators (~, CRLF, CR, LF) when present.
+		if idx, size := bytesIndexTerminator(r.buf); idx >= 0 {
+			if r.pc92Max > 0 && idx > r.pc92Max && frameTypeFromBuffer(r.buf) == "PC92" {
+				preview := string(r.buf[:idx])
+				r.buf = append([]byte{}, r.buf[idx+size:]...)
+				return "", errLineTooLong{preview: preview, length: idx}, true
+			}
+			line := string(trimLine(r.buf[:idx]))
+			r.buf = append([]byte{}, r.buf[idx+size:]...)
+			return line, nil, true
+		}
+		// Resync: discard leading noise until a valid PCxx^ frame start that follows a terminator.
+		// This avoids splitting on "^PC" sequences that might appear inside payload fields.
+		if start := bytesIndexFrameStart(r.buf); start > 0 {
+			r.buf = r.buf[start:]
+			continue
+		}
+		if r.pc92Max > 0 && len(r.buf) > r.pc92Max && frameTypeFromBuffer(r.buf) == "PC92" {
+			preview := string(r.buf)
+			r.buf = r.buf[:0]
+			r.dropping = true
+			return "", errLineTooLong{preview: preview, length: len(preview)}, true
+		}
+		if len(r.buf) > r.maxLine && r.maxLine > 0 {
+			// Drop the current buffer to avoid unbounded growth; caller can choose to continue.
+			preview := string(r.buf)
+			r.buf = r.buf[:0]
+			return "", errLineTooLong{preview: preview, length: len(preview)}, true
+		}
+		return "", nil, false
 	}
 }
 
@@ -153,4 +200,11 @@ func isFrameStartAt(b []byte, i int) bool {
 		return false
 	}
 	return b[i+4] == '^'
+}
+
+func frameTypeFromBuffer(b []byte) string {
+	if !isFrameStartAt(b, 0) {
+		return ""
+	}
+	return string(b[:4])
 }

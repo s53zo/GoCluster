@@ -18,6 +18,7 @@ import (
 	"dxcluster/skew"
 	"dxcluster/spot"
 	"dxcluster/uls"
+	ztelnet "github.com/ziutek/telnet"
 )
 
 const (
@@ -68,6 +69,7 @@ type Client struct {
 
 	minimalParse bool
 
+	telnetTransport   string
 	keepaliveInterval time.Duration
 	keepaliveDone     chan struct{}
 
@@ -179,6 +181,15 @@ func (c *Client) UseMinimalParser() {
 	}
 }
 
+// SetTelnetTransport selects the telnet parser/negotiation backend.
+// Supported values are "native" and "ziutek"; other values fall back to native.
+func (c *Client) SetTelnetTransport(transport string) {
+	if c == nil {
+		return
+	}
+	c.telnetTransport = strings.ToLower(strings.TrimSpace(transport))
+}
+
 // SetRawPassthrough installs a channel for relaying non-DX lines when in minimalParse mode.
 // Lines are delivered best-effort using a non-blocking send to avoid wedging ingest.
 func (c *Client) SetRawPassthrough(ch chan<- string) {
@@ -196,6 +207,10 @@ func (c *Client) EnableKeepalive(interval time.Duration) {
 		return
 	}
 	c.keepaliveInterval = interval
+}
+
+func (c *Client) useZiutekTelnet() bool {
+	return strings.EqualFold(c.telnetTransport, "ziutek")
 }
 
 func parseFrequencyCandidate(tok string) (float64, bool) {
@@ -302,9 +317,21 @@ func (c *Client) establishConnection() error {
 		return fmt.Errorf("failed to connect to %s: %w", c.displayName(), err)
 	}
 
+	readerConn := conn
+	writerConn := conn
+	if c.useZiutekTelnet() {
+		tconn, err := ztelnet.NewConn(conn)
+		if err != nil {
+			conn.Close()
+			return fmt.Errorf("failed to wrap telnet connection for %s: %w", c.displayName(), err)
+		}
+		readerConn = tconn
+		writerConn = tconn
+	}
+
 	c.conn = conn
-	c.reader = bufio.NewReader(conn)
-	c.writer = bufio.NewWriter(conn)
+	c.reader = bufio.NewReader(readerConn)
+	c.writer = bufio.NewWriter(writerConn)
 	c.connected = true
 	c.keepaliveDone = make(chan struct{})
 

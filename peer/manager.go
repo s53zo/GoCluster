@@ -51,7 +51,6 @@ type legacyWork struct {
 const (
 	defaultPC92Queue   = 64
 	defaultLegacyQueue = 64
-	maxPC92Bytes       = 64 * 1024 // safety guardrail for jumbo topology frames
 )
 
 func NewManager(cfg config.PeeringConfig, localCall string, ingest chan<- *spot.Spot, maxAgeSeconds int) (*Manager, error) {
@@ -186,7 +185,7 @@ func (m *Manager) HandleFrame(frame *Frame, sess *session) {
 	switch frame.Type {
 	case "PC92":
 		if m.topology != nil && m.pc92Ch != nil {
-			if len(frame.Raw) > maxPC92Bytes {
+			if m.cfg.PC92MaxBytes > 0 && len(frame.Raw) > m.cfg.PC92MaxBytes {
 				log.Printf("Peering: dropping PC92 (%d bytes) from %s: over size limit", len(frame.Raw), sessionLabel(sess))
 			} else {
 				select {
@@ -465,23 +464,25 @@ func (m *Manager) sessionSettings(peer PeerEndpoint) sessionSettings {
 		local = m.localCall
 	}
 	return sessionSettings{
-		localCall:     strings.ToUpper(strings.TrimSpace(local)),
-		preferPC9x:    peer.preferPC9x,
-		nodeVersion:   m.cfg.NodeVersion,
-		nodeBuild:     m.cfg.NodeBuild,
-		legacyVersion: m.cfg.LegacyVersion,
-		pc92Bitmap:    m.cfg.PC92Bitmap,
-		nodeCount:     m.cfg.NodeCount,
-		userCount:     m.cfg.UserCount,
-		hopCount:      m.cfg.HopCount,
-		loginTimeout:  time.Duration(m.cfg.Timeouts.LoginSeconds) * time.Second,
-		initTimeout:   time.Duration(m.cfg.Timeouts.InitSeconds) * time.Second,
-		idleTimeout:   time.Duration(m.cfg.Timeouts.IdleSeconds) * time.Second,
-		keepalive:     time.Duration(m.cfg.KeepaliveSeconds) * time.Second,
-		configEvery:   time.Duration(m.cfg.ConfigSeconds) * time.Second,
-		writeQueue:    m.cfg.WriteQueueSize,
-		maxLine:       m.cfg.MaxLineLength,
-		password:      peer.password,
+		localCall:       strings.ToUpper(strings.TrimSpace(local)),
+		preferPC9x:      peer.preferPC9x,
+		nodeVersion:     m.cfg.NodeVersion,
+		nodeBuild:       m.cfg.NodeBuild,
+		legacyVersion:   m.cfg.LegacyVersion,
+		pc92Bitmap:      m.cfg.PC92Bitmap,
+		nodeCount:       m.cfg.NodeCount,
+		userCount:       m.cfg.UserCount,
+		hopCount:        m.cfg.HopCount,
+		telnetTransport: m.cfg.TelnetTransport,
+		loginTimeout:    time.Duration(m.cfg.Timeouts.LoginSeconds) * time.Second,
+		initTimeout:     time.Duration(m.cfg.Timeouts.InitSeconds) * time.Second,
+		idleTimeout:     time.Duration(m.cfg.Timeouts.IdleSeconds) * time.Second,
+		keepalive:       time.Duration(m.cfg.KeepaliveSeconds) * time.Second,
+		configEvery:     time.Duration(m.cfg.ConfigSeconds) * time.Second,
+		writeQueue:      m.cfg.WriteQueueSize,
+		maxLine:         m.cfg.MaxLineLength,
+		pc92MaxBytes:    m.cfg.PC92MaxBytes,
+		password:        peer.password,
 	}
 }
 

@@ -40,6 +40,7 @@ type Spot struct {
 	Comment    string       // User comment or additional info
 	SourceType SourceType   // Where this spot came from
 	SourceNode string       // Originating node/cluster
+	SpotterIP  string       // Spotter IP address for PC61 frames (optional)
 	TTL        uint8        // Time-to-live for loop prevention
 	IsHuman    bool         // Whether the spot originated from a human operator
 	IsBeacon   bool         // True when DX call ends with /B (beacon identifiers)

@@ -611,7 +611,7 @@ func main() {
 	}
 
 	// Create command processor (SHOW/DX reads from archive when available, otherwise ring buffer)
-	processor := commands.NewProcessor(spotBuffer, archiveWriter)
+	processor := commands.NewProcessor(spotBuffer, archiveWriter, deduplicator.GetInputChannel())
 
 	// Create and start telnet server
 	telnetServer := telnet.NewServer(telnet.ServerOptions{
@@ -626,6 +626,8 @@ func main() {
 		WorkerQueue:            cfg.Telnet.WorkerQueue,
 		ClientBuffer:           cfg.Telnet.ClientBuffer,
 		BroadcastBatchInterval: time.Duration(cfg.Telnet.BroadcastBatchIntervalMS) * time.Millisecond,
+		Transport:              cfg.Telnet.Transport,
+		EchoMode:               cfg.Telnet.EchoMode,
 		SkipHandshake:          cfg.Telnet.SkipHandshake,
 		LoginLineLimit:         cfg.Telnet.LoginLineLimit,
 		CommandLineLimit:       cfg.Telnet.CommandLineLimit,
@@ -651,6 +653,7 @@ func main() {
 	var rbnClient *rbn.Client
 	if cfg.RBN.Enabled {
 		rbnClient = rbn.NewClient(cfg.RBN.Host, cfg.RBN.Port, cfg.RBN.Callsign, cfg.RBN.Name, ctyLookup, skewStore, cfg.RBN.KeepSSIDSuffix, cfg.RBN.SlotBuffer)
+		rbnClient.SetTelnetTransport(cfg.RBN.TelnetTransport)
 		rbnClient.SetUnlicensedReporter(unlicensedReporter)
 		if cfg.RBN.KeepaliveSec > 0 {
 			rbnClient.EnableKeepalive(time.Duration(cfg.RBN.KeepaliveSec) * time.Second)
@@ -669,6 +672,7 @@ func main() {
 	var rbnDigitalClient *rbn.Client
 	if cfg.RBNDigital.Enabled {
 		rbnDigitalClient = rbn.NewClient(cfg.RBNDigital.Host, cfg.RBNDigital.Port, cfg.RBNDigital.Callsign, cfg.RBNDigital.Name, ctyLookup, skewStore, cfg.RBNDigital.KeepSSIDSuffix, cfg.RBNDigital.SlotBuffer)
+		rbnDigitalClient.SetTelnetTransport(cfg.RBNDigital.TelnetTransport)
 		rbnDigitalClient.SetUnlicensedReporter(unlicensedReporter)
 		if cfg.RBNDigital.KeepaliveSec > 0 {
 			rbnDigitalClient.EnableKeepalive(time.Duration(cfg.RBNDigital.KeepaliveSec) * time.Second)
@@ -695,6 +699,7 @@ func main() {
 		}()
 
 		humanTelnetClient = rbn.NewClient(cfg.HumanTelnet.Host, cfg.HumanTelnet.Port, cfg.HumanTelnet.Callsign, cfg.HumanTelnet.Name, ctyLookup, skewStore, cfg.HumanTelnet.KeepSSIDSuffix, cfg.HumanTelnet.SlotBuffer)
+		humanTelnetClient.SetTelnetTransport(cfg.HumanTelnet.TelnetTransport)
 		humanTelnetClient.UseMinimalParser()
 		humanTelnetClient.SetRawPassthrough(rawPassthrough)
 		if cfg.HumanTelnet.KeepaliveSec > 0 {
@@ -1349,6 +1354,7 @@ func cloneSpotForBroadcast(src *spot.Spot) *spot.Spot {
 		Comment:    src.Comment,
 		SourceType: src.SourceType,
 		SourceNode: src.SourceNode,
+		SpotterIP:  src.SpotterIP,
 		TTL:        src.TTL,
 		IsHuman:    src.IsHuman,
 		IsBeacon:   src.IsBeacon,

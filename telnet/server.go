@@ -49,6 +49,7 @@ import (
 	"dxcluster/commands"
 	"dxcluster/filter"
 	"dxcluster/spot"
+	ztelnet "github.com/ziutek/telnet"
 )
 
 // Server represents a multi-client telnet server for DX Cluster connections.
@@ -94,6 +95,9 @@ type Server struct {
 	shardsDirty       atomic.Bool          // Flag to rebuild shards on client add/remove
 	processor         *commands.Processor  // Command processor for user commands
 	skipHandshake     bool                 // When true, omit Telnet IAC negotiation
+	transport         string               // Telnet transport backend ("native" or "ziutek")
+	useZiutek         bool                 // True when the external telnet transport is enabled
+	echoMode          string               // Input echo policy ("server", "local", "off")
 	clientBufferSize  int                  // Per-client spot channel capacity
 	loginLineLimit    int                  // Maximum bytes accepted for login/callsign input
 	commandLineLimit  int                  // Maximum bytes accepted for post-login commands
@@ -116,6 +120,8 @@ type Client struct {
 	connected time.Time       // Timestamp when client connected
 	address   string          // Client's IP address
 	spotChan  chan *spot.Spot // Buffered channel for spot delivery (configurable capacity)
+	handleIAC bool            // True when we parse IAC sequences in ReadLine
+	echoInput bool            // True when we should echo typed characters back to the client
 
 	// filterMu guards filter, which is read by telnet broadcast workers while the
 	// client session goroutine mutates it in response to PASS/REJECT commands.
@@ -233,6 +239,12 @@ const (
 )
 
 const (
+	telnetEchoServer = "server"
+	telnetEchoLocal  = "local"
+	telnetEchoOff    = "off"
+)
+
+const (
 	defaultBroadcastQueueSize     = 2048
 	defaultBroadcastBatch         = 512
 	defaultBroadcastBatchInterval = 250 * time.Millisecond
@@ -265,6 +277,8 @@ type ServerOptions struct {
 	BroadcastBatchInterval time.Duration
 	KeepaliveSeconds       int
 	SkipHandshake          bool
+	Transport              string
+	EchoMode               string
 	LoginLineLimit         int
 	CommandLineLimit       int
 }
@@ -272,6 +286,7 @@ type ServerOptions struct {
 // NewServer creates a new telnet server
 func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 	config := normalizeServerOptions(opts)
+	useZiutek := strings.EqualFold(config.Transport, "ziutek")
 	return &Server{
 		port:              config.Port,
 		welcomeMessage:    config.WelcomeMessage,
@@ -289,6 +304,9 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		keepaliveInterval: time.Duration(config.KeepaliveSeconds) * time.Second,
 		clientBufferSize:  config.ClientBuffer,
 		skipHandshake:     config.SkipHandshake,
+		transport:         config.Transport,
+		useZiutek:         useZiutek,
+		echoMode:          config.EchoMode,
 		processor:         processor,
 		loginLineLimit:    config.LoginLineLimit,
 		commandLineLimit:  config.CommandLineLimit,
@@ -321,6 +339,14 @@ func normalizeServerOptions(opts ServerOptions) ServerOptions {
 	if strings.TrimSpace(config.ClusterCall) == "" {
 		config.ClusterCall = "DXC"
 	}
+	if strings.TrimSpace(config.Transport) == "" {
+		config.Transport = "native"
+	}
+	config.Transport = strings.ToLower(strings.TrimSpace(config.Transport))
+	if strings.TrimSpace(config.EchoMode) == "" {
+		config.EchoMode = "server"
+	}
+	config.EchoMode = strings.ToLower(strings.TrimSpace(config.EchoMode))
 	if config.LoginLineLimit <= 0 {
 		config.LoginLineLimit = defaultLoginLineLimit
 	}
@@ -655,24 +681,33 @@ func (s *Server) handleClient(conn net.Conn) {
 		spotQueueSize = defaultClientBufferSize
 	}
 
-	// Create client object
+	// Create client object and select the telnet transport backend.
+	readerConn := conn
+	writerConn := conn
+	if s.useZiutek {
+		tconn, err := ztelnet.NewConn(conn)
+		if err != nil {
+			log.Printf("telnet: failed to wrap connection from %s: %v", address, err)
+			return
+		}
+		readerConn = tconn
+		writerConn = tconn
+	}
 	client := &Client{
 		conn:      conn,
-		reader:    bufio.NewReader(conn),
-		writer:    bufio.NewWriter(conn),
+		reader:    bufio.NewReader(readerConn),
+		writer:    bufio.NewWriter(writerConn),
 		connected: time.Now(),
 		address:   address,
 		spotChan:  make(chan *spot.Spot, spotQueueSize),
 		filter:    filter.NewFilter(), // Start with no filters (accept all)
+		handleIAC: !s.useZiutek,
+		// Echo policy is configured explicitly so we can support local echo even
+		// when clients toggle their own modes.
+		echoInput: s.echoMode == telnetEchoServer,
 	}
 
-	// Send telnet options to suppress advanced features unless disabled
-	if !s.skipHandshake {
-		client.SendRaw([]byte{IAC, DONT, 1}) // Don't echo
-		client.SendRaw([]byte{IAC, DONT, 3}) // Don't suppress go-ahead
-		client.SendRaw([]byte{IAC, WONT, 1}) // Won't echo
-		client.SendRaw([]byte{IAC, WILL, 3}) // Will suppress go-ahead
-	}
+	s.negotiateTelnet(client)
 
 	// Send welcome message
 	now := time.Now().UTC()
@@ -685,7 +720,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		// consume unbounded memory or smuggle control characters during login. The
 		// limit is configurable but defaults to 32 bytes which covers every valid
 		// callsign, including suffixes such as /QRP or /MM.
-		line, err := client.ReadLine(s.loginLineLimit, "login", false, false, false)
+		line, err := client.ReadLine(s.loginLineLimit, "login", false, false, false, false)
 		if err != nil {
 			var inputErr *InputValidationError
 			if errors.As(err, &inputErr) {
@@ -744,7 +779,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		// Commands use the more relaxed limit because filter manipulation can
 		// legitimately include several tokens. The limit is still kept small
 		// (default 128 bytes) to keep parsing cheap and predictable.
-		line, err := client.ReadLine(s.commandLineLimit, "command", true, true, true)
+		line, err := client.ReadLine(s.commandLineLimit, "command", true, true, true, true)
 		if err != nil {
 			var inputErr *InputValidationError
 			if errors.As(err, &inputErr) {
@@ -769,7 +804,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		}
 
 		// Process other commands
-		response := s.processor.ProcessCommand(line)
+		response := s.processor.ProcessCommandForClient(line, client.callsign, spotterIP(client.address))
 
 		// Check for disconnect signal
 		if response == "BYE" {
@@ -783,6 +818,48 @@ func (s *Server) handleClient(conn net.Conn) {
 			client.Send(response)
 		}
 	}
+}
+
+// negotiateTelnet performs minimal option negotiation to keep echo behavior
+// predictable across telnet clients. It writes directly to the raw connection
+// to avoid IAC escaping by higher-level telnet transports.
+func (s *Server) negotiateTelnet(client *Client) {
+	if s.skipHandshake || client == nil || client.conn == nil {
+		return
+	}
+	conn := client.conn
+	// Prefer full-duplex sessions by suppressing go-ahead.
+	sendTelnetOption(conn, WILL, 3)
+	sendTelnetOption(conn, DO, 3)
+
+	switch s.echoMode {
+	case telnetEchoServer:
+		// Server will echo input; ask the client to disable local echo.
+		sendTelnetOption(conn, WILL, 1)
+		sendTelnetOption(conn, DONT, 1)
+	case telnetEchoLocal:
+		// Server will not echo; most clients enable local echo in response.
+		sendTelnetOption(conn, WONT, 1)
+	case telnetEchoOff:
+		// Best-effort: request no echo from either side.
+		sendTelnetOption(conn, WONT, 1)
+		sendTelnetOption(conn, DONT, 1)
+	default:
+		// Fall back to server echo if the mode is unknown.
+		sendTelnetOption(conn, WILL, 1)
+		sendTelnetOption(conn, DONT, 1)
+	}
+}
+
+func sendTelnetOption(conn net.Conn, command, option byte) {
+	if conn == nil {
+		return
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(defaultSendDeadline)); err != nil {
+		return
+	}
+	_, _ = conn.Write([]byte{IAC, command, option})
+	_ = conn.SetWriteDeadline(time.Time{})
 }
 
 // handleFilterCommand processes filter-related commands
@@ -2103,7 +2180,7 @@ func (c *Client) Send(message string) error {
 //
 // The CRLF terminator is always allowed: '\r' is skipped and '\n' ends the
 // input. maxLen is measured in bytes because telnet input is ASCII-oriented.
-func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard, allowConfidence bool) (string, error) {
+func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard, allowConfidence, allowDot bool) (string, error) {
 	if maxLen <= 0 {
 		maxLen = defaultCommandLineLimit
 	}
@@ -2119,8 +2196,8 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 			return "", err
 		}
 
-		// Handle telnet IAC (Interpret As Command) sequences.
-		if b == IAC {
+		// Handle telnet IAC (Interpret As Command) sequences when using the native backend.
+		if c.handleIAC && b == IAC {
 			cmd, err := c.reader.ReadByte()
 			if err != nil {
 				return "", err
@@ -2135,6 +2212,10 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 
 		// End of line once LF is observed (CR was already skipped).
 		if b == '\n' {
+			if c.echoInput {
+				_, _ = c.writer.WriteString("\r\n")
+				_ = c.writer.Flush()
+			}
 			break
 		}
 		if b == '\r' {
@@ -2148,14 +2229,22 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 				fmt.Sprintf("%s input is too long (maximum %d characters).", friendlyContextLabel(context), maxLen),
 			)
 		}
-		if !isAllowedInputByte(b, allowComma, allowWildcard, allowConfidence) {
+		if !isAllowedInputByte(b, allowComma, allowWildcard, allowConfidence, allowDot) {
 			c.logRejectedInput(context, fmt.Sprintf("forbidden byte 0x%02X", b))
 			return "", newInputValidationError(
 				fmt.Sprintf("%s input contains forbidden byte 0x%02X", context, b),
-				fmt.Sprintf("%s input may only contain %s.", friendlyContextLabel(context), allowedCharacterList(allowComma, allowWildcard, allowConfidence)),
+				fmt.Sprintf("%s input may only contain %s.", friendlyContextLabel(context), allowedCharacterList(allowComma, allowWildcard, allowConfidence, allowDot)),
 			)
 		}
 
+		if c.echoInput {
+			if err := c.writer.WriteByte(b); err != nil {
+				return "", err
+			}
+			if err := c.writer.Flush(); err != nil {
+				return "", err
+			}
+		}
 		line = append(line, b)
 	}
 
@@ -2163,9 +2252,10 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 }
 
 // isAllowedInputByte reports whether the byte is part of the strict ingress
-// safe list (letters, digits, space, '/', '#', '@'). When allowComma is true,
-// comma is also accepted to preserve legacy comma-delimited filter syntax.
-// CRLF is handled separately by ReadLine.
+// safe list (letters, digits, space, '/', '#', '@', '-'). When allowComma is
+// true, comma is also accepted to preserve legacy comma-delimited filter syntax.
+// allowDot permits '.' for numeric inputs and spot comments. CRLF is handled
+// separately by ReadLine.
 func newInputValidationError(reason, userMessage string) error {
 	return &InputValidationError{
 		reason:      reason,
@@ -2173,7 +2263,7 @@ func newInputValidationError(reason, userMessage string) error {
 	}
 }
 
-func isAllowedInputByte(b byte, allowComma, allowWildcard, allowConfidence bool) bool {
+func isAllowedInputByte(b byte, allowComma, allowWildcard, allowConfidence, allowDot bool) bool {
 	switch {
 	case b >= 'A' && b <= 'Z':
 		return true
@@ -2191,6 +2281,8 @@ func isAllowedInputByte(b byte, allowComma, allowWildcard, allowConfidence bool)
 		return true
 	case b == '-':
 		return true
+	case allowDot && b == '.':
+		return true
 	case allowComma && b == ',':
 		return true
 	case allowWildcard && b == '*':
@@ -2202,7 +2294,7 @@ func isAllowedInputByte(b byte, allowComma, allowWildcard, allowConfidence bool)
 	}
 }
 
-func allowedCharacterList(allowComma, allowWildcard, allowConfidence bool) string {
+func allowedCharacterList(allowComma, allowWildcard, allowConfidence, allowDot bool) string {
 	base := "letters, numbers, space, '/', '#', '@', '-'"
 	if allowComma {
 		base += ", ','"
@@ -2213,7 +2305,21 @@ func allowedCharacterList(allowComma, allowWildcard, allowConfidence bool) strin
 	if allowConfidence {
 		base += ", '?'"
 	}
+	if allowDot {
+		base += ", '.'"
+	}
 	return base
+}
+
+func spotterIP(address string) string {
+	if address == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return strings.TrimSpace(address)
+	}
+	return host
 }
 
 func friendlyContextLabel(context string) string {
