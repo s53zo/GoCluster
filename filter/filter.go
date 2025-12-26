@@ -19,12 +19,9 @@ package filter
 import (
 	"errors"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 
 	"dxcluster/spot"
 )
@@ -219,45 +216,37 @@ func SetDefaultSourceSelection(sources []string) {
 }
 
 // User data directory (relative to working dir)
-const UserDataDir = "data/users"
+// UserDataDir is the base directory for persisted per-user data.
+// It is a variable to allow tests to redirect the path without touching real data.
+var UserDataDir = "data/users"
 
-// SaveUserFilter persists a user's Filter to data/users/<CALLSIGN>.yaml.
+// SaveUserFilter persists a user's Filter while preserving any existing
+// per-user metadata (such as recent IP history).
 // Callsign is uppercased for filename stability.
 func SaveUserFilter(callsign string, f *Filter) error {
-	callsign = strings.TrimSpace(callsign)
-	if callsign == "" {
-		return errors.New("empty callsign")
+	if f == nil {
+		return errors.New("nil filter")
 	}
-	if err := os.MkdirAll(UserDataDir, 0o755); err != nil {
+	record, err := LoadUserRecord(callsign)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	bs, err := yaml.Marshal(f)
-	if err != nil {
-		return err
+	if record == nil {
+		record = &UserRecord{}
 	}
-	path := filepath.Join(UserDataDir, strings.ToUpper(callsign)+".yaml")
-	return os.WriteFile(path, bs, 0o644)
+	record.Filter = *f
+	return SaveUserRecord(callsign, record)
 }
 
-// LoadUserFilter loads a saved Filter for a given callsign.
+// LoadUserFilter loads the saved Filter for a given callsign.
 // Returns os.ErrNotExist if no saved file is found.
 func LoadUserFilter(callsign string) (*Filter, error) {
-	callsign = strings.TrimSpace(callsign)
-	if callsign == "" {
-		return nil, errors.New("empty callsign")
-	}
-	path := filepath.Join(UserDataDir, strings.ToUpper(callsign)+".yaml")
-	bs, err := os.ReadFile(path)
+	record, err := LoadUserRecord(callsign)
 	if err != nil {
 		return nil, err
 	}
-	var f Filter
-	if err := yaml.Unmarshal(bs, &f); err != nil {
-		return nil, err
-	}
-	f.migrateLegacyConfidence()
-	f.normalizeDefaults()
-	return &f, nil
+	filter := record.Filter
+	return &filter, nil
 }
 
 // EnsureUserDataDir makes sure the directory for saved filters exists.

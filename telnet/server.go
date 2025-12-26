@@ -36,7 +36,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"runtime"
 	"sort"
 	"strconv"
@@ -119,6 +118,7 @@ type Client struct {
 	callsign  string          // Client's amateur radio callsign
 	connected time.Time       // Timestamp when client connected
 	address   string          // Client's IP address
+	recentIPs []string        // Most-recent-first IP history for this callsign
 	spotChan  chan *spot.Spot // Buffered channel for spot delivery (configurable capacity)
 	handleIAC bool            // True when we parse IAC sequences in ReadLine
 	echoInput bool            // True when we should echo typed characters back to the client
@@ -165,11 +165,18 @@ func (c *Client) saveFilter() error {
 	// hold read locks while matching, so persistence does not stall spot delivery.
 	c.filterMu.RLock()
 	defer c.filterMu.RUnlock()
-	if err := filter.SaveUserFilter(callsign, c.filter); err != nil {
-		log.Printf("Warning: failed to save filter for %s: %v", callsign, err)
+	record := &filter.UserRecord{
+		Filter:    *c.filter,
+		RecentIPs: c.recentIPs,
+	}
+	if existing, err := filter.LoadUserRecord(callsign); err == nil {
+		record.RecentIPs = filter.MergeRecentIPs(record.RecentIPs, existing.RecentIPs)
+	}
+	if err := filter.SaveUserRecord(callsign, record); err != nil {
+		log.Printf("Warning: failed to save user record for %s: %v", callsign, err)
 		return err
 	}
-	log.Printf("Saved filter for %s", callsign)
+	log.Printf("Saved user record for %s", callsign)
 	return nil
 }
 
@@ -745,18 +752,23 @@ func (s *Server) handleClient(conn net.Conn) {
 	client.callsign = callsign
 	log.Printf("Client %s logged in as %s", address, client.callsign)
 
-	// Attempt to load saved filter for this callsign; fallback to new Filter
-	if f, err := filter.LoadUserFilter(client.callsign); err == nil {
-		client.filter = f
-		log.Printf("Loaded saved filter for %s", client.callsign)
-	} else {
-		client.filter = filter.NewFilter()
-		if errors.Is(err, os.ErrNotExist) {
-			client.saveFilter()
+	// Capture the client's IP immediately after login so it is persisted before
+	// any other session state mutates.
+	record, created, err := filter.TouchUserRecordIP(client.callsign, spotterIP(client.address))
+	if err == nil {
+		client.filter = &record.Filter
+		client.recentIPs = record.RecentIPs
+		if created {
 			log.Printf("Created default filter for %s", client.callsign)
 		} else {
-			// Non-critical load error; log it.
-			log.Printf("Warning: failed to load filter for %s: %v", client.callsign, err)
+			log.Printf("Loaded saved filter for %s", client.callsign)
+		}
+	} else {
+		client.filter = filter.NewFilter()
+		client.recentIPs = filter.UpdateRecentIPs(nil, spotterIP(client.address))
+		log.Printf("Warning: failed to load user record for %s: %v", client.callsign, err)
+		if err := client.saveFilter(); err != nil {
+			log.Printf("Warning: failed to save user record for %s: %v", client.callsign, err)
 		}
 	}
 
