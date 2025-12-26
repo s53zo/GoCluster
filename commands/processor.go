@@ -108,6 +108,8 @@ Filter commands (allow + block, deny wins):
 	PASS DECALL <pattern> - Allow DE/spotter calls matching the pattern (supports prefix/suffix * wildcard).
 	PASS CONFIDENCE <symbol>[,<symbol>...] - Allow confidence glyphs (?,S,C,P,V,B or ALL). FT8/FT4 ignore confidence filtering.
 	PASS BEACON - Deliver DX beacons (/B)
+	PASS WWV - Deliver WWV bulletins
+	PASS WCY - Deliver WCY bulletins
 	REJECT BAND <band>[,<band>...]      - Block listed bands; ALL blocks all bands.
 	REJECT MODE <mode>[,<mode>...]      - Block listed modes; ALL blocks all modes.
 	REJECT SOURCE <HUMAN|SKIMMER>       - Block human or automated spots.
@@ -123,6 +125,8 @@ Filter commands (allow + block, deny wins):
 	REJECT DECALL - Remove all DE callsign patterns (allows any DE call, subject to other filters).
 	REJECT CONFIDENCE <symbol>[,<symbol>...] - Block glyphs; ALL blocks all glyphs (non-exempt modes).
 	REJECT BEACON - Suppress DX beacons
+	REJECT WWV - Suppress WWV bulletins
+	REJECT WCY - Suppress WCY bulletins
 	SHOW FILTER BANDS             - List supported bands
 	SHOW FILTER MODES             - Show supported modes and enabled state
 	SHOW FILTER DXCONT            - Show supported DX continents and enabled state
@@ -135,6 +139,8 @@ Filter commands (allow + block, deny wins):
 	SHOW FILTER DEGRID2           - Show DE 2-character grid filter state
 	SHOW FILTER CONFIDENCE        - Show supported confidence glyphs and enabled state
 	SHOW FILTER BEACON            - Show whether beacon spots are enabled
+	SHOW FILTER WWV               - Show whether WWV bulletins are enabled
+	SHOW FILTER WCY               - Show whether WCY bulletins are enabled
 
 Supported modes: %s
 Supported bands: %s

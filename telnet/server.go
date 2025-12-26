@@ -112,16 +112,17 @@ type Server struct {
 //
 // The client remains active until they type BYE or their connection drops.
 type Client struct {
-	conn      net.Conn        // TCP connection to client
-	reader    *bufio.Reader   // Buffered reader for client input
-	writer    *bufio.Writer   // Buffered writer for client output
-	callsign  string          // Client's amateur radio callsign
-	connected time.Time       // Timestamp when client connected
-	address   string          // Client's IP address
-	recentIPs []string        // Most-recent-first IP history for this callsign
-	spotChan  chan *spot.Spot // Buffered channel for spot delivery (configurable capacity)
-	handleIAC bool            // True when we parse IAC sequences in ReadLine
-	echoInput bool            // True when we should echo typed characters back to the client
+	conn         net.Conn        // TCP connection to client
+	reader       *bufio.Reader   // Buffered reader for client input
+	writer       *bufio.Writer   // Buffered writer for client output
+	callsign     string          // Client's amateur radio callsign
+	connected    time.Time       // Timestamp when client connected
+	address      string          // Client's IP address
+	recentIPs    []string        // Most-recent-first IP history for this callsign
+	spotChan     chan *spot.Spot // Buffered channel for spot delivery (configurable capacity)
+	bulletinChan chan bulletin   // Buffered channel for WWV/WCY bulletin delivery
+	handleIAC    bool            // True when we parse IAC sequences in ReadLine
+	echoInput    bool            // True when we should echo typed characters back to the client
 
 	// filterMu guards filter, which is read by telnet broadcast workers while the
 	// client session goroutine mutates it in response to PASS/REJECT commands.
@@ -196,6 +197,11 @@ type broadcastJob struct {
 	clients []*Client
 }
 
+type bulletin struct {
+	kind string
+	line string
+}
+
 type broadcastMetrics struct {
 	queueDrops  uint64
 	clientDrops uint64
@@ -264,8 +270,8 @@ const (
 )
 
 const (
-	passFilterUsageMsg    = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern> | PASS DECALL <pattern> | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all). Supported modes include: CW, LSB, USB, RTTY, FT4, FT8, MSK144, PSK31.\nType HELP for usage.\n"
-	rejectFilterUsageMsg  = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER> | REJECT DXCALL | REJECT DECALL | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults). Supported modes include: CW, LSB, USB, RTTY, FT4, FT8, MSK144, PSK31.\nType HELP for usage.\n"
+	passFilterUsageMsg    = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern> | PASS DECALL <pattern> | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all). Supported modes include: CW, LSB, USB, RTTY, FT4, FT8, MSK144, PSK31.\nType HELP for usage.\n"
+	rejectFilterUsageMsg  = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER> | REJECT DXCALL | REJECT DECALL | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults). Supported modes include: CW, LSB, USB, RTTY, FT4, FT8, MSK144, PSK31.\nType HELP for usage.\n"
 	legacyFilterSyntaxMsg = "Filter syntax changed: use PASS/REJECT/SHOW FILTER.\nType HELP for usage.\n"
 )
 
@@ -467,6 +473,60 @@ func (s *Server) BroadcastRaw(line string) {
 	defer s.clientsMutex.RUnlock()
 	for _, client := range s.clients {
 		_ = client.Send(line)
+	}
+}
+
+// BroadcastWWV sends a WWV/WCY bulletin to all connected clients that allow it.
+// The kind must be WWV, WCY, PC23, or PC73; unknown kinds are ignored.
+func (s *Server) BroadcastWWV(kind string, line string) {
+	if s == nil {
+		return
+	}
+	kind = normalizeBulletinKind(kind)
+	if kind == "" {
+		return
+	}
+	trimmed := strings.TrimRight(line, "\r\n")
+	if strings.TrimSpace(trimmed) == "" {
+		return
+	}
+	message := trimmed + "\n"
+
+	s.clientsMutex.RLock()
+	defer s.clientsMutex.RUnlock()
+	for _, client := range s.clients {
+		if client.bulletinChan == nil {
+			continue
+		}
+		client.filterMu.RLock()
+		allowed := client.filter.AllowsBulletin(kind)
+		client.filterMu.RUnlock()
+		if !allowed {
+			continue
+		}
+		select {
+		case client.bulletinChan <- bulletin{kind: kind, line: message}:
+		default:
+			drops := atomic.AddUint64(&s.metrics.clientDrops, 1)
+			clientDrops := atomic.AddUint64(&client.dropCount, 1)
+			if shouldLogQueueDrop(drops) {
+				log.Printf("Client %s bulletin channel full, dropping %s bulletin (client drops=%d total=%d)", client.callsign, kind, clientDrops, drops)
+			}
+		}
+	}
+}
+
+func normalizeBulletinKind(kind string) string {
+	kind = strings.ToUpper(strings.TrimSpace(kind))
+	switch kind {
+	case "WWV", "WCY":
+		return kind
+	case "PC23":
+		return "WWV"
+	case "PC73":
+		return "WCY"
+	default:
+		return ""
 	}
 }
 
@@ -701,14 +761,15 @@ func (s *Server) handleClient(conn net.Conn) {
 		writerConn = tconn
 	}
 	client := &Client{
-		conn:      conn,
-		reader:    bufio.NewReader(readerConn),
-		writer:    bufio.NewWriter(writerConn),
-		connected: time.Now(),
-		address:   address,
-		spotChan:  make(chan *spot.Spot, spotQueueSize),
-		filter:    filter.NewFilter(), // Start with no filters (accept all)
-		handleIAC: !s.useZiutek,
+		conn:         conn,
+		reader:       bufio.NewReader(readerConn),
+		writer:       bufio.NewWriter(writerConn),
+		connected:    time.Now(),
+		address:      address,
+		spotChan:     make(chan *spot.Spot, spotQueueSize),
+		bulletinChan: make(chan bulletin, spotQueueSize),
+		filter:       filter.NewFilter(), // Start with no filters (accept all)
+		handleIAC:    !s.useZiutek,
 		// Echo policy is configured explicitly so we can support local echo even
 		// when clients toggle their own modes.
 		echoInput: s.echoMode == telnetEchoServer,
@@ -932,6 +993,18 @@ func (c *Client) handleFilterCommand(cmd string) string {
 					status = "DISABLED"
 				}
 				return fmt.Sprintf("Beacon spots: %s\n", status)
+			case "wwv":
+				status := "ENABLED"
+				if !c.filter.WWVEnabled() {
+					status = "DISABLED"
+				}
+				return fmt.Sprintf("WWV bulletins: %s\n", status)
+			case "wcy":
+				status := "ENABLED"
+				if !c.filter.WCYEnabled() {
+					status = "DISABLED"
+				}
+				return fmt.Sprintf("WCY bulletins: %s\n", status)
 			case "dxcont":
 				return fmt.Sprintf("DX continents: %s\n", formatAllowBlockStrings(c.filter.AllDXContinents, c.filter.BlockAllDXContinents, c.filter.DXContinents, c.filter.BlockDXContinents))
 			case "decont":
@@ -959,7 +1032,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		}
 
 		filterType := strings.ToUpper(parts[1])
-		if filterType != "BEACON" && len(parts) < 3 {
+		if filterType != "BEACON" && filterType != "WWV" && filterType != "WCY" && len(parts) < 3 {
 			return passFilterUsageMsg
 		}
 		switch filterType {
@@ -1100,6 +1173,18 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			})
 			c.saveFilter()
 			return "Beacon spots enabled\n"
+		case "WWV":
+			c.updateFilter(func(f *filter.Filter) {
+				f.SetWWVEnabled(true)
+			})
+			c.saveFilter()
+			return "WWV bulletins enabled\n"
+		case "WCY":
+			c.updateFilter(func(f *filter.Filter) {
+				f.SetWCYEnabled(true)
+			})
+			c.saveFilter()
+			return "WCY bulletins enabled\n"
 		case "DXCONT":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
@@ -1309,7 +1394,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			c.saveFilter()
 			return fmt.Sprintf("Filter set: DE 2-character grids %s\n", strings.Join(gridList, ", "))
 		default:
-			return "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
+			return "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 		}
 
 	case "reject":
@@ -1460,6 +1545,18 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			})
 			c.saveFilter()
 			return "Beacon spots disabled\n"
+		case "WWV":
+			c.updateFilter(func(f *filter.Filter) {
+				f.SetWWVEnabled(false)
+			})
+			c.saveFilter()
+			return "WWV bulletins disabled\n"
+		case "WCY":
+			c.updateFilter(func(f *filter.Filter) {
+				f.SetWCYEnabled(false)
+			})
+			c.saveFilter()
+			return "WCY bulletins disabled\n"
 		case "DXCONT":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
@@ -1685,7 +1782,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			c.saveFilter()
 			return fmt.Sprintf("DE 2-character grid filters disabled: %s\n", strings.Join(gridList, ", "))
 		default:
-			return "Unknown filter type. Use: ALL, BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
+			return "Unknown filter type. Use: ALL, BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 		}
 
 	default:
@@ -2067,14 +2164,31 @@ func applyWelcomeTokens(msg string, now time.Time) string {
 	return msg
 }
 
-// spotSender sends spots to the client from the spot channel
+// spotSender sends spots and bulletins to the client from their buffered channels.
 func (c *Client) spotSender() {
-	for spot := range c.spotChan {
-		formatted := spot.FormatDXCluster() + "\n"
-		err := c.Send(formatted)
-		if err != nil {
-			log.Printf("Error sending spot to %s: %v", c.callsign, err)
-			return
+	spotCh := c.spotChan
+	bulletinCh := c.bulletinChan
+	for spotCh != nil || bulletinCh != nil {
+		select {
+		case spot, ok := <-spotCh:
+			if !ok {
+				spotCh = nil
+				continue
+			}
+			formatted := spot.FormatDXCluster() + "\n"
+			if err := c.Send(formatted); err != nil {
+				log.Printf("Error sending spot to %s: %v", c.callsign, err)
+				return
+			}
+		case bulletin, ok := <-bulletinCh:
+			if !ok {
+				bulletinCh = nil
+				continue
+			}
+			if err := c.Send(bulletin.line); err != nil {
+				log.Printf("Error sending bulletin to %s: %v", c.callsign, err)
+				return
+			}
 		}
 	}
 }
@@ -2120,6 +2234,7 @@ func (s *Server) unregisterClient(client *Client) {
 
 	client.saveFilter()
 	close(client.spotChan)
+	close(client.bulletinChan)
 	log.Printf("Unregistered client: %s (total: %d)", client.callsign, total)
 }
 

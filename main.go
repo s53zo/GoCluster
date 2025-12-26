@@ -640,6 +640,7 @@ func main() {
 	// Hook peering raw passthrough (e.g., PC26) into telnet broadcast once available.
 	if peerManager != nil {
 		peerManager.SetRawBroadcast(telnetServer.BroadcastRaw)
+		peerManager.SetWWVBroadcast(telnetServer.BroadcastWWV)
 		peerManager.SetUserCountProvider(telnetServer.GetClientCount)
 	}
 
@@ -692,8 +693,11 @@ func main() {
 		rawPassthrough := make(chan string, 256)
 		go func() {
 			for line := range rawPassthrough {
-				if telnetServer != nil && shouldBroadcastRawLine(line) {
-					telnetServer.BroadcastRaw(line)
+				if telnetServer == nil {
+					continue
+				}
+				if kind := wwvKindFromLine(line); kind != "" {
+					telnetServer.BroadcastWWV(kind, line)
 				}
 			}
 		}()
@@ -2335,17 +2339,22 @@ func formatUptimeLine(uptime time.Duration) string {
 	return fmt.Sprintf("Uptime: %02d:%02d", hours, minutes)
 }
 
-// shouldBroadcastRawLine gates non-DX lines coming from the human/relay telnet ingest.
-// We only forward known WWV/WCY-style lines to telnet clients; upstream keepalives,
-// prompts, or other control chatter (e.g., "de N2WQ-22" banners) are dropped to avoid
-// leaking internal keepalives into user sessions.
-func shouldBroadcastRawLine(line string) bool {
+// wwvKindFromLine tags non-DX lines coming from human/relay telnet ingest.
+// We only forward WWV/WCY bulletins to telnet clients; upstream keepalives,
+// prompts, or other control chatter (e.g., "de N2WQ-22" banners) are dropped.
+func wwvKindFromLine(line string) string {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
-		return false
+		return ""
 	}
 	upper := strings.ToUpper(trimmed)
-	return strings.HasPrefix(upper, "WCY") || strings.HasPrefix(upper, "WWV")
+	if strings.HasPrefix(upper, "WWV") {
+		return "WWV"
+	}
+	if strings.HasPrefix(upper, "WCY") {
+		return "WCY"
+	}
+	return ""
 }
 
 func diffCounter(current, previous map[string]uint64, key string) uint64 {

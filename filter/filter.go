@@ -39,6 +39,10 @@ var SupportedModes = []string{
 	"PSK31",
 }
 
+func boolPtr(value bool) *bool {
+	return &value
+}
+
 // SupportedSources enumerates how telnet users can filter on Spot.IsHuman.
 //
 // HUMAN means the spot was marked as coming from a human operator (Spot.IsHuman=true).
@@ -295,6 +299,8 @@ type Filter struct {
 	AllConfidence        bool            // If true, accept all confidence glyphs (except blocked)
 	BlockAllConfidence   bool            // If true, reject all confidence glyphs (except exempt modes)
 	IncludeBeacons       *bool           `yaml:"include_beacons,omitempty"` // nil/true delivers beacons; false suppresses
+	AllowWWV             *bool           `yaml:"allow_wwv,omitempty"`       // nil/true delivers WWV bulletins; false suppresses
+	AllowWCY             *bool           `yaml:"allow_wcy,omitempty"`       // nil/true delivers WCY bulletins; false suppresses
 	DXContinents         map[string]bool // Allowed DX continents
 	BlockDXContinents    map[string]bool // Blocked DX continents
 	DEContinents         map[string]bool // Allowed DE continents
@@ -376,6 +382,8 @@ func NewFilter() *Filter {
 		BlockAllModes:        false,
 		AllSources:           true, // Accept both HUMAN and SKIMMER spots unless narrowed
 		BlockAllSources:      false,
+		AllowWWV:             boolPtr(true),
+		AllowWCY:             boolPtr(true),
 		AllConfidence:        true, // Accept every confidence glyph until user sets one
 		BlockAllConfidence:   false,
 		AllDXContinents:      true,
@@ -755,6 +763,51 @@ func (f *Filter) BeaconsEnabled() bool {
 	return *f.IncludeBeacons
 }
 
+// SetWWVEnabled controls whether WWV bulletins are delivered.
+func (f *Filter) SetWWVEnabled(enabled bool) {
+	if f == nil {
+		return
+	}
+	f.AllowWWV = boolPtr(enabled)
+}
+
+// SetWCYEnabled controls whether WCY bulletins are delivered.
+func (f *Filter) SetWCYEnabled(enabled bool) {
+	if f == nil {
+		return
+	}
+	f.AllowWCY = boolPtr(enabled)
+}
+
+// WWVEnabled reports whether the filter currently allows WWV bulletins.
+func (f *Filter) WWVEnabled() bool {
+	if f == nil || f.AllowWWV == nil {
+		return true
+	}
+	return *f.AllowWWV
+}
+
+// WCYEnabled reports whether the filter currently allows WCY bulletins.
+func (f *Filter) WCYEnabled() bool {
+	if f == nil || f.AllowWCY == nil {
+		return true
+	}
+	return *f.AllowWCY
+}
+
+// AllowsBulletin reports whether the bulletin kind should be delivered.
+// Supported kinds are WWV/WCY (or PC23/PC73); unknown kinds default to true.
+func (f *Filter) AllowsBulletin(kind string) bool {
+	switch strings.ToUpper(strings.TrimSpace(kind)) {
+	case "WWV", "PC23":
+		return f.WWVEnabled()
+	case "WCY", "PC73":
+		return f.WCYEnabled()
+	default:
+		return true
+	}
+}
+
 // ResetBands clears all band filters and accepts all bands.
 //
 // Behavior:
@@ -827,6 +880,8 @@ func (f *Filter) Reset() {
 	f.ResetDXDXCC()
 	f.ResetDEDXCC()
 	f.SetBeaconEnabled(true)
+	f.SetWWVEnabled(true)
+	f.SetWCYEnabled(true)
 }
 
 // ResetDXContinents clears DX continent filters and accepts all.
@@ -1265,6 +1320,16 @@ func (f *Filter) String() string {
 	} else {
 		parts = append(parts, "Beacons: OFF")
 	}
+	if f.WWVEnabled() {
+		parts = append(parts, "WWV: ON")
+	} else {
+		parts = append(parts, "WWV: OFF")
+	}
+	if f.WCYEnabled() {
+		parts = append(parts, "WCY: ON")
+	} else {
+		parts = append(parts, "WCY: OFF")
+	}
 
 	if f.AllDXGrid2 {
 		parts = append(parts, "DXGrid2: ALL")
@@ -1538,6 +1603,12 @@ func (f *Filter) normalizeDefaults() {
 	}
 	if f.BlockDEDXCC == nil {
 		f.BlockDEDXCC = make(map[int]bool)
+	}
+	if f.AllowWWV == nil {
+		f.AllowWWV = boolPtr(true)
+	}
+	if f.AllowWCY == nil {
+		f.AllowWCY = boolPtr(true)
 	}
 
 	if len(f.Bands) == 0 {

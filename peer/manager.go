@@ -31,6 +31,7 @@ type Manager struct {
 	pc92Ch        chan pc92Work
 	legacyCh      chan legacyWork
 	rawBroadcast  func(string) // optional hook to emit raw lines (e.g., PC26) to telnet clients
+	wwvBroadcast  func(kind, line string)
 	reconnects    atomic.Uint64
 	userCountFn   func() int
 }
@@ -225,7 +226,7 @@ func (m *Manager) HandleFrame(frame *Frame, sess *session) {
 		}
 	case "PC23", "PC73":
 		if ev, ok := parseWWV(frame); ok {
-			if frame.Hop > 1 && m.dedupe.markSeen(wwvKey(frame), now) {
+			if m.dedupe.markSeen(wwvKey(frame), now) {
 				m.broadcastWWV(ev, frame.Hop-1, sess)
 			}
 		}
@@ -275,6 +276,14 @@ func (m *Manager) SetRawBroadcast(fn func(string)) {
 	m.rawBroadcast = fn
 }
 
+// SetWWVBroadcast installs a callback used to forward WWV/WCY bulletins to telnet clients.
+// When unset, PC23/PC73 frames are parsed but not delivered.
+func (m *Manager) SetWWVBroadcast(fn func(kind, line string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.wwvBroadcast = fn
+}
+
 func (m *Manager) broadcastSpot(s *spot.Spot, hop int, origin string, exclude *session) {
 	if m == nil || s == nil {
 		return
@@ -308,10 +317,16 @@ func (m *Manager) broadcastWWV(ev WWVEvent, hop int, exclude *session) {
 	if m == nil {
 		return
 	}
-	// WWV forwarding omitted; placeholder for future implementation.
-	_ = ev
-	_ = hop
-	_ = exclude
+	kind, line := formatWWVLine(ev)
+	if line == "" {
+		return
+	}
+	m.mu.RLock()
+	cb := m.wwvBroadcast
+	m.mu.RUnlock()
+	if cb != nil {
+		cb(kind, line)
+	}
 }
 
 func (m *Manager) forwardFrame(frame *Frame, hop int, exclude *session, pc9xOnly bool) {
