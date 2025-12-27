@@ -364,6 +364,9 @@ type CallCorrectionConfig struct {
 	// FrequencyToleranceHz defines how close two frequencies must be to be considered
 	// the same signal when running consensus.
 	FrequencyToleranceHz float64 `yaml:"frequency_tolerance_hz"`
+	// VoiceFrequencyToleranceHz defines the frequency window for USB/LSB consensus
+	// (voice signals are wider than CW/RTTY).
+	VoiceFrequencyToleranceHz float64 `yaml:"voice_frequency_tolerance_hz"`
 	// DebugLog, when true, records call-correction decisions to an asynchronous SQLite log.
 	DebugLog bool `yaml:"debug_log"`
 	// DebugLogFile optionally overrides the decision log location/prefix; when blank a daily
@@ -381,6 +384,8 @@ type CallCorrectionConfig struct {
 	// MinSNRCW/RTTY allow discarding marginal decodes from the corroborator set.
 	MinSNRCW   int `yaml:"min_snr_cw"`
 	MinSNRRTTY int `yaml:"min_snr_rtty"`
+	// MinSNRVoice allows discarding low-SNR USB/LSB reports (set 0 to ignore SNR).
+	MinSNRVoice int `yaml:"min_snr_voice"`
 	// DistanceModel controls how string distance is measured. Supported values:
 	//   - Deprecated: "distance_model" applies to both CW/RTTY when per-mode toggles unset
 	//   - "distance_model_cw"/"distance_model_rtty" override per mode:
@@ -410,6 +415,8 @@ type CallCorrectionConfig struct {
 	FreqGuardMinSeparationKHz float64 `yaml:"freq_guard_min_separation_khz"`
 	// Ratio (0-1): runner-up supporters must be at least this fraction of winner supporters to trigger the guard.
 	FreqGuardRunnerUpRatio float64 `yaml:"freq_guard_runnerup_ratio"`
+	// VoiceCandidateWindowKHz controls the correction-index search radius for USB/LSB.
+	VoiceCandidateWindowKHz float64 `yaml:"voice_candidate_window_khz"`
 	// MorseWeights tunes the dot/dash edit weights for CW distance calculations.
 	MorseWeights MorseWeightConfig `yaml:"morse_weights"`
 	// BaudotWeights tunes the ITA2 edit weights for RTTY distance calculations.
@@ -786,11 +793,17 @@ func Load(path string) (*Config, error) {
 	if cfg.CallCorrection.FrequencyToleranceHz <= 0 {
 		cfg.CallCorrection.FrequencyToleranceHz = 0.5
 	}
+	if cfg.CallCorrection.VoiceFrequencyToleranceHz <= 0 {
+		cfg.CallCorrection.VoiceFrequencyToleranceHz = 2000
+	}
 	if cfg.CallCorrection.FreqGuardMinSeparationKHz <= 0 {
 		cfg.CallCorrection.FreqGuardMinSeparationKHz = 0.1
 	}
 	if cfg.CallCorrection.FreqGuardRunnerUpRatio <= 0 {
 		cfg.CallCorrection.FreqGuardRunnerUpRatio = 0.5
+	}
+	if cfg.CallCorrection.VoiceCandidateWindowKHz <= 0 {
+		cfg.CallCorrection.VoiceCandidateWindowKHz = 2
 	}
 	if cfg.CallCorrection.QualityBinHz <= 0 {
 		cfg.CallCorrection.QualityBinHz = 1000
@@ -841,6 +854,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.CallCorrection.MinSNRRTTY < 0 {
 		cfg.CallCorrection.MinSNRRTTY = 0
+	}
+	if cfg.CallCorrection.MinSNRVoice < 0 {
+		cfg.CallCorrection.MinSNRVoice = 0
 	}
 	if cfg.CallCorrection.Distance3ExtraReports < 0 {
 		cfg.CallCorrection.Distance3ExtraReports = 0
@@ -1429,6 +1445,10 @@ func (c *Config) Print() {
 		c.CallCorrection.Distance3ExtraReports,
 		c.CallCorrection.Distance3ExtraAdvantage,
 		c.CallCorrection.Distance3ExtraConfidence)
+	fmt.Printf("Call correction voice: tol=%.0fHz search=%.1fkHz min_snr=%d\n",
+		c.CallCorrection.VoiceFrequencyToleranceHz,
+		c.CallCorrection.VoiceCandidateWindowKHz,
+		c.CallCorrection.MinSNRVoice)
 	fmt.Printf("Call correction cache: size=%d ttl=%ds\n",
 		c.CallCorrection.DistanceCacheSize,
 		c.CallCorrection.DistanceCacheTTLSeconds)

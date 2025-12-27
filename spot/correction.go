@@ -50,11 +50,12 @@ type CorrectionSettings struct {
 	// the subject call. A value of 2 typically allows single-character typos.
 	MaxEditDistance int
 
-	// MinSNRCW/MinSNRRTTY let callers ignore corroborators below a minimum
-	// signal-to-noise ratio. FT8/FT4 aren't run through call correction so we
-	// only need CW/RTTY thresholds.
+	// MinSNRCW/MinSNRRTTY/MinSNRVoice let callers ignore corroborators below a
+	// minimum signal-to-noise ratio. FT8/FT4 aren't run through call correction.
 	MinSNRCW   int
 	MinSNRRTTY int
+	// MinSNRVoice lets callers ignore low-SNR USB/LSB reports when present.
+	MinSNRVoice int
 
 	// DistanceModelCW/DistanceModelRTTY control mode-specific distance behavior.
 	// Supported values:
@@ -849,6 +850,8 @@ func minSNRThresholdForMode(mode string, cfg CorrectionSettings) int {
 		return cfg.MinSNRCW
 	case "RTTY":
 		return cfg.MinSNRRTTY
+	case "USB", "LSB":
+		return cfg.MinSNRVoice
 	default:
 		return 0
 	}
@@ -946,18 +949,22 @@ func (ci *CorrectionIndex) Add(s *Spot, now time.Time, window time.Duration) {
 // Key aspects: Scans adjacent buckets and prunes stale entries.
 // Upstream: SuggestCallCorrection.
 // Downstream: bucketKey and prune.
-// Candidates retrieves nearby spots (within +/- 0.5 kHz) for the given subject.
-func (ci *CorrectionIndex) Candidates(subject *Spot, now time.Time, window time.Duration) []*Spot {
+// Candidates retrieves nearby spots within the specified +/- window (kHz).
+func (ci *CorrectionIndex) Candidates(subject *Spot, now time.Time, window time.Duration, searchKHz float64) []*Spot {
 	if ci == nil || subject == nil {
 		return nil
 	}
 	if window <= 0 {
 		window = 45 * time.Second
 	}
+	if searchKHz <= 0 {
+		searchKHz = 0.5
+	}
 
 	key := bucketKey(subject.Frequency)
-	minKey := key - 5
-	maxKey := key + 5
+	rangeBuckets := int(math.Ceil(searchKHz * 10))
+	minKey := key - rangeBuckets
+	maxKey := key + rangeBuckets
 
 	ci.mu.Lock()
 	defer ci.mu.Unlock()

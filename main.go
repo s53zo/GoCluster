@@ -1677,6 +1677,8 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 	defer idx.Add(spotEntry, now, window)
 
 	modeUpper := strings.ToUpper(strings.TrimSpace(spotEntry.Mode))
+	// Voice signals are wider, so use sideband-specific correction windows.
+	isVoice := modeUpper == "USB" || modeUpper == "LSB"
 
 	if adaptive != nil && (modeUpper == "CW" || modeUpper == "RTTY") {
 		adaptive.Observe(spotEntry.Band, spotEntry.DECall, now)
@@ -1694,7 +1696,9 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 	}
 	qualityBinHz := cfg.QualityBinHz
 	freqToleranceHz := cfg.FrequencyToleranceHz
-	if params, ok := resolveBandStateParams(cfg.BandStateOverrides, spotEntry.Band, state); ok {
+	if isVoice {
+		freqToleranceHz = cfg.VoiceFrequencyToleranceHz
+	} else if params, ok := resolveBandStateParams(cfg.BandStateOverrides, spotEntry.Band, state); ok {
 		if params.QualityBinHz > 0 {
 			qualityBinHz = params.QualityBinHz
 		}
@@ -1712,6 +1716,7 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 		Strategy:                 cfg.Strategy,
 		MinSNRCW:                 cfg.MinSNRCW,
 		MinSNRRTTY:               cfg.MinSNRRTTY,
+		MinSNRVoice:              cfg.MinSNRVoice,
 		DistanceModelCW:          cfg.DistanceModelCW,
 		DistanceModelRTTY:        cfg.DistanceModelRTTY,
 		Distance3ExtraReports:    cfg.Distance3ExtraReports,
@@ -1729,7 +1734,11 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 		SpotterReliability:       spotterReliability,
 		MinSpotterReliability:    cfg.MinSpotterReliability,
 	}
-	others := idx.Candidates(spotEntry, now, window)
+	candidateWindowKHz := 0.5
+	if isVoice {
+		candidateWindowKHz = cfg.VoiceCandidateWindowKHz
+	}
+	others := idx.Candidates(spotEntry, now, window, candidateWindowKHz)
 	entries := spotsToEntries(others)
 	corrected, supporters, correctedConfidence, subjectConfidence, totalReporters, ok := spot.SuggestCallCorrection(spotEntry, entries, settings, now)
 
