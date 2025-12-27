@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"dxcluster/config"
@@ -121,6 +124,34 @@ func TestGridDBCheckOnMissEnabled_UsesLoadedFromWhenSet(t *testing.T) {
 	_, source := gridDBCheckOnMissEnabled(cfg)
 	if source != "data/config" {
 		t.Fatalf("expected source=data/config, got %s", source)
+	}
+}
+
+// Purpose: Ensure known-call seeding promotes confidence to S.
+// Key aspects: Uses a temp MASTER.SCP-style file and CW mode.
+// Upstream: go test execution.
+// Downstream: seedKnownCallConfidence and spot.LoadKnownCallsigns.
+func TestSeedKnownCallConfidencePromotesKnownDX(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "known.txt")
+	if err := os.WriteFile(path, []byte("K1KI\n"), 0o644); err != nil {
+		t.Fatalf("write known calls: %v", err)
+	}
+	known, err := spot.LoadKnownCallsigns(path)
+	if err != nil {
+		t.Fatalf("load known calls: %v", err)
+	}
+	var knownPtr atomic.Pointer[spot.KnownCallsigns]
+	knownPtr.Store(known)
+
+	s := spot.NewSpot("K1KI", "W2TT", 1831.3, "CW")
+	s.Confidence = ""
+
+	if !seedKnownCallConfidence(s, &knownPtr) {
+		t.Fatalf("expected known-call seed to mark confidence")
+	}
+	if s.Confidence != "S" {
+		t.Fatalf("expected confidence S, got %q", s.Confidence)
 	}
 }
 

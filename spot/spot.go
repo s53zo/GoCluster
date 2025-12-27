@@ -35,7 +35,7 @@ type Spot struct {
 	DECall     string       // Station reporting the spot (e.g., "W1ABC")
 	Frequency  float64      // Frequency in kHz (e.g., 14074.5)
 	Band       string       // Band (e.g., "20m")
-	Mode       string       // Mode (e.g., "CW", "SSB", "FT8")
+	Mode       string       // Mode (e.g., "CW", "USB", "FT8")
 	Report     int          // Signal report in dB (SNR for digital modes, signal strength for CW)
 	Time       time.Time    // When the spot was created
 	Comment    string       // User comment or additional info
@@ -82,6 +82,7 @@ type CallMetadata struct {
 // NewSpot creates a new spot with sensible defaults
 func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
 	freq = roundFrequencyTo100Hz(freq)
+	mode = NormalizeVoiceMode(mode, freq)
 	spot := &Spot{
 		DXCall:     strings.ToUpper(dxCall),
 		DECall:     strings.ToUpper(deCall),

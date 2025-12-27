@@ -84,7 +84,8 @@ type CorrectionSettings struct {
 var correctionEligibleModes = map[string]struct{}{
 	"CW":   {},
 	"RTTY": {},
-	"SSB":  {},
+	"USB":  {},
+	"LSB":  {},
 }
 
 // CorrectionTrace captures the inputs and outcome of a correction decision for audit/comparison.
@@ -118,12 +119,12 @@ type CorrectionTrace struct {
 }
 
 // Purpose: Determine whether a mode is eligible for call correction.
-// Key aspects: Limits to CW/RTTY/SSB to avoid digital-mode conflicts.
+// Key aspects: Limits to CW/RTTY and USB/LSB voice modes to avoid digital-mode conflicts.
 // Upstream: call correction pipeline and harmonic detection.
 // Downstream: correctionEligibleModes lookup.
 // IsCallCorrectionCandidate returns true if the given mode is eligible for
-// consensus-based call correction. Only CW, RTTY, and SSB are considered
-// because other digital modes already embed their own error correction.
+// consensus-based call correction. Only CW/RTTY and USB/LSB voice modes
+// are considered because other digital modes already embed their own error correction.
 func IsCallCorrectionCandidate(mode string) bool {
 	_, ok := correctionEligibleModes[strings.ToUpper(strings.TrimSpace(mode))]
 	return ok
@@ -365,6 +366,7 @@ func ConfigureBaudotWeights(insert, delete, sub, scale int) {
 //   - correctedCall: the most likely callsign if consensus is met.
 //   - supporters: how many unique spotters contributed to the correction.
 //   - ok: true if a correction is recommended, false otherwise.
+//
 // Purpose: Suggest a corrected callsign based on nearby corroborators.
 // Key aspects: Applies consensus strategy, distance limits, and confidence gates.
 // Upstream: main call correction pipeline.

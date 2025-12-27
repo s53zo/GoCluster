@@ -29,6 +29,18 @@ func TestNewSpotBeaconFlag(t *testing.T) {
 	}
 }
 
+func TestNewSpotNormalizesSSBToSideband(t *testing.T) {
+	low := NewSpot("W1ABC", "K1XYZ", 7074.0, "SSB")
+	if low.Mode != "LSB" {
+		t.Fatalf("expected SSB on 40m to normalize to LSB, got %q", low.Mode)
+	}
+
+	high := NewSpot("W1ABC", "K1XYZ", 14250.0, "SSB")
+	if high.Mode != "USB" {
+		t.Fatalf("expected SSB on 20m to normalize to USB, got %q", high.Mode)
+	}
+}
+
 func TestRefreshBeaconFlagUsesComment(t *testing.T) {
 	s := NewSpot("W1ABC", "K1XYZ", 14074.5, "CW")
 	s.Comment = "Heard via NCDXF beacon schedule"

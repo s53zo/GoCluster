@@ -36,7 +36,7 @@ Non-PSKReporter sources (RBN CW/RTTY, RBN digital, and upstream/human telnet fee
 
 High-level flow:
 
-- **Keyword dictionary**: `DX`, `DE`, `DB`, `WPM`, plus all supported mode tokens (`CW`, `SSB`, `USB`, `LSB`, `JS8`, `SSTV`, `RTTY`, `FT4`, `FT8`, `MSK144`, and common variants like `FT-8`).
+- **Keyword dictionary**: `DX`, `DE`, `DB`, `WPM`, plus all supported mode tokens (`CW`, `SSB` as an alias normalized to `USB`/`LSB`, `USB`, `LSB`, `JS8`, `SSTV`, `RTTY`, `FT4`, `FT8`, `MSK144`, and common variants like `FT-8`).
 - **Automaton build (once)**: patterns are compiled into a trie and failure links are built with a BFS. This runs once and is reused for every line.
 - **Per-line scan**:
   - Tokenize the raw line on whitespace while tracking token byte offsets.
@@ -204,14 +204,14 @@ Filter management commands are implemented directly in `telnet/server.go` and op
 - `SHOW FILTER BEACON` - display the current beacon-filter state.
 - `SHOW FILTER CONFIDENCE` - lists each glyph alongside whether it is currently enabled.
 
-Confidence glyphs are only emitted for modes that run consensus-based correction (CW/RTTY/SSB). FT8/FT4 spots carry no confidence glyphs, so confidence filters do not affect them.
+Confidence glyphs are only emitted for modes that run consensus-based correction (CW/RTTY/USB/LSB voice modes). FT8/FT4 spots carry no confidence glyphs, so confidence filters do not affect them. Before correction, CW/RTTY/USB/LSB voice spots start at `?` and are promoted to `S` when the DX call is present in `MASTER.SCP`.
 
 Band, mode, confidence, and DXGRID2/DEGRID2 commands share identical semantics: they accept comma- or space-separated lists, ignore duplicates/case, and treat the literal `ALL` as a shorthand to reset that filter back to "allow every band/mode/confidence glyph/2-character grid." DXGRID2 applies only to the DX grid when it is exactly two characters long; DEGRID2 applies only to the DE grid when it is exactly two characters long. 4/6-character or empty grids are unaffected, and longer tokens provided by the user are truncated to their first two characters before validation.
 
 Confidence indicator legend in telnet output:
 
 - `?` - Unknown/low support
-- `S` - Single-reporter spot that matches `MASTER.SCP`
+- `S` - DX call is present in `MASTER.SCP` (known-call promotion before correction)
 - `P` - 25-50% consensus for the subject call (no correction applied)
 - `V` - More than 50% consensus for the subject call (no correction applied)
 - `B` - Correction was suggested but CTY validation failed (call left unchanged)
@@ -383,7 +383,6 @@ Increase the queue sizes if you see the broadcast-channel drop message frequentl
 │  ├─ runtime.yaml         # Telnet server settings, buffer/filter defaults
 │  └─ mode_allocations.yaml # Mode inference for RBN/human ingest
 ├─ config/                 # YAML loader + defaults (merges dir or single file)
-├─ config.yaml             # Legacy single-file config (use via DXC_CONFIG_PATH)
 ├─ cmd/                    # Helper binaries (CTY lookup, skew fetch, analysis)
 ├─ rbn/, pskreporter/, telnet/, dedup/, filter/, spot/, stats/, gridstore/  # Core packages
 ├─ data/cty/cty.plist      # CTY prefix database for metadata lookups
@@ -405,7 +404,7 @@ Increase the queue sizes if you see the broadcast-channel drop message frequentl
 
 1. Update `data/config/ingest.yaml` with your preferred callsigns for the `rbn`, `rbn_digital`, optional `human_telnet`, and optional `pskreporter` sections. Optionally list `pskreporter.modes` (e.g., [`FT8`, `FT4`]) to subscribe to just those MQTT feeds simultaneously. If you enable `human_telnet`, review `data/config/mode_allocations.yaml` (used to infer CW vs LSB/USB when the incoming spot line does not include an explicit mode token).
 2. If peering with DXSpider clusters, edit `data/config/peering.yaml`: set `local_callsign`, optional `listen_port`, hop/version fields, and add one or more peers (host/port/password/prefer_pc9x). ACLs are available for inbound (`allow_ips`/`allow_callsigns`). Topology persistence is optional (disabled by default); set `peering.topology.db_path` to enable SQLite caching (WAL mode) with the configured retention.
-2. Optionally enable/tune `call_correction` (master `enabled` switch, minimum corroborating spotters, required advantage, confidence percent, recency window, max edit distance, per-mode distance models, and `invalid_action` failover). `distance_model_cw` switches CW between the baseline rune-based Levenshtein (`plain`) and a Morse-aware cost function (`morse`), `distance_model_rtty` toggles RTTY between `plain` and a Baudot/ITA2-aware scorer (`baudot`), while SSB/voice modes always stay on `plain` because those reports are typed by humans.
+2. Optionally enable/tune `call_correction` (master `enabled` switch, minimum corroborating spotters, required advantage, confidence percent, recency window, max edit distance, per-mode distance models, and `invalid_action` failover). `distance_model_cw` switches CW between the baseline rune-based Levenshtein (`plain`) and a Morse-aware cost function (`morse`), `distance_model_rtty` toggles RTTY between `plain` and a Baudot/ITA2-aware scorer (`baudot`), while USB/LSB voice modes always stay on `plain` because those reports are typed by humans.
 3. Optionally enable/tune `harmonics` to drop harmonic CW/USB/LSB/RTTY spots (master `enabled`, recency window, maximum harmonic multiple, frequency tolerance, and minimum report delta).
 4. Set `spot_policy.max_age_seconds` to drop stale spots before they're processed further. For CW/RTTY frequency smoothing, tune `spot_policy.frequency_averaging_seconds` (window), `spot_policy.frequency_averaging_tolerance_hz` (allowed deviation), and `spot_policy.frequency_averaging_min_reports` (minimum corroborating reports).
 5. (Optional) Enable `skew.enabled` after generating `skew.file` via `go run ./cmd/rbnskewfetch` (or let the server fetch it at the next 00:30 UTC window). The server applies each skimmer's multiplicative correction before normalization so SSIDs stay unique.

@@ -61,9 +61,9 @@ func normalizeTelnetEchoMode(value string) (string, bool) {
 }
 
 // Config represents the complete cluster configuration. The struct maps
-// directly to the YAML files on disk (either a single file or a merged set
-// from a directory) and is enriched with defaults during Load so downstream
-// packages can assume sane, non-zero values.
+// directly to the YAML files on disk (merged from a config directory) and is
+// enriched with defaults during Load so downstream packages can assume sane,
+// non-zero values.
 type Config struct {
 	Server          ServerConfig         `yaml:"server"`
 	Telnet          TelnetConfig         `yaml:"telnet"`
@@ -592,10 +592,10 @@ type CTYConfig struct {
 	RefreshUTC string `yaml:"refresh_utc"`
 }
 
-// Load reads configuration from a YAML file or a directory containing YAML
-// files, applies defaults, and validates key fields so the rest of the cluster
-// can rely on a consistent baseline.
-// Purpose: Load and normalize the cluster configuration from file or directory.
+// Load reads configuration from a YAML directory (or a single YAML file if a file
+// path is explicitly supplied), applies defaults, and validates key fields so the
+// rest of the cluster can rely on a consistent baseline.
+// Purpose: Load and normalize the cluster configuration from a directory.
 // Key aspects: Supports directory merge; applies defaults and validates values.
 // Upstream: main.go startup.
 // Downstream: loadConfigDir, mergeYAMLMaps, normalize* helpers.

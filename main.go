@@ -55,7 +55,6 @@ const (
 	knownCallEntryBytes = 24
 	sourceModeDelimiter = "|"
 	defaultConfigPath   = "data/config"
-	legacyConfigPath    = "config.yaml"
 	envConfigPath       = "DXC_CONFIG_PATH"
 
 	// envGridDBCheckOnMiss overrides the config-driven grid_db_check_on_miss at runtime.
@@ -287,15 +286,15 @@ func isStdoutTTY() bool {
 }
 
 // Purpose: Load configuration from env/default locations.
-// Key aspects: Tries env override, default config dir, and legacy file path.
+// Key aspects: Tries env override first, then the default config dir.
 // Upstream: main startup.
 // Downstream: config.Load and os.IsNotExist.
 func loadClusterConfig() (*config.Config, string, error) {
-	candidates := make([]string, 0, 3)
+	candidates := make([]string, 0, 2)
 	if envPath := strings.TrimSpace(os.Getenv(envConfigPath)); envPath != "" {
 		candidates = append(candidates, envPath)
 	}
-	candidates = append(candidates, defaultConfigPath, legacyConfigPath)
+	candidates = append(candidates, defaultConfigPath)
 
 	var lastErr error
 	for _, path := range candidates {
@@ -1251,6 +1250,10 @@ func processOutputSpots(
 				s.Confidence = "V"
 			}
 
+			if seedKnownCallConfidence(s, knownCalls) {
+				dirty = true
+			}
+
 			if !s.IsBeacon && spotPolicy.MaxAgeSeconds > 0 {
 				if time.Since(s.Time) > time.Duration(spotPolicy.MaxAgeSeconds)*time.Second {
 					// log.Printf("Spot dropped (stale): %s at %.1fkHz (age=%ds)", s.DXCall, s.Frequency, int(time.Since(s.Time).Seconds()))
@@ -1309,9 +1312,9 @@ func processOutputSpots(
 				}
 			}
 
-			// Ensure CW/RTTY/SSB carry at least a placeholder confidence glyph when no correction applied.
+			// Ensure confidence-capable modes carry at least a placeholder glyph when no correction applied.
 			if !s.IsBeacon {
-				if (modeUpper == "CW" || modeUpper == "RTTY" || modeUpper == "SSB") && strings.TrimSpace(s.Confidence) == "" {
+				if modeSupportsConfidenceGlyph(modeUpper) && strings.TrimSpace(s.Confidence) == "" {
 					s.Confidence = "?"
 					dirty = true
 				}
@@ -1659,11 +1662,13 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 		return false
 	}
 	if !spot.IsCallCorrectionCandidate(spotEntry.Mode) {
-		spotEntry.Confidence = ""
+		// Leave any pre-seeded confidence intact for non-correction modes.
 		return false
 	}
 	if idx == nil || !cfg.Enabled {
-		spotEntry.Confidence = "?"
+		if strings.TrimSpace(spotEntry.Confidence) == "" {
+			spotEntry.Confidence = "?"
+		}
 		return false
 	}
 
@@ -1867,6 +1872,51 @@ func frequencyAverageTolerance(policy config.SpotPolicy) float64 {
 		toleranceHz = 300
 	}
 	return toleranceHz / 1000.0
+}
+
+// Purpose: Decide whether a mode should carry confidence glyphs.
+// Key aspects: Treats USB/LSB as voice modes; digital modes remain exempt.
+// Upstream: processOutputSpots confidence seeding and fallback.
+// Downstream: strings.ToUpper/TrimSpace.
+func modeSupportsConfidenceGlyph(mode string) bool {
+	switch strings.ToUpper(strings.TrimSpace(mode)) {
+	case "CW", "RTTY", "USB", "LSB":
+		return true
+	default:
+		return false
+	}
+}
+
+// Purpose: Seed baseline confidence and promote known calls before correction.
+// Key aspects: Sets '?' first, then upgrades to 'S' for SCP-known DX calls.
+// Upstream: processOutputSpots prior to call correction.
+// Downstream: KnownCallsigns.Contains and modeSupportsConfidenceGlyph.
+func seedKnownCallConfidence(s *spot.Spot, knownCalls *atomic.Pointer[spot.KnownCallsigns]) bool {
+	if s == nil || s.IsBeacon {
+		return false
+	}
+	mode := s.ModeNorm
+	if mode == "" {
+		mode = s.Mode
+	}
+	if !modeSupportsConfidenceGlyph(mode) {
+		return false
+	}
+	changed := false
+	if strings.TrimSpace(s.Confidence) == "" {
+		s.Confidence = "?"
+		changed = true
+	}
+	if knownCalls == nil {
+		return changed
+	}
+	if known := knownCalls.Load(); known != nil && known.Contains(s.DXCall) {
+		if s.Confidence != "S" {
+			s.Confidence = "S"
+			changed = true
+		}
+	}
+	return changed
 }
 
 // spotsToEntries converts []*spot.Spot to bandmap.SpotEntry using Hz units for frequency.
