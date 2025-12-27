@@ -131,6 +131,30 @@ func TestParseSpotCommentPSK31SetsMode(t *testing.T) {
 	}
 }
 
+func TestParseSpotCommentJS8SetsMode(t *testing.T) {
+	comment := "CQ JS8 TEST"
+	result := ParseSpotComment(comment, 7078.0)
+
+	if result.Mode != "JS8" {
+		t.Fatalf("expected mode JS8, got %q", result.Mode)
+	}
+	if strings.TrimSpace(result.Comment) != "CQ TEST" {
+		t.Fatalf("expected comment without mode token, got %q", result.Comment)
+	}
+}
+
+func TestParseSpotCommentSSTVSetsMode(t *testing.T) {
+	comment := "CQ SSTV MARTIN1"
+	result := ParseSpotComment(comment, 14230.0)
+
+	if result.Mode != "SSTV" {
+		t.Fatalf("expected mode SSTV, got %q", result.Mode)
+	}
+	if strings.TrimSpace(result.Comment) != "CQ MARTIN1" {
+		t.Fatalf("expected comment without mode token, got %q", result.Comment)
+	}
+}
+
 func TestParseSpotCommentNoExplicitModeLeavesBlank(t *testing.T) {
 	comment := "CQ TEST"
 	result := ParseSpotComment(comment, 14074.0)

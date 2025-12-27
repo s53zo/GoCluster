@@ -11,10 +11,10 @@ func TestDecorateSpotterCall(t *testing.T) {
 	if got := with.decorateSpotterCall("K1ABC-1"); got != "K1ABC-1" {
 		t.Fatalf("expected existing SSID to remain untouched, got %s", got)
 	}
-	// 10-character calls shouldn't be expanded when it would exceed the validation limit.
+	// 10-character calls can be expanded when still within the validation limit.
 	longCall := "AB2CDEFGHI" // length 10
-	if got := with.decorateSpotterCall(longCall); got != longCall {
-		t.Fatalf("expected long call to remain unchanged, got %s", got)
+	if got := with.decorateSpotterCall(longCall); got != longCall+"-#" {
+		t.Fatalf("expected long call to include SSID suffix, got %s", got)
 	}
 
 	without := &Client{appendSSID: false}

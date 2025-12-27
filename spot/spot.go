@@ -118,32 +118,32 @@ func roundFrequencyTo100Hz(freqKHz float64) float64 {
 // zero-allocation buffer. The hash covers:
 //   - Time truncated to the minute (Unix seconds)
 //   - Frequency truncated to whole kHz
-//   - DE and DX calls normalized, uppercased, fixed-width 12 bytes each
+//   - DE and DX calls normalized, uppercased, fixed-width 15 bytes each
 //
 // Little-endian encoding keeps the byte order deterministic across platforms.
 func (s *Spot) Hash32() uint32 {
 	s.EnsureNormalized()
-	var buf [36]byte
+	var buf [42]byte
 	// Time (bytes 0-7): Unix seconds, truncated to the minute.
 	t := s.Time.Truncate(time.Minute).Unix()
 	binary.LittleEndian.PutUint64(buf[0:8], uint64(t))
 	// Frequency (bytes 8-11): whole kHz.
 	freq := uint32(s.Frequency)
 	binary.LittleEndian.PutUint32(buf[8:12], freq)
-	// DE and DX calls (bytes 12-23, 24-35).
-	writeFixedNormalizedCall(buf[12:24], s.DECallNorm)
-	writeFixedNormalizedCall(buf[24:36], s.DXCallNorm)
+	// DE and DX calls (bytes 12-26, 27-41).
+	writeFixedNormalizedCall(buf[12:27], s.DECallNorm)
+	writeFixedNormalizedCall(buf[27:42], s.DXCallNorm)
 	// Use xxh3 for speed; fold to 32 bits for existing dedup map.
 	return uint32(xxh3.Hash(buf[:]))
 }
 
 // Purpose: Write a normalized callsign into a fixed-width buffer.
-// Key aspects: Pads/truncates to 12 bytes with zero fill.
+// Key aspects: Pads/truncates to 15 bytes with zero fill.
 // Upstream: Spot.Hash32.
 // Downstream: None (byte copy only).
 // writeFixedNormalizedCall assumes call is already normalized/uppercased and fits into ASCII bytes.
 func writeFixedNormalizedCall(dst []byte, call string) {
-	const maxLen = 12
+	const maxLen = 15
 	n := 0
 	for i := 0; i < len(call) && n < maxLen; i++ {
 		dst[n] = call[i]
@@ -174,6 +174,10 @@ const (
 	timeColumnStart     = 73 // time starts at internal index 73 (1-based column 74)
 	minGapToSymbol      = 2  // minimum spaces before confidence symbol
 )
+
+const dxDisplayMaxLen = 10
+
+var dxDisplayStripSuffixes = []string{"/QRP", "/MM", "/AM", "/M", "/P"}
 
 type stringBuilder struct {
 	buf []byte
@@ -297,6 +301,27 @@ func writeSpaces(b *stringBuilder, count int) {
 	}
 }
 
+// Purpose: Normalize and truncate the DX callsign for telnet display.
+// Key aspects: Strips portable suffixes and truncates to 10 chars to preserve spacing.
+// Upstream: FormatDXCluster (DX callsign field only).
+// Downstream: NormalizeCallsign.
+func displayDXCall(call string) string {
+	normalized := NormalizeCallsign(call)
+	if normalized == "" {
+		return normalized
+	}
+	for _, suffix := range dxDisplayStripSuffixes {
+		if strings.HasSuffix(normalized, suffix) {
+			normalized = strings.TrimSuffix(normalized, suffix)
+			break
+		}
+	}
+	if len(normalized) > dxDisplayMaxLen {
+		normalized = normalized[:dxDisplayMaxLen]
+	}
+	return normalized
+}
+
 // Purpose: Format a spot as a fixed-width DX cluster line.
 // Key aspects: Enforces column layout and caches formatted string once.
 // Upstream: telnet broadcast and archive formatting.
@@ -312,7 +337,7 @@ func writeSpaces(b *stringBuilder, count int) {
 //	1-6:   "DX de "
 //	7-?:   Spotter callsign with ":" suffix
 //	25:    Frequency ends at column 25 (right-aligned within the left padding)
-//	28-?:  DX callsign (left-aligned; padded to 8 chars when shorter)
+//	28-?:  DX callsign (left-aligned; padded to 8 chars when shorter; display truncates to 10)
 //	40:    Mode starts at column 40
 //	67-70: DX grid (4 chars; blank if unknown)
 //	72:    Confidence glyph (1 char; blank if unknown)
@@ -380,7 +405,7 @@ func (s *Spot) FormatDXCluster() string {
 
 		// DX callsigns longer than the available space are truncated to keep the
 		// mode anchor fixed at column 40.
-		dxCall := s.DXCall
+		dxCall := displayDXCall(s.DXCall)
 		maxDXLen := commentColumn - b.Len()
 		if maxDXLen < 0 {
 			maxDXLen = 0

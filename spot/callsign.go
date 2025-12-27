@@ -11,6 +11,11 @@ import (
 
 var callsignPattern = regexp.MustCompile(`^[A-Z0-9]+(?:[/-][A-Z0-9#]+)*$`)
 
+const (
+	minCallsignLength = 3
+	maxCallsignLength = 15
+)
+
 // CallCache is a tiny concurrency-safe cache to avoid repeating the same normalization
 // work for hot call/spotter strings during bursts.
 type CallCache struct {
@@ -135,20 +140,28 @@ func NormalizeCallsign(call string) string {
 }
 
 // Purpose: Validate a normalized callsign for basic format rules.
-// Key aspects: Length bounds, digit presence, and regex match.
+// Key aspects: Length bounds (3..15), digit presence, and regex match.
 // Upstream: IsValidCallsign.
 // Downstream: callsignPattern and unicode checks.
 func validateNormalizedCallsign(call string) bool {
 	if call == "" {
 		return false
 	}
-	if len(call) < 3 || len(call) > 10 {
+	if len(call) < minCallsignLength || len(call) > maxCallsignLength {
 		return false
 	}
 	if strings.IndexFunc(call, unicode.IsDigit) < 0 {
 		return false
 	}
 	return callsignPattern.MatchString(call)
+}
+
+// Purpose: Return the maximum allowed callsign length.
+// Key aspects: Exposes the validation limit for other packages.
+// Upstream: PSKReporter and other callers.
+// Downstream: maxCallsignLength constant.
+func MaxCallsignLength() int {
+	return maxCallsignLength
 }
 
 // Purpose: Validate a raw callsign input.

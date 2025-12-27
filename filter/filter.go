@@ -2,7 +2,7 @@
 //
 // Filters allow users to customize which spots they receive based on:
 //   - Band (e.g., 20m, 40m, 160m)
-//   - Mode (e.g., CW, USB, FT8, RTTY)
+//   - Mode (e.g., CW, USB, JS8, SSTV, FT8, RTTY)
 //   - Callsign patterns (e.g., W1*, LZ5VV, *ABC) for DX and DE calls
 //   - Source category (HUMAN vs SKIMMER/automated)
 //
@@ -32,11 +32,13 @@ var SupportedModes = []string{
 	"CW",
 	"FT4",
 	"FT8",
+	"JS8",
 	"LSB",
 	"USB",
 	"RTTY",
 	"MSK144",
 	"PSK31",
+	"SSTV",
 }
 
 // Purpose: Return a pointer to the provided bool.
@@ -294,7 +296,7 @@ func EnsureUserDataDir() error {
 //
 // The filter maintains several types of criteria that can be combined:
 //  1. Band filters: Which amateur radio bands to accept (20m, 40m, 160m)
-//  2. Mode filters: Which operating modes to accept (CW, USB, FT8, etc.)
+//  2. Mode filters: Which operating modes to accept (CW, USB, JS8, SSTV, FT8, etc.)
 //  3. Callsign patterns: Which DX/DE callsigns to accept (W1*, LZ5VV, etc.)
 //  4. Confidence glyphs: Which consensus indicators (?, S, C, P, V, B) to accept.
 //  5. Beacon inclusion: Whether DX calls ending in /B (beacons) should be delivered.

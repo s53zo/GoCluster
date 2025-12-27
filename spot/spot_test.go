@@ -78,6 +78,30 @@ func TestFormatDXClusterUsesGridAndConfidence(t *testing.T) {
 	}
 }
 
+func TestFormatDXClusterDXCallDisplayTruncatesAndStripsSuffix(t *testing.T) {
+	s := &Spot{
+		DXCall:    "HB9/TA1EYE/P",
+		DECall:    "OH0M",
+		Frequency: 14276.0,
+		Mode:      "USB",
+		Time:      time.Date(2025, time.December, 26, 15, 37, 0, 0, time.UTC),
+	}
+
+	got := s.FormatDXCluster()
+	if strings.Contains(got, "/P") {
+		t.Fatalf("expected portable suffix to be stripped from output, got %q", got)
+	}
+	if !strings.Contains(got, "HB9/TA1EYE") {
+		t.Fatalf("expected truncated DX call to be present, got %q", got)
+	}
+	if !strings.Contains(got, "HB9/TA1EYE  USB") {
+		t.Fatalf("expected two spaces between DX call and mode, got %q", got)
+	}
+	if modeIdx := strings.Index(got, "USB"); modeIdx != 39 {
+		t.Fatalf("expected mode to start at 0-based index 39 (1-based column 40), got %d in %q", modeIdx, got)
+	}
+}
+
 func TestFormatCommentTrimsWhitespace(t *testing.T) {
 	s := &Spot{
 		DXCall:    "N0CALL",

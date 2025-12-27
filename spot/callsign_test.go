@@ -35,3 +35,14 @@ func TestIsValidCallsignRequiresDigitAfterSlash(t *testing.T) {
 		t.Fatalf("IsValidCallsign should reject ABC/DEF because it lacks digits")
 	}
 }
+
+func TestIsValidCallsignLengthBounds(t *testing.T) {
+	valid := "K1ABCDEF/GHIJKL" // 15 chars, contains a digit.
+	if !IsValidCallsign(valid) {
+		t.Fatalf("IsValidCallsign should accept max-length callsign %q", valid)
+	}
+	invalid := "K1ABCDEF/GHIJKLM" // 16 chars.
+	if IsValidCallsign(invalid) {
+		t.Fatalf("IsValidCallsign should reject overlong callsign %q", invalid)
+	}
+}

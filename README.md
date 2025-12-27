@@ -20,7 +20,7 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
    - Parsing uses a single left-to-right token walk assisted by an Aho–Corasick (AC) keyword scanner so the line only needs to be scanned once.
    - The parser supports both `DX de CALL: 14074.0 ...` and the glued form `DX de CALL:14074.0 ...` by splitting the spotter token into `DECall` + optional attached frequency.
    - Frequency is the first token that parses as a plausible dial frequency (currently `100.0`-`3,000,000.0` kHz), rather than assuming a fixed column index.
-   - Mode is taken from the first explicit mode token (`CW`, `USB`, `FT8`, `MSK144`, etc.). If mode is absent, it is inferred from `data/config/mode_allocations.yaml` (with a simple fallback: `USB` >= 10 MHz else `CW`).
+   - Mode is taken from the first explicit mode token (`CW`, `USB`, `JS8`, `SSTV`, `FT8`, `MSK144`, etc.). If mode is absent, it is inferred from `data/config/mode_allocations.yaml` (with a simple fallback: `USB` >= 10 MHz else `CW`).
    - Report/SNR is recognized in both `+5 dB` and `-13dB` forms; `HasReport` is set whenever a report is present (including a valid `0 dB`).
    - Ingest burst protection is sized per source via `rbn.slot_buffer` / `rbn_digital.slot_buffer` in `data/config/ingest.yaml`; overflow logs are tagged by source for easier diagnosis.
 3. **PSKReporter MQTT** (`pskreporter/client.go`) subscribes to `pskr/filter/v2/+/+/#` (or one or more `pskr/filter/v2/+/<MODE>/#` topics when `pskreporter.modes` is configured), converts JSON payloads into canonical spots, and applies locator-based metadata. Set `pskreporter.append_spotter_ssid: true` if you want receiver callsigns that lack SSIDs to pick up a `-#` suffix for deduplication.
@@ -36,7 +36,7 @@ Non-PSKReporter sources (RBN CW/RTTY, RBN digital, and upstream/human telnet fee
 
 High-level flow:
 
-- **Keyword dictionary**: `DX`, `DE`, `DB`, `WPM`, plus all supported mode tokens (`CW`, `SSB`, `USB`, `LSB`, `RTTY`, `FT4`, `FT8`, `MSK144`, and common variants like `FT-8`).
+- **Keyword dictionary**: `DX`, `DE`, `DB`, `WPM`, plus all supported mode tokens (`CW`, `SSB`, `USB`, `LSB`, `JS8`, `SSTV`, `RTTY`, `FT4`, `FT8`, `MSK144`, and common variants like `FT-8`).
 - **Automaton build (once)**: patterns are compiled into a trie and failure links are built with a BFS. This runs once and is reused for every line.
 - **Per-line scan**:
   - Tokenize the raw line on whitespace while tracking token byte offsets.
@@ -125,6 +125,7 @@ The telnet server broadcasts spots as fixed-width DX-cluster lines:
 - Exactly **78 characters**, followed by **CRLF** (line endings are normalized in `telnet.Client.Send`).
 - Column numbering below is **1-based** (column 1 is the `D` in `DX de `).
 - The left side is padded so **mode always starts at column 40**.
+- The displayed DX callsign is normalized, stripped of `/P`, `/M`, `/AM`, `/MM`, `/QRP`, then truncated to 10 characters to preserve fixed columns (the full normalized callsign is still stored and hashed).
 - The right-side tail is fixed so clients can rely on it:
   - Grid: columns 67-70 (4 chars; blank if unknown)
   - Confidence: column 72 (1 char; blank if unknown)
@@ -144,7 +145,7 @@ DX de W3LPL:       7009.5  K1ABC       FT8 -5 dB                          FN20 S
 
 Each `spot.Spot` stores:
 - **ID** - monotonic identifier
-- **DXCall / DECall** - uppercased callsigns
+- **DXCall / DECall** - uppercased callsigns (validation accepts 3-15 characters after normalization; telnet display truncates DX to 10 as described above)
 - **Frequency** (kHz), **Band**, **Mode**, **Report** (dB/SNR), **HasReport** (distinguishes missing SNR from a real 0)
 - **Time** - UTC timestamp from the source
 - **Comment** - free-form message (human ingest strips mode/SNR/time tokens before storing)

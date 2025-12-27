@@ -557,7 +557,7 @@ func (c *Client) decorateSpotterCall(raw string) string {
 		return normalized
 	}
 	// Appending "-#" increases length by 2. Skip if it would violate validation limits.
-	if len(normalized)+2 > 10 {
+	if len(normalized)+2 > spot.MaxCallsignLength() {
 		c.spotterCache.Add(cacheKey, normalized)
 		return normalized
 	}
