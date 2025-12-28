@@ -58,6 +58,7 @@ High-level flow:
 - `ui.mode: ansi` (default) draws the lightweight ANSI console in the server's terminal when stdout is a TTY. Telnet clients do **not** see this UI.
 - `ui.mode: tview` enables the framed tview dashboard (requires an interactive console).
 - `ui.mode: headless` disables the local console; logs continue to stdout/stderr.
+- `ui.pane_lines` controls ANSI history depth and the visible heights of tview panes.
 - Config block (excerpt):
   ```yaml
   ui:
@@ -204,14 +205,14 @@ Filter management commands are implemented directly in `telnet/server.go` and op
 - `SHOW FILTER BEACON` - display the current beacon-filter state.
 - `SHOW FILTER CONFIDENCE` - lists each glyph alongside whether it is currently enabled.
 
-Confidence glyphs are only emitted for modes that run consensus-based correction (CW/RTTY/USB/LSB voice modes). FT8/FT4 spots carry no confidence glyphs, so confidence filters do not affect them. Before correction, CW/RTTY/USB/LSB voice spots start at `?` and are promoted to `S` when the DX call is present in `MASTER.SCP`.
+Confidence glyphs are only emitted for modes that run consensus-based correction (CW/RTTY/USB/LSB voice modes). FT8/FT4 spots carry no confidence glyphs, so confidence filters do not affect them. After correction assigns `P`/`V`/`C`/`?`, any remaining `?` is upgraded to `S` when the DX call is present in `MASTER.SCP`.
 
 Band, mode, confidence, and DXGRID2/DEGRID2 commands share identical semantics: they accept comma- or space-separated lists, ignore duplicates/case, and treat the literal `ALL` as a shorthand to reset that filter back to "allow every band/mode/confidence glyph/2-character grid." DXGRID2 applies only to the DX grid when it is exactly two characters long; DEGRID2 applies only to the DE grid when it is exactly two characters long. 4/6-character or empty grids are unaffected, and longer tokens provided by the user are truncated to their first two characters before validation.
 
 Confidence indicator legend in telnet output:
 
 - `?` - Unknown/low support
-- `S` - DX call is present in `MASTER.SCP` (known-call promotion before correction)
+- `S` - DX call is present in `MASTER.SCP` and the post-correction confidence would otherwise be `?`
 - `P` - 25-50% consensus for the subject call (no correction applied)
 - `V` - More than 50% consensus for the subject call (no correction applied)
 - `B` - Correction was suggested but CTY validation failed (call left unchanged)

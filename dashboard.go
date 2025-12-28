@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"dxcluster/config"
+
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -65,10 +67,10 @@ type dashboard struct {
 }
 
 // Purpose: Construct the tview dashboard when enabled.
-// Key aspects: Builds panes, wiring, batching, and starts render goroutines.
+// Key aspects: Builds panes sized from config, wiring, batching, and render goroutines.
 // Upstream: main UI selection when ui.mode=tview.
 // Downstream: tview widgets, flushLoop goroutine, and app.Run goroutine.
-func newDashboard(enable bool) *dashboard {
+func newDashboard(uiCfg config.UIConfig, enable bool) *dashboard {
 	if !enable {
 		return nil
 	}
@@ -96,16 +98,37 @@ func newDashboard(enable bool) *dashboard {
 	harmonicPane := makePane("Harmonics")
 	systemPane := makePane("System")
 
+	statsHeight := uiCfg.PaneLines.Stats
+	if statsHeight <= 0 {
+		statsHeight = 8
+	}
+	callsHeight := uiCfg.PaneLines.Calls
+	if callsHeight <= 0 {
+		callsHeight = 10
+	}
+	unlicensedHeight := uiCfg.PaneLines.Unlicensed
+	if unlicensedHeight <= 0 {
+		unlicensedHeight = 10
+	}
+	harmonicsHeight := uiCfg.PaneLines.Harmonics
+	if harmonicsHeight <= 0 {
+		harmonicsHeight = 10
+	}
+	systemHeight := uiCfg.PaneLines.System
+	if systemHeight <= 0 {
+		systemHeight = 10
+	}
+
 	layout := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(stats, 8, 0, false).
+		AddItem(stats, statsHeight, 0, false).
 		AddItem(tview.NewBox(), 1, 0, false).
-		AddItem(callPane, 10, 0, false).
+		AddItem(callPane, callsHeight, 0, false).
 		AddItem(tview.NewBox(), 1, 0, false).
-		AddItem(unlicensedPane, 10, 0, false).
+		AddItem(unlicensedPane, unlicensedHeight, 0, false).
 		AddItem(tview.NewBox(), 1, 0, false).
-		AddItem(harmonicPane, 10, 0, false).
+		AddItem(harmonicPane, harmonicsHeight, 0, false).
 		AddItem(tview.NewBox(), 1, 0, false).
-		AddItem(systemPane, 10, 0, false)
+		AddItem(systemPane, systemHeight, 0, false)
 
 	app := tview.NewApplication().SetRoot(layout, true).EnableMouse(false)
 	ready := make(chan struct{})

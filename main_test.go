@@ -127,11 +127,11 @@ func TestGridDBCheckOnMissEnabled_UsesLoadedFromWhenSet(t *testing.T) {
 	}
 }
 
-// Purpose: Ensure known-call seeding promotes confidence to S.
-// Key aspects: Uses a temp MASTER.SCP-style file and CW mode.
+// Purpose: Ensure SCP-known calls promote '?' confidence to 'S' after correction.
+// Key aspects: Applies the known-call floor only when confidence is '?'.
 // Upstream: go test execution.
-// Downstream: seedKnownCallConfidence and spot.LoadKnownCallsigns.
-func TestSeedKnownCallConfidencePromotesKnownDX(t *testing.T) {
+// Downstream: applyKnownCallFloor and spot.LoadKnownCallsigns.
+func TestApplyKnownCallFloorPromotesKnownDX(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "known.txt")
 	if err := os.WriteFile(path, []byte("K1KI\n"), 0o644); err != nil {
@@ -145,13 +145,69 @@ func TestSeedKnownCallConfidencePromotesKnownDX(t *testing.T) {
 	knownPtr.Store(known)
 
 	s := spot.NewSpot("K1KI", "W2TT", 1831.3, "CW")
-	s.Confidence = ""
+	s.Confidence = "?"
 
-	if !seedKnownCallConfidence(s, &knownPtr) {
-		t.Fatalf("expected known-call seed to mark confidence")
+	if !applyKnownCallFloor(s, &knownPtr) {
+		t.Fatalf("expected known-call floor to mark confidence")
 	}
 	if s.Confidence != "S" {
 		t.Fatalf("expected confidence S, got %q", s.Confidence)
+	}
+}
+
+// Purpose: Ensure SCP floor does not override explicit P/V/C confidence.
+// Key aspects: Keeps existing confidence when it is not '?'.
+// Upstream: go test execution.
+// Downstream: applyKnownCallFloor.
+func TestApplyKnownCallFloorKeepsNonUnknownConfidence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "known.txt")
+	if err := os.WriteFile(path, []byte("K1KI\n"), 0o644); err != nil {
+		t.Fatalf("write known calls: %v", err)
+	}
+	known, err := spot.LoadKnownCallsigns(path)
+	if err != nil {
+		t.Fatalf("load known calls: %v", err)
+	}
+	var knownPtr atomic.Pointer[spot.KnownCallsigns]
+	knownPtr.Store(known)
+
+	s := spot.NewSpot("K1KI", "W2TT", 1831.3, "CW")
+	s.Confidence = "P"
+
+	if applyKnownCallFloor(s, &knownPtr) {
+		t.Fatalf("did not expect known-call floor to override P")
+	}
+	if s.Confidence != "P" {
+		t.Fatalf("expected confidence P, got %q", s.Confidence)
+	}
+}
+
+// Purpose: Ensure SCP floor ignores modes without confidence glyphs.
+// Key aspects: FT8 remains without S promotion even when known.
+// Upstream: go test execution.
+// Downstream: applyKnownCallFloor.
+func TestApplyKnownCallFloorSkipsUnsupportedMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "known.txt")
+	if err := os.WriteFile(path, []byte("K1KI\n"), 0o644); err != nil {
+		t.Fatalf("write known calls: %v", err)
+	}
+	known, err := spot.LoadKnownCallsigns(path)
+	if err != nil {
+		t.Fatalf("load known calls: %v", err)
+	}
+	var knownPtr atomic.Pointer[spot.KnownCallsigns]
+	knownPtr.Store(known)
+
+	s := spot.NewSpot("K1KI", "W2TT", 14074.0, "FT8")
+	s.Confidence = "?"
+
+	if applyKnownCallFloor(s, &knownPtr) {
+		t.Fatalf("did not expect known-call floor to apply to FT8")
+	}
+	if s.Confidence != "?" {
+		t.Fatalf("expected confidence ?, got %q", s.Confidence)
 	}
 }
 

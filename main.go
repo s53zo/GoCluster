@@ -366,7 +366,7 @@ func main() {
 		if !renderAllowed {
 			log.Printf("UI disabled (tview requires an interactive console)")
 		} else {
-			ui = newDashboard(true)
+			ui = newDashboard(cfg.UI, true)
 		}
 	case "ansi":
 		if !renderAllowed {
@@ -1285,10 +1285,6 @@ func processOutputSpots(
 				s.Confidence = "V"
 			}
 
-			if seedKnownCallConfidence(s, knownCalls) {
-				dirty = true
-			}
-
 			if !s.IsBeacon && spotPolicy.MaxAgeSeconds > 0 {
 				if time.Since(s.Time) > time.Duration(spotPolicy.MaxAgeSeconds)*time.Second {
 					// log.Printf("Spot dropped (stale): %s at %.1fkHz (age=%ds)", s.DXCall, s.Frequency, int(time.Since(s.Time).Seconds()))
@@ -1355,6 +1351,9 @@ func processOutputSpots(
 			if !s.IsBeacon {
 				if modeSupportsConfidenceGlyph(modeUpper) && strings.TrimSpace(s.Confidence) == "" {
 					s.Confidence = "?"
+					dirty = true
+				}
+				if applyKnownCallFloor(s, knownCalls) {
 					dirty = true
 				}
 			}
@@ -1836,27 +1835,7 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 	entries := spotsToEntries(others)
 	corrected, supporters, correctedConfidence, subjectConfidence, totalReporters, ok := spot.SuggestCallCorrection(spotEntry, entries, settings, now)
 
-	var knownCall bool
-	if knownPtr != nil {
-		if known := knownPtr.Load(); known != nil {
-			call := spotEntry.DXCallNorm
-			if call == "" {
-				call = spotEntry.DXCall
-			}
-			knownCall = known.Contains(call)
-		}
-	}
-	ctyMatch := false
-	if ctyDB != nil {
-		call := spotEntry.DXCallNorm
-		if call == "" {
-			call = spotEntry.DXCall
-		}
-		if _, ok := ctyDB.LookupCallsignPortable(call); ok {
-			ctyMatch = true
-		}
-	}
-	spotEntry.Confidence = formatConfidence(subjectConfidence, totalReporters, knownCall, ctyMatch)
+	spotEntry.Confidence = formatConfidence(subjectConfidence, totalReporters)
 
 	if !ok {
 		return false
@@ -2003,11 +1982,11 @@ func modeSupportsConfidenceGlyph(mode string) bool {
 	}
 }
 
-// Purpose: Seed baseline confidence and promote known calls before correction.
-// Key aspects: Sets '?' first, then upgrades to 'S' for SCP-known DX calls.
-// Upstream: processOutputSpots prior to call correction.
+// Purpose: Apply SCP known-call promotion only when confidence is still unknown.
+// Key aspects: If confidence is '?', upgrade to 'S' when the DX call is in SCP.
+// Upstream: processOutputSpots after correction/confidence assignment.
 // Downstream: KnownCallsigns.Contains and modeSupportsConfidenceGlyph.
-func seedKnownCallConfidence(s *spot.Spot, knownCalls *atomic.Pointer[spot.KnownCallsigns]) bool {
+func applyKnownCallFloor(s *spot.Spot, knownCalls *atomic.Pointer[spot.KnownCallsigns]) bool {
 	if s == nil || s.IsBeacon {
 		return false
 	}
@@ -2018,25 +1997,24 @@ func seedKnownCallConfidence(s *spot.Spot, knownCalls *atomic.Pointer[spot.Known
 	if !modeSupportsConfidenceGlyph(mode) {
 		return false
 	}
-	changed := false
-	if strings.TrimSpace(s.Confidence) == "" {
-		s.Confidence = "?"
-		changed = true
+	if strings.TrimSpace(s.Confidence) != "?" {
+		return false
 	}
 	if knownCalls == nil {
-		return changed
+		return false
 	}
 	call := s.DXCallNorm
 	if call == "" {
 		call = s.DXCall
 	}
-	if known := knownCalls.Load(); known != nil && known.Contains(call) {
-		if s.Confidence != "S" {
-			s.Confidence = "S"
-			changed = true
-		}
+	if call == "" {
+		return false
 	}
-	return changed
+	if known := knownCalls.Load(); known != nil && known.Contains(call) {
+		s.Confidence = "S"
+		return true
+	}
+	return false
 }
 
 // spotsToEntries converts []*spot.Spot to bandmap.SpotEntry using Hz units for frequency.
@@ -2066,14 +2044,11 @@ func spotsToEntries(spots []*spot.Spot) []bandmap.SpotEntry {
 }
 
 // Purpose: Format the confidence string for corrected calls.
-// Key aspects: Encodes percent, known-call, and CTY match cues.
+// Key aspects: Encodes percent-only consensus buckets (P/V/?); SCP floor applied later.
 // Upstream: maybeApplyCallCorrectionWithLogger.
-// Downstream: fmt.Sprintf.
-func formatConfidence(percent int, totalReporters int, known bool, ctyMatch bool) string {
+// Downstream: None (pure mapping).
+func formatConfidence(percent int, totalReporters int) string {
 	if totalReporters <= 1 {
-		if ctyMatch || known {
-			return "S"
-		}
 		return "?"
 	}
 

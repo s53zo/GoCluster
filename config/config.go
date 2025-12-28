@@ -153,11 +153,11 @@ type UIConfig struct {
 	// ClearScreen toggles whether the ANSI renderer clears the screen each
 	// frame. When false, frames are appended (useful for terminals that scroll).
 	ClearScreen bool `yaml:"clear_screen"`
-	// PaneLines bounds the retained history per pane for the ANSI renderer.
+	// PaneLines bounds the retained history per pane for ANSI and sets tview pane heights.
 	PaneLines UIPaneLines `yaml:"pane_lines"`
 }
 
-// UIPaneLines bounds history depth for the ANSI renderer.
+// UIPaneLines bounds history depth for ANSI and visible pane heights for tview.
 type UIPaneLines struct {
 	Stats      int `yaml:"stats"`
 	Calls      int `yaml:"calls"`
