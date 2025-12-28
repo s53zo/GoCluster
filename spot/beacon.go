@@ -31,5 +31,9 @@ func (s *Spot) RefreshBeaconFlag() {
 	if s == nil {
 		return
 	}
+	if s.DXCallNorm != "" {
+		s.IsBeacon = strings.HasSuffix(s.DXCallNorm, "/B") || commentContainsBeaconKeyword(s.Comment)
+		return
+	}
 	s.IsBeacon = IsBeaconCall(s.DXCall) || commentContainsBeaconKeyword(s.Comment)
 }

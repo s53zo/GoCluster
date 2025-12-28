@@ -18,6 +18,14 @@ func TestNormalizeCallsignTrimsTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestNormalizeCallsignStripsPortableSuffix(t *testing.T) {
+	input := "K1ABC/P"
+	want := "K1ABC"
+	if got := NormalizeCallsign(input); got != want {
+		t.Fatalf("NormalizeCallsign(%q) = %q, want %q", input, got, want)
+	}
+}
+
 func TestIsValidCallsignRejectsNonDigitWithSlash(t *testing.T) {
 	if IsValidCallsign("KWS/NM") {
 		t.Fatalf("IsValidCallsign should reject KWS/NM because it lacks digits")

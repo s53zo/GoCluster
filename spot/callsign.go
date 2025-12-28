@@ -16,6 +16,8 @@ const (
 	maxCallsignLength = 15
 )
 
+var portableSuffixes = []string{"/QRP", "/MM", "/AM", "/M", "/P"}
+
 // CallCache is a tiny concurrency-safe cache to avoid repeating the same normalization
 // work for hot call/spotter strings during bursts.
 type CallCache struct {
@@ -123,7 +125,8 @@ func ConfigureNormalizeCallCache(size int, ttl time.Duration) {
 }
 
 // Purpose: Normalize a callsign for consistent comparisons.
-// Key aspects: Uppercases, trims, converts dots to slashes, and strips trailing slash.
+// Key aspects: Uppercases, trims, converts dots to slashes, strips trailing slash,
+// and removes portable suffixes like /P or /MM.
 // Upstream: All parsing and validation paths.
 // Downstream: normalizeCallCache and strings operations.
 // NormalizeCallsign uppercases the string, trims whitespace, and removes trailing dots or slashes.
@@ -135,6 +138,12 @@ func NormalizeCallsign(call string) string {
 	normalized = strings.ReplaceAll(normalized, ".", "/")
 	normalized = strings.TrimSuffix(normalized, "/")
 	normalized = strings.TrimSpace(normalized)
+	for _, suffix := range portableSuffixes {
+		if strings.HasSuffix(normalized, suffix) {
+			normalized = strings.TrimSuffix(normalized, suffix)
+			break
+		}
+	}
 	normalizeCallCache.Add(call, normalized)
 	return normalized
 }
@@ -172,6 +181,14 @@ func MaxCallsignLength() int {
 func IsValidCallsign(call string) bool {
 	normalized := NormalizeCallsign(call)
 	return validateNormalizedCallsign(normalized)
+}
+
+// Purpose: Validate an already-normalized callsign.
+// Key aspects: Assumes NormalizeCallsign was already applied by the caller.
+// Upstream: Ingest paths that normalize once.
+// Downstream: validateNormalizedCallsign.
+func IsValidNormalizedCallsign(call string) bool {
+	return validateNormalizedCallsign(call)
 }
 
 // Purpose: Determine whether a callsign is a beacon identifier.

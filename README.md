@@ -24,10 +24,10 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
    - Report/SNR is recognized in both `+5 dB` and `-13dB` forms; `HasReport` is set whenever a report is present (including a valid `0 dB`).
    - Ingest burst protection is sized per source via `rbn.slot_buffer` / `rbn_digital.slot_buffer` in `data/config/ingest.yaml`; overflow logs are tagged by source for easier diagnosis.
 3. **PSKReporter MQTT** (`pskreporter/client.go`) subscribes to `pskr/filter/v2/+/+/#` (or one or more `pskr/filter/v2/+/<MODE>/#` topics when `pskreporter.modes` is configured), converts JSON payloads into canonical spots, and applies locator-based metadata. Set `pskreporter.append_spotter_ssid: true` if you want receiver callsigns that lack SSIDs to pick up a `-#` suffix for deduplication.
-4. **CTY Database** (`cty/parser.go` + `data/cty/cty.plist`) performs longest-prefix lookups so both spotters and spotted stations carry continent/country/CQ/ITU/grid metadata.
+4. **CTY Database** (`cty/parser.go` + `data/cty/cty.plist`) performs longest-prefix lookups; when a callsign includes slashes, it prefers the shortest matching segment (portable/location prefix), so `N2WQ/VE3` and `VE3/N2WQ` both resolve to `VE3` (Canada) for metadata.
 5. **Dedup Engine** (`dedup/deduplicator.go`) filters duplicates before they reach the ring buffer. A zero-second window effectively disables dedup, but the pipeline stays unified. A secondary, broadcast-only dedupe (configurable window, default 60s) runs after call correction/harmonic/frequency adjustments to collapse same-DX/frequency reports from spotters that share the same DE ADIF (DXCC) and DE CQ zone; it hashes kHz + DE ADIF + DE zone + DX call (time window enforced separately), so one spot per window per spotter country/zone reaches clients while the ring/history remain intact. When `secondary_prefer_stronger_snr` is true, the stronger SNR duplicate replaces the cached entry and is broadcast. Spotter SSID display is controlled at broadcast time (see `rbn.keep_ssid_suffix`).
 6. **Frequency Averager** (`spot/frequency_averager.go`) merges CW/RTTY skimmer reports by averaging corroborating reports within a tolerance and rounding to 0.1 kHz once the minimum corroborators is met.
-7. **Call/Harmonic/License Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections, suppress harmonics, and finally run CTY/FCC license gating right before broadcast/buffering. Harmonic suppression supports a stepped minimum dB delta (configured via `harmonics.min_report_delta_step`) so higher-order harmonics must be progressively weaker. Call correction honours `call_correction.min_snr_cw` / `min_snr_rtty` (and `min_snr_voice` if set) so marginal decodes can be ignored when counting corroborators; USB/LSB uses a wider frequency tolerance and candidate search window to reflect 3 kHz SSB bandwidth. Calls ending in `/B` (standard beacon IDs) are auto-tagged and bypass correction/harmonic/license drops (only user filters can hide them). The license gate re-evaluates CTY on license-normalized calls (e.g., `W6/UT5UF` looks up `UT5UF`) and drops only unlicensed US calls after all corrections; these drops appear in the "Unlicensed US Calls" pane.
+7. **Call/Harmonic/License Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections, suppress harmonics, and finally run CTY/FCC license gating right before broadcast/buffering. Harmonic suppression supports a stepped minimum dB delta (configured via `harmonics.min_report_delta_step`) so higher-order harmonics must be progressively weaker. Call correction honours `call_correction.min_snr_cw` / `min_snr_rtty` (and `min_snr_voice` if set) so marginal decodes can be ignored when counting corroborators; USB/LSB uses a wider frequency tolerance and candidate search window to reflect 3 kHz SSB bandwidth. Calls ending in `/B` (standard beacon IDs) are auto-tagged and bypass correction/harmonic/license drops (only user filters can hide them). The license gate uses a license-normalized base call (e.g., `W6/UT5UF` -> `UT5UF`) to decide if FCC checks apply and which call to query, while CTY metadata still reflects the portable/location prefix (so `N2WQ/VE3` reports Canada for DXCC but uses `N2WQ` for licensing); drops appear in the "Unlicensed US Calls" pane.
 8. **Skimmer Frequency Corrections** (`cmd/rbnskewfetch`, `skew/`, `rbn/client.go`, `pskreporter/client.go`) download SM7IUN's skew list, convert it to JSON, and apply per-spotter multiplicative factors before any callsign normalization for every CW/RTTY skimmer feed.
 
 ### Aho–Corasick Spot Parsing (Non-PSKReporter)
@@ -125,7 +125,7 @@ The telnet server broadcasts spots as fixed-width DX-cluster lines:
 - Exactly **78 characters**, followed by **CRLF** (line endings are normalized in `telnet.Client.Send`).
 - Column numbering below is **1-based** (column 1 is the `D` in `DX de `).
 - The left side is padded so **mode always starts at column 40**.
-- The displayed DX callsign is normalized, stripped of `/P`, `/M`, `/AM`, `/MM`, `/QRP`, then truncated to 10 characters to preserve fixed columns (the full normalized callsign is still stored and hashed).
+- The displayed DX callsign uses the canonical normalized call (portable suffixes stripped) and is truncated to 10 characters to preserve fixed columns (the full normalized callsign is still stored and hashed).
 - The right-side tail is fixed so clients can rely on it:
   - Grid: columns 67-70 (4 chars; blank if unknown)
   - Confidence: column 72 (1 char; blank if unknown)
@@ -145,7 +145,7 @@ DX de W3LPL:       7009.5  K1ABC       FT8 -5 dB                          FN20 S
 
 Each `spot.Spot` stores:
 - **ID** - monotonic identifier
-- **DXCall / DECall** - uppercased callsigns (validation accepts 3-15 characters after normalization; telnet display truncates DX to 10 as described above)
+- **DXCall / DECall** - normalized callsigns (portable suffixes stripped, location prefixes like `/VE3` retained; validation accepts 3-15 characters; telnet display truncates DX to 10 as described above)
 - **Frequency** (kHz), **Band**, **Mode**, **Report** (dB/SNR), **HasReport** (distinguishes missing SNR from a real 0)
 - **Time** - UTC timestamp from the source
 - **Comment** - free-form message (human ingest strips mode/SNR/time tokens before storing)
@@ -161,7 +161,7 @@ Each `spot.Spot` stores:
 	- `ADIF` (DXCC/ADIF country code)
 	- `Grid`
 
-Both the RBN (standard and digital) and PSKReporter feeds run the same normalization + CTY lookup validation before putting a spot into the ring buffer. Callsigns containing `.` suffixes (e.g., `JA1CTC.P` or `W6.UT5UF`) now have their periods converted to `/` so the full call-plus-suffix reaches CTY lookup rather than being truncated to the base call, and validation now requires at least one digit to avoid non-amateur identifiers before malformed or unknown calls are filtered out prior to hashing or deduplication. Automated feeds mark the `IsHuman` flag as `false` so downstream processors can tell which spots originated from telescopic inputs versus human operator submissions. Final CTY/FCC checks run after call correction using a license-normalized base call (e.g., `W6/UT5UF` is evaluated as `UT5UF`); only unlicensed US calls are dropped, and beacons bypass this drop (user filters still apply).
+Both the RBN (standard and digital) and PSKReporter feeds run the same normalization + CTY lookup validation before putting a spot into the ring buffer. Callsigns are normalized once (uppercased, dots converted to `/`, trailing slashes removed, and portable suffixes like `/P`, `/M`, `/MM`, `/AM`, `/QRP` stripped) before CTY lookup and dedupe, so W1AW and W1AW/P collapse to the same canonical call for hashing and filters. Location prefixes (for example `/VE3`) are retained; CTY lookup then chooses the shortest matching slash segment so `N2WQ/VE3` and `VE3/N2WQ` both resolve to `VE3` for metadata. Validation still requires at least one digit to avoid non-amateur identifiers before malformed or unknown calls are filtered out. Automated feeds mark the `IsHuman` flag as `false` so downstream processors can tell which spots originated from telescopic inputs versus human operator submissions. Final CTY/FCC checks run after call correction using a license-normalized base call (for example, `W6/UT5UF` is evaluated as `UT5UF` for FCC checks); only unlicensed US calls are dropped, and beacons bypass this drop (user filters still apply).
 
 ## Commands
 
@@ -279,7 +279,8 @@ cty:
 ```
 
 2. On startup the server downloads `cty.plist` if it is missing and a URL is configured, then loads it into the CTY trie/cache used by lookups. If the file already exists it is loaded directly.
-3. When `cty.enabled` is true, the scheduler downloads the plist daily at `cty.refresh_utc`, writes it via an atomic temp-file swap, and reloads the in-memory CTY database so new prefixes are used without a restart. Failures log a warning and retry at the next window.
+3. When `cty.enabled` is true, the scheduler downloads the plist daily at `cty.refresh_utc`, writes it via an atomic temp-file swap, and reloads the in-memory CTY database so new prefixes are used without a restart. Failures log a warning and retry with backoff; the last-good CTY DB remains active.
+4. The stats pane includes a `CTY: age ...` line that shows how long it has been since the last successful refresh (and a failure count when retries are failing), so staleness is visible at a glance.
 
 ## FCC ULS Downloads
 
@@ -437,7 +438,7 @@ Increase the queue sizes if you see the broadcast-channel drop message frequentl
 
 - `go test ./...` validates packages (not all directories contain tests yet).
 - `gofmt -w ./...` keeps formatting consistent.
-- `go run cmd/ctylookup -data data/cty/cty.plist` lets you interactively inspect CTY entries used for validation.
+- `go run cmd/ctylookup -data data/cty/cty.plist` lets you interactively inspect CTY entries used for validation (portable calls resolve by location prefix).
 - `go run cmd/rbnskewfetch -out data/skm_correction/rbnskew.json` forces an immediate skew-table refresh (the server still performs automatic downloads at 00:30 UTC daily).
 
 Let me know if you want diagrams, sample logs, or scripted deployment steps added next.

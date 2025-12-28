@@ -87,9 +87,18 @@ func TestLookupLongestPrefix(t *testing.T) {
 	}
 }
 
-func TestSuffixNormalization(t *testing.T) {
+func TestLookupDoesNotNormalizeInput(t *testing.T) {
 	db := loadSampleDatabase(t)
-	info, ok := db.LookupCallsign("K1ABC/M")
+	if _, ok := db.LookupCallsign("K1ABC/M"); !ok {
+		t.Fatalf("expected prefix match for K1ABC/M")
+	}
+	if _, ok := db.cacheGet("K1ABC/M"); !ok {
+		t.Fatalf("expected cache entry keyed by raw input")
+	}
+	if _, ok := db.cacheGet("K1ABC"); ok {
+		t.Fatalf("did not expect normalized cache entry before lookup")
+	}
+	info, ok := db.LookupCallsign("K1ABC")
 	if !ok {
 		t.Fatalf("expected normalized call to resolve")
 	}
@@ -205,5 +214,45 @@ func TestLookupPrefixWithSlashKey(t *testing.T) {
 	}
 	if info.Country != "Slashland" {
 		t.Fatalf("expected Slashland, got %q", info.Country)
+	}
+}
+
+func TestLookupPortablePrefersShortestSegment(t *testing.T) {
+	db := loadSampleDatabase(t)
+	info, ok := db.LookupCallsignPortable("K1ABC/W6")
+	if !ok {
+		t.Fatalf("expected K1ABC/W6 to resolve")
+	}
+	if info.Prefix != "W6" {
+		t.Fatalf("expected W6, got %q", info.Prefix)
+	}
+	info, ok = db.LookupCallsignPortable("W6/K1ABC")
+	if !ok {
+		t.Fatalf("expected W6/K1ABC to resolve")
+	}
+	if info.Prefix != "W6" {
+		t.Fatalf("expected W6, got %q", info.Prefix)
+	}
+}
+
+func TestLookupPortableFallsBackToFullCall(t *testing.T) {
+	db := loadSampleDatabase(t)
+	info, ok := db.LookupCallsignPortable("FO/ABC")
+	if !ok {
+		t.Fatalf("expected FO/ABC to resolve")
+	}
+	if info.Prefix != "FO/" {
+		t.Fatalf("expected prefix FO/, got %q", info.Prefix)
+	}
+}
+
+func TestLookupPortableIgnoresBeaconSuffix(t *testing.T) {
+	db := loadSampleDatabase(t)
+	info, ok := db.LookupCallsignPortable("K1ABC/B")
+	if !ok {
+		t.Fatalf("expected K1ABC/B to resolve")
+	}
+	if info.Prefix != "K1ABC" {
+		t.Fatalf("expected prefix K1ABC, got %q", info.Prefix)
 	}
 }

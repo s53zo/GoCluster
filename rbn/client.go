@@ -699,7 +699,7 @@ func (c *Client) parseSpot(line string) {
 
 	parsed := spot.ParseSpotComment(buildComment(tokens, consumed), freq)
 	mode := parsed.Mode
-	if !spot.IsValidCallsign(dxCall) || !spot.IsValidCallsign(deCall) {
+	if !spot.IsValidNormalizedCallsign(dxCall) || !spot.IsValidNormalizedCallsign(deCall) {
 		return
 	}
 
@@ -707,17 +707,25 @@ func (c *Client) parseSpot(line string) {
 	if c.minimalParse {
 		if info, ok := c.fetchCallsignInfo(dxCall); ok {
 			dxMeta = metadataFromPrefix(info)
+		} else {
+			log.Printf("RBN drop: CTY miss for DX %s (line=%s)", dxCall, line)
+			return
 		}
 		if info, ok := c.fetchCallsignInfo(deCall); ok {
 			deMeta = metadataFromPrefix(info)
+		} else {
+			log.Printf("RBN drop: CTY miss for DE %s (line=%s)", deCall, line)
+			return
 		}
 	} else {
 		dxInfo, ok := c.fetchCallsignInfo(dxCall)
 		if !ok {
+			log.Printf("RBN drop: CTY miss for DX %s (line=%s)", dxCall, line)
 			return
 		}
 		deInfo, ok := c.fetchCallsignInfo(deCall)
 		if !ok {
+			log.Printf("RBN drop: CTY miss for DE %s (line=%s)", deCall, line)
 			return
 		}
 		if deInfo != nil && deInfo.ADIF == 291 && !uls.IsLicensedUS(deCall) {
@@ -736,7 +744,7 @@ func (c *Client) parseSpot(line string) {
 		freq = skew.ApplyCorrection(c.skewStore, deCallRaw, freq)
 	}
 
-	s := spot.NewSpot(dxCall, deCall, freq, mode)
+	s := spot.NewSpotNormalized(dxCall, deCall, freq, mode)
 	s.DXMetadata = dxMeta
 	s.DEMetadata = deMeta
 	if parsed.TimeToken != "" {
@@ -784,7 +792,7 @@ func (c *Client) parseSpot(line string) {
 // Purpose: Look up CTY metadata for a callsign.
 // Key aspects: Tolerates missing CTY DB; no local cache in this client.
 // Upstream: parseSpot.
-// Downstream: CTYDatabase.LookupCallsign.
+// Downstream: CTYDatabase.LookupCallsignPortable.
 func (c *Client) fetchCallsignInfo(call string) (*cty.PrefixInfo, bool) {
 	if c.lookup == nil {
 		return nil, true
@@ -793,7 +801,7 @@ func (c *Client) fetchCallsignInfo(call string) (*cty.PrefixInfo, bool) {
 	if db == nil {
 		return nil, true
 	}
-	info, ok := db.LookupCallsign(call)
+	info, ok := db.LookupCallsignPortable(call)
 	// if !ok {
 	// 	log.Printf("RBN: unknown call %s", call)
 	// }

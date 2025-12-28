@@ -429,16 +429,19 @@ func main() {
 	// Start the FCC ULS downloader in the background (does not block spot processing)
 	uls.StartBackground(ctx, cfg.FCCULS)
 
-	// Load CTY database for callsign validation and schedule refreshes.
+	// Load CTY database for callsign validation, track refresh age, and schedule retries.
 	var ctyDB atomic.Pointer[cty.CTYDatabase]
+	ctyState := newCTYRefreshState()
 	ctyPath := strings.TrimSpace(cfg.CTY.File)
 	ctyURL := strings.TrimSpace(cfg.CTY.URL)
 	if cfg.CTY.Enabled && ctyPath != "" {
 		if _, err := os.Stat(ctyPath); err != nil && errors.Is(err, os.ErrNotExist) && ctyURL != "" {
 			if fresh, refreshErr := refreshCTYDatabase(cfg.CTY); refreshErr != nil {
 				log.Printf("Warning: CTY download failed: %v", refreshErr)
+				ctyState.recordFailure(time.Now().UTC(), refreshErr)
 			} else {
 				ctyDB.Store(fresh)
+				ctyState.recordSuccess(time.Now().UTC())
 				log.Printf("Downloaded CTY database from %s", ctyURL)
 			}
 		}
@@ -446,8 +449,10 @@ func main() {
 	if cfg.CTY.Enabled && ctyDB.Load() == nil && ctyPath != "" {
 		if loaded, loadErr := cty.LoadCTYDatabase(ctyPath); loadErr != nil {
 			log.Printf("Warning: failed to load CTY database: %v", loadErr)
+			ctyState.recordFailure(time.Now().UTC(), loadErr)
 		} else {
 			ctyDB.Store(loaded)
+			ctyState.recordSuccess(time.Now().UTC())
 			log.Printf("Loaded CTY database from %s", ctyPath)
 		}
 	}
@@ -455,7 +460,7 @@ func main() {
 		return ctyDB.Load()
 	}
 	if cfg.CTY.Enabled && ctyURL != "" && ctyPath != "" {
-		startCTYScheduler(ctx, cfg.CTY, &ctyDB)
+		startCTYScheduler(ctx, cfg.CTY, &ctyDB, ctyState)
 	} else if cfg.CTY.Enabled {
 		log.Printf("Warning: CTY download enabled but url or file missing")
 	}
@@ -843,7 +848,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, deduplicator, secondaryDeduper, spotBuffer, ctyLookup, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath)
+	go displayStatsWithFCC(statsInterval, statsTracker, deduplicator, secondaryDeduper, spotBuffer, ctyLookup, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -968,7 +973,7 @@ func makeUnlicensedReporter(dash uiSurface, tracker *stats.Tracker) func(source,
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -1027,9 +1032,10 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *
 		combinedRBN := rbnTotal + rbnFTTotal
 		lines := []string{
 			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, secondary, ctyLookup, knownPtr)), // 1
-			formatGridLineOrPlaceholder(gridStats, gridDB), // 2
-			formatFCCLineOrPlaceholder(fccSnap),            // 3
-			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4), // 4
+			formatGridLineOrPlaceholder(gridStats, gridDB),  // 2
+			formatCTYLineOrPlaceholder(ctyLookup, ctyState), // 3
+			formatFCCLineOrPlaceholder(fccSnap),             // 4
+			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4), // 5
 			fmt.Sprintf("PSKReporter: %s TOTAL / %s CW / %s RTTY / %s FT8 / %s FT4 / %s MSK144",
 				humanize.Comma(int64(pskTotal)),
 				humanize.Comma(int64(pskCW)),
@@ -1037,10 +1043,10 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *
 				humanize.Comma(int64(pskFT8)),
 				humanize.Comma(int64(pskFT4)),
 				humanize.Comma(int64(pskMSK144)),
-			), // 5
-			fmt.Sprintf("Corrected calls: %d (C) / %d (U) / %d (F) / %d (H)", totalCorrections, totalUnlicensed, totalFreqCorrections, totalHarmonics), // 6
-			secondaryLine, // 7
-			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C)", clientCount, queueDrops, clientDrops), // 8
+			), // 6
+			fmt.Sprintf("Corrected calls: %d (C) / %d (U) / %d (F) / %d (H)", totalCorrections, totalUnlicensed, totalFreqCorrections, totalHarmonics), // 7
+			secondaryLine, // 8
+			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C)", clientCount, queueDrops, clientDrops), // 9
 		}
 
 		prevSourceCounts = sourceTotals
@@ -1227,19 +1233,48 @@ func processOutputSpots(
 				refresher.IncrementSpots()
 			}
 
+			// CTY validation gate (drop when DX or DE is not recognized). This protects all
+			// sources uniformly before further processing/broadcast.
+			if ctyDB != nil {
+				dxCall := s.DXCallNorm
+				if dxCall == "" {
+					dxCall = s.DXCall
+				}
+				if _, ok := ctyDB.LookupCallsignPortable(dxCall); !ok {
+					log.Printf("CTY drop: unknown DX %s at %.1f kHz (source=%s)", dxCall, s.Frequency, s.SourceNode)
+					return
+				}
+				deCall := s.DECallNorm
+				if deCall == "" {
+					deCall = s.DECall
+				}
+				if _, ok := ctyDB.LookupCallsignPortable(deCall); !ok {
+					log.Printf("CTY drop: unknown DE %s at %.1f kHz (source=%s)", deCall, s.Frequency, s.SourceNode)
+					return
+				}
+			}
+
 			s.RefreshBeaconFlag()
 
 			if gridLookup != nil {
 				// Backfill missing grids from the persisted store so downstream consumers
 				// see metadata even when the upstream spot omitted it.
+				dxCall := s.DXCallNorm
+				if dxCall == "" {
+					dxCall = s.DXCall
+				}
 				if strings.TrimSpace(s.DXMetadata.Grid) == "" {
-					if grid, ok := gridLookup(s.DXCall); ok {
+					if grid, ok := gridLookup(dxCall); ok {
 						s.DXMetadata.Grid = grid
 						dirty = true
 					}
 				}
+				deCall := s.DECallNorm
+				if deCall == "" {
+					deCall = s.DECall
+				}
 				if strings.TrimSpace(s.DEMetadata.Grid) == "" {
-					if grid, ok := gridLookup(s.DECall); ok {
+					if grid, ok := gridLookup(deCall); ok {
 						s.DEMetadata.Grid = grid
 						dirty = true
 					}
@@ -1294,7 +1329,11 @@ func processOutputSpots(
 			if !s.IsBeacon && freqAvg != nil && shouldAverageFrequency(s) {
 				window := frequencyAverageWindow(spotPolicy)
 				tolerance := frequencyAverageTolerance(spotPolicy)
-				avg, corroborators, _ := freqAvg.Average(s.DXCall, s.Frequency, time.Now().UTC(), window, tolerance)
+				dxCall := s.DXCallNorm
+				if dxCall == "" {
+					dxCall = s.DXCall
+				}
+				avg, corroborators, _ := freqAvg.Average(dxCall, s.Frequency, time.Now().UTC(), window, tolerance)
 				// Half-up rounding to 0.1 kHz to avoid banker's rounding at .x5 boundaries.
 				rounded := math.Floor(avg*10+0.5) / 10
 				// Apply the averaged frequency when we have enough corroborators and the rounded
@@ -1354,10 +1393,18 @@ func processOutputSpots(
 
 			if gridUpdate != nil {
 				if dxGrid := strings.TrimSpace(s.DXMetadata.Grid); dxGrid != "" {
-					gridUpdate(s.DXCall, dxGrid)
+					dxCall := s.DXCallNorm
+					if dxCall == "" {
+						dxCall = s.DXCall
+					}
+					gridUpdate(dxCall, dxGrid)
 				}
 				if deGrid := strings.TrimSpace(s.DEMetadata.Grid); deGrid != "" {
-					gridUpdate(s.DECall, deGrid)
+					deCall := s.DECallNorm
+					if deCall == "" {
+						deCall = s.DECall
+					}
+					gridUpdate(deCall, deGrid)
 				}
 			}
 
@@ -1367,7 +1414,11 @@ func processOutputSpots(
 			// can be bypassed when spotters carry SSID tokens or CTY is missing; refresh
 			// here so secondary dedupe has DXCC/zone available.
 			if secondary != nil && (s.DEMetadata.ADIF <= 0 || s.DEMetadata.CQZone <= 0) && ctyDB != nil {
-				if info := effectivePrefixInfo(ctyDB, s.DECall); info != nil {
+				call := s.DECallNorm
+				if call == "" {
+					call = s.DECall
+				}
+				if info := effectivePrefixInfo(ctyDB, call); info != nil {
 					deGrid := strings.TrimSpace(s.DEMetadata.Grid)
 					s.DEMetadata = metadataFromPrefix(info)
 					if deGrid != "" {
@@ -1400,7 +1451,9 @@ func processOutputSpots(
 				toSend := s
 				if !broadcastKeepSSID && s != nil {
 					toSend = cloneSpotForBroadcast(s)
-					toSend.DECall = collapseSSIDForBroadcast(s.DECall)
+					collapsed := collapseSSIDForBroadcast(s.DECall)
+					toSend.DECall = collapsed
+					toSend.DECallNorm = collapsed
 				}
 				telnet.BroadcastSpot(toSend)
 			}
@@ -1519,25 +1572,35 @@ func cloneSpotForBroadcast(src *spot.Spot) *spot.Spot {
 		return nil
 	}
 	return &spot.Spot{
-		ID:         src.ID,
-		DXCall:     src.DXCall,
-		DECall:     src.DECall,
-		Frequency:  src.Frequency,
-		Band:       src.Band,
-		Mode:       src.Mode,
-		Report:     src.Report,
-		HasReport:  src.HasReport,
-		Time:       src.Time,
-		Comment:    src.Comment,
-		SourceType: src.SourceType,
-		SourceNode: src.SourceNode,
-		SpotterIP:  src.SpotterIP,
-		TTL:        src.TTL,
-		IsHuman:    src.IsHuman,
-		IsBeacon:   src.IsBeacon,
-		DXMetadata: src.DXMetadata,
-		DEMetadata: src.DEMetadata,
-		Confidence: src.Confidence,
+		ID:              src.ID,
+		DXCall:          src.DXCall,
+		DECall:          src.DECall,
+		Frequency:       src.Frequency,
+		Band:            src.Band,
+		Mode:            src.Mode,
+		Report:          src.Report,
+		HasReport:       src.HasReport,
+		Time:            src.Time,
+		Comment:         src.Comment,
+		SourceType:      src.SourceType,
+		SourceNode:      src.SourceNode,
+		SpotterIP:       src.SpotterIP,
+		TTL:             src.TTL,
+		IsHuman:         src.IsHuman,
+		IsBeacon:        src.IsBeacon,
+		DXMetadata:      src.DXMetadata,
+		DEMetadata:      src.DEMetadata,
+		Confidence:      src.Confidence,
+		ModeNorm:        src.ModeNorm,
+		BandNorm:        src.BandNorm,
+		DXCallNorm:      src.DXCallNorm,
+		DECallNorm:      src.DECallNorm,
+		DXContinentNorm: src.DXContinentNorm,
+		DEContinentNorm: src.DEContinentNorm,
+		DXGridNorm:      src.DXGridNorm,
+		DEGridNorm:      src.DEGridNorm,
+		DXGrid2:         src.DXGrid2,
+		DEGrid2:         src.DEGrid2,
 	}
 }
 
@@ -1557,8 +1620,33 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, reporter func(source
 		return false
 	}
 
-	dxInfo := effectivePrefixInfo(ctyDB, s.DXCall)
-	deInfo := effectivePrefixInfo(ctyDB, s.DECall)
+	dxCall := s.DXCallNorm
+	if dxCall == "" {
+		dxCall = s.DXCall
+	}
+	deCall := s.DECallNorm
+	if deCall == "" {
+		deCall = s.DECall
+	}
+	dxInfo := effectivePrefixInfo(ctyDB, dxCall)
+	deInfo := effectivePrefixInfo(ctyDB, deCall)
+
+	// License checks use the base callsign (portable segment order-independent) so
+	// location prefixes like /VE3 still map to the operator's home license.
+	dxLicenseCall := strings.TrimSpace(uls.NormalizeForLicense(dxCall))
+	deLicenseCall := strings.TrimSpace(uls.NormalizeForLicense(deCall))
+	var dxLicenseInfo *cty.PrefixInfo
+	if dxLicenseCall != "" {
+		if info, ok := ctyDB.LookupCallsign(dxLicenseCall); ok {
+			dxLicenseInfo = info
+		}
+	}
+	var deLicenseInfo *cty.PrefixInfo
+	if deLicenseCall != "" {
+		if info, ok := ctyDB.LookupCallsign(deLicenseCall); ok {
+			deLicenseInfo = info
+		}
+	}
 
 	// Refresh metadata from the final CTY match but preserve any grid data we already attached.
 	dxGrid := strings.TrimSpace(s.DXMetadata.Grid)
@@ -1573,49 +1661,57 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, reporter func(source
 	}
 
 	now := time.Now()
-	if dxInfo != nil && dxInfo.ADIF == 291 {
-		if licensed, ok := licCache.get(s.DXCallNorm, now); ok {
+	if dxLicenseInfo != nil && dxLicenseInfo.ADIF == 291 {
+		callKey := dxLicenseCall
+		if callKey == "" {
+			callKey = dxCall
+		}
+		if licensed, ok := licCache.get(callKey, now); ok {
 			if !licensed {
 				if reporter != nil {
-					reporter(s.SourceNode, "DX", s.DXCallNorm, s.ModeNorm, s.Frequency)
+					reporter(s.SourceNode, "DX", callKey, s.ModeNorm, s.Frequency)
 				}
 				return true
 			}
-		} else if !uls.IsLicensedUS(s.DXCallNorm) {
-			licCache.set(s.DXCallNorm, false, now)
+		} else if !uls.IsLicensedUS(callKey) {
+			licCache.set(callKey, false, now)
 			if reporter != nil {
-				reporter(s.SourceNode, "DX", s.DXCallNorm, s.ModeNorm, s.Frequency)
+				reporter(s.SourceNode, "DX", callKey, s.ModeNorm, s.Frequency)
 			}
 			return true
 		} else {
-			licCache.set(s.DXCallNorm, true, now)
+			licCache.set(callKey, true, now)
 		}
 	}
-	if deInfo != nil && deInfo.ADIF == 291 {
-		if licensed, ok := licCache.get(s.DECallNorm, now); ok {
+	if deLicenseInfo != nil && deLicenseInfo.ADIF == 291 {
+		callKey := deLicenseCall
+		if callKey == "" {
+			callKey = deCall
+		}
+		if licensed, ok := licCache.get(callKey, now); ok {
 			if !licensed {
 				if reporter != nil {
-					reporter(s.SourceNode, "DE", s.DECallNorm, s.ModeNorm, s.Frequency)
+					reporter(s.SourceNode, "DE", callKey, s.ModeNorm, s.Frequency)
 				}
 				return true
 			}
-		} else if !uls.IsLicensedUS(s.DECallNorm) {
-			licCache.set(s.DECallNorm, false, now)
+		} else if !uls.IsLicensedUS(callKey) {
+			licCache.set(callKey, false, now)
 			if reporter != nil {
-				reporter(s.SourceNode, "DE", s.DECallNorm, s.ModeNorm, s.Frequency)
+				reporter(s.SourceNode, "DE", callKey, s.ModeNorm, s.Frequency)
 			}
 			return true
 		} else {
-			licCache.set(s.DECallNorm, true, now)
+			licCache.set(callKey, true, now)
 		}
 	}
 	return false
 }
 
 // Purpose: Resolve prefix metadata for a callsign using CTY database.
-// Key aspects: Handles / suffixes and falls back to base call.
+// Key aspects: Prefers portable slash prefixes (location) over base calls.
 // Upstream: processOutputSpots DE metadata refresh and corrections.
-// Downstream: cty.Lookup.
+// Downstream: cty.LookupCallsignPortable.
 func effectivePrefixInfo(ctyDB *cty.CTYDatabase, call string) *cty.PrefixInfo {
 	if ctyDB == nil {
 		return nil
@@ -1623,15 +1719,9 @@ func effectivePrefixInfo(ctyDB *cty.CTYDatabase, call string) *cty.PrefixInfo {
 	if call == "" {
 		return nil
 	}
-	info, ok := ctyDB.LookupCallsign(call)
+	info, ok := ctyDB.LookupCallsignPortable(call)
 	if !ok {
-		info = nil
-	}
-	base := uls.NormalizeForLicense(call)
-	if base != "" && base != call {
-		if baseInfo, ok := ctyDB.LookupCallsign(base); ok && baseInfo != nil {
-			info = baseInfo
-		}
+		return nil
 	}
 	return info
 }
@@ -1681,7 +1771,11 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 	isVoice := modeUpper == "USB" || modeUpper == "LSB"
 
 	if adaptive != nil && (modeUpper == "CW" || modeUpper == "RTTY") {
-		adaptive.Observe(spotEntry.Band, spotEntry.DECall, now)
+		reporter := spotEntry.DECallNorm
+		if reporter == "" {
+			reporter = spotEntry.DECall
+		}
+		adaptive.Observe(spotEntry.Band, reporter, now)
 	}
 
 	minReports := cfg.MinConsensusReports
@@ -1745,12 +1839,20 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 	var knownCall bool
 	if knownPtr != nil {
 		if known := knownPtr.Load(); known != nil {
-			knownCall = known.Contains(spotEntry.DXCall)
+			call := spotEntry.DXCallNorm
+			if call == "" {
+				call = spotEntry.DXCall
+			}
+			knownCall = known.Contains(call)
 		}
 	}
 	ctyMatch := false
 	if ctyDB != nil {
-		if _, ok := ctyDB.LookupCallsign(spotEntry.DXCall); ok {
+		call := spotEntry.DXCallNorm
+		if call == "" {
+			call = spotEntry.DXCall
+		}
+		if _, ok := ctyDB.LookupCallsignPortable(call); ok {
 			ctyMatch = true
 		}
 	}
@@ -1768,14 +1870,17 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 			spotEntry.DXCall, corrected, spotEntry.Frequency, supporters, correctedConfidence)
 	}
 
+	correctedNorm := ""
 	if ctyDB != nil {
-		if _, valid := ctyDB.LookupCallsign(corrected); valid {
+		correctedNorm = spot.NormalizeCallsign(corrected)
+		if _, valid := ctyDB.LookupCallsignPortable(correctedNorm); valid {
 			if dash != nil {
 				dash.AppendCall(messageDash)
 			} else {
 				log.Println(message)
 			}
-			spotEntry.DXCall = corrected
+			spotEntry.DXCall = correctedNorm
+			spotEntry.DXCallNorm = correctedNorm
 			spotEntry.Confidence = "C"
 			if tracker != nil {
 				tracker.IncrementCallCorrections()
@@ -1796,7 +1901,9 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 	} else {
 		log.Println(message)
 	}
-	spotEntry.DXCall = corrected
+	correctedNorm = spot.NormalizeCallsign(corrected)
+	spotEntry.DXCall = correctedNorm
+	spotEntry.DXCallNorm = correctedNorm
 	spotEntry.Confidence = "C"
 	if tracker != nil {
 		tracker.IncrementCallCorrections()
@@ -1919,7 +2026,11 @@ func seedKnownCallConfidence(s *spot.Spot, knownCalls *atomic.Pointer[spot.Known
 	if knownCalls == nil {
 		return changed
 	}
-	if known := knownCalls.Load(); known != nil && known.Contains(s.DXCall) {
+	call := s.DXCallNorm
+	if call == "" {
+		call = s.DXCall
+	}
+	if known := knownCalls.Load(); known != nil && known.Contains(call) {
 		if s.Confidence != "S" {
 			s.Confidence = "S"
 			changed = true
@@ -2227,37 +2338,81 @@ func knownCallRefreshHourMinute(cfg config.KnownCallsConfig) (int, int) {
 }
 
 // Purpose: Periodically refresh the CTY database from remote URL.
-// Key aspects: Scheduled daily refresh and atomic pointer swap.
+// Key aspects: Scheduled daily refresh, retry with backoff, atomic pointer swap.
 // Upstream: main startup when CTY is enabled.
 // Downstream: refreshCTYDatabase and time.NewTimer.
 // startCTYScheduler downloads cty.plist at the configured UTC time every day and
 // updates the in-memory CTY database pointer after each refresh.
-func startCTYScheduler(ctx context.Context, cfg config.CTYConfig, ctyPtr *atomic.Pointer[cty.CTYDatabase]) {
+func startCTYScheduler(ctx context.Context, cfg config.CTYConfig, ctyPtr *atomic.Pointer[cty.CTYDatabase], state *ctyRefreshState) {
 	if ctyPtr == nil {
 		return
 	}
 	// Purpose: Background refresh loop for CTY database updates.
-	// Key aspects: Waits until next scheduled time; exits on ctx.Done.
+	// Key aspects: Waits until next scheduled time, retries with backoff, records age/failures.
 	// Upstream: startCTYScheduler.
 	// Downstream: refreshCTYDatabase and time.NewTimer.
 	go func() {
+		const (
+			ctyRetryBase = 1 * time.Minute
+			ctyRetryMax  = 30 * time.Minute
+		)
 		for {
 			delay := nextCTYRefreshDelay(cfg, time.Now().UTC())
-			timer := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
+			if !sleepWithContext(ctx, delay) {
 				return
-			case <-timer.C:
 			}
-			if fresh, err := refreshCTYDatabase(cfg); err != nil {
-				log.Printf("Warning: scheduled CTY download failed: %v", err)
-			} else {
-				ctyPtr.Store(fresh)
-				log.Printf("Scheduled CTY download complete (%d prefixes)", len(fresh.Keys))
+
+			backoff := ctyRetryBase
+			attempt := 0
+			for {
+				fresh, err := refreshCTYDatabase(cfg)
+				if err == nil {
+					ctyPtr.Store(fresh)
+					if state != nil {
+						state.recordSuccess(time.Now().UTC())
+					}
+					log.Printf("Scheduled CTY download complete (%d prefixes)", len(fresh.Keys))
+					break
+				}
+				attempt++
+				if state != nil {
+					state.recordFailure(time.Now().UTC(), err)
+				}
+				lastAge := "unknown"
+				if state != nil {
+					if age, ok := state.age(time.Now().UTC()); ok {
+						lastAge = formatDurationShort(age)
+					}
+				}
+				log.Printf("Warning: scheduled CTY download failed (attempt=%d last_success=%s next_retry=%s): %v", attempt, lastAge, backoff, err)
+				if !sleepWithContext(ctx, backoff) {
+					return
+				}
+				backoff *= 2
+				if backoff > ctyRetryMax {
+					backoff = ctyRetryMax
+				}
 			}
 		}
 	}()
+}
+
+// Purpose: Sleep for a duration unless the context is canceled.
+// Key aspects: Timer-based wait with cancellation.
+// Upstream: CTY refresh scheduler.
+// Downstream: time.NewTimer.
+func sleepWithContext(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // Purpose: Download and parse the CTY database.
@@ -2353,6 +2508,66 @@ type fccSnapshot struct {
 	Path      string
 }
 
+type ctyRefreshState struct {
+	lastSuccess  atomic.Int64
+	lastFailure  atomic.Int64
+	failureCount atomic.Int64
+	lastError    atomic.Value
+}
+
+func newCTYRefreshState() *ctyRefreshState {
+	state := &ctyRefreshState{}
+	state.lastError.Store("")
+	return state
+}
+
+func (s *ctyRefreshState) recordSuccess(now time.Time) {
+	if s == nil {
+		return
+	}
+	s.lastSuccess.Store(now.Unix())
+	s.failureCount.Store(0)
+	s.lastError.Store("")
+}
+
+func (s *ctyRefreshState) recordFailure(now time.Time, err error) {
+	if s == nil {
+		return
+	}
+	s.lastFailure.Store(now.Unix())
+	s.failureCount.Add(1)
+	if err != nil {
+		s.lastError.Store(err.Error())
+	}
+}
+
+func (s *ctyRefreshState) age(now time.Time) (time.Duration, bool) {
+	if s == nil {
+		return 0, false
+	}
+	ts := s.lastSuccess.Load()
+	if ts <= 0 {
+		return 0, false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return now.Sub(time.Unix(ts, 0)), true
+}
+
+func (s *ctyRefreshState) failures() (int64, string) {
+	if s == nil {
+		return 0, ""
+	}
+	var errText string
+	if val := s.lastError.Load(); val != nil {
+		if str, ok := val.(string); ok {
+			errText = str
+		}
+	}
+	return s.failureCount.Load(), errText
+}
+
 // Purpose: Format FCC database status line for stats output.
 // Key aspects: Includes counts, DB size, and update timestamp.
 // Upstream: displayStatsWithFCC.
@@ -2388,6 +2603,28 @@ func formatFCCLineOrPlaceholder(fcc *fccSnapshot) string {
 		return "FCC ULS: (not available)"
 	}
 	return formatFCCLine(fcc)
+}
+
+// Purpose: Format CTY refresh status line for stats output.
+// Key aspects: Reports age since last successful refresh and failure count.
+// Upstream: displayStatsWithFCC.
+// Downstream: ctyRefreshState.age and formatDurationShort.
+func formatCTYLineOrPlaceholder(ctyLookup func() *cty.CTYDatabase, state *ctyRefreshState) string {
+	if ctyLookup == nil || ctyLookup() == nil {
+		return "CTY: (not loaded)"
+	}
+	if state == nil {
+		return "CTY: loaded"
+	}
+	age, ok := state.age(time.Now().UTC())
+	if !ok {
+		return "CTY: loaded (age unknown)"
+	}
+	failures, _ := state.failures()
+	if failures > 0 {
+		return fmt.Sprintf("CTY: age %s (failures=%d)", formatDurationShort(age), failures)
+	}
+	return fmt.Sprintf("CTY: age %s", formatDurationShort(age))
 }
 
 // Purpose: Seed the grid database with known calls.
@@ -2738,6 +2975,33 @@ func formatUptimeLine(uptime time.Duration) string {
 	hours := int(uptime.Hours())
 	minutes := int(uptime.Minutes()) % 60
 	return fmt.Sprintf("Uptime: %02d:%02d", hours, minutes)
+}
+
+// Purpose: Format a short duration for stats display.
+// Key aspects: Uses d/h/m/s units with coarse granularity.
+// Upstream: CTY stats line formatting.
+// Downstream: time.Duration math.
+func formatDurationShort(d time.Duration) string {
+	if d < 0 {
+		d = -d
+	}
+	days := int(d / (24 * time.Hour))
+	d -= time.Duration(days) * 24 * time.Hour
+	hours := int(d / time.Hour)
+	d -= time.Duration(hours) * time.Hour
+	minutes := int(d / time.Minute)
+	d -= time.Duration(minutes) * time.Minute
+	if days > 0 {
+		return fmt.Sprintf("%dd%dh", days, hours)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh%dm", hours, minutes)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	seconds := int(d / time.Second)
+	return fmt.Sprintf("%ds", seconds)
 }
 
 // wwvKindFromLine tags non-DX lines coming from human/relay telnet ingest.

@@ -212,24 +212,16 @@ func decodeCTYData(r io.ReadSeeker) (map[string]PrefixInfo, error) {
 	return data, nil
 }
 
-var suffixes = []string{"/QRP", "/P", "/M", "/MM", "/AM"}
-
 // Purpose: Normalize callsigns for CTY lookup.
-// Key aspects: Uppercases, trims, and strips portable suffixes.
+// Key aspects: Assumes callers already normalized portable suffixes.
 // Upstream: CTYDatabase.LookupCallsign.
 // Downstream: strings helpers.
 func normalizeCallsign(cs string) string {
-	cs = strings.ToUpper(strings.TrimSpace(cs))
-	for _, suf := range suffixes {
-		if strings.HasSuffix(cs, suf) {
-			return strings.TrimSuffix(cs, suf)
-		}
-	}
 	return cs
 }
 
 // Purpose: Resolve CTY metadata for a callsign, with caching.
-// Key aspects: Normalizes callsign, caches hits/misses, and updates metrics.
+// Key aspects: Assumes input is already normalized (uppercased, portable suffixes stripped).
 // Upstream: main.go enrichment, RBN/PSKReporter clients, cmd/ctylookup.
 // Downstream: cacheGet, lookupCallsignNoCache, cacheStore.
 func (db *CTYDatabase) LookupCallsign(cs string) (*PrefixInfo, bool) {
@@ -254,6 +246,37 @@ func (db *CTYDatabase) LookupCallsign(cs string) (*PrefixInfo, bool) {
 	return entry.info, entry.ok
 }
 
+// Purpose: Resolve CTY metadata for portable callsigns with slash segments.
+// Key aspects: Chooses the shortest slash segment that matches CTY, order-independent.
+// Upstream: main.go CTY gate/enrichment, RBN/PSKReporter clients.
+// Downstream: cacheGet, lookupCallsignNoCache, cacheStore.
+// LookupCallsignPortable prefers location prefixes (e.g., N2WQ/VE3 -> VE3) while
+// preserving the full callsign for caching. It assumes cs is already normalized.
+func (db *CTYDatabase) LookupCallsignPortable(cs string) (*PrefixInfo, bool) {
+	cs = strings.TrimSpace(cs)
+	if cs == "" {
+		return nil, false
+	}
+	db.totalLookups.Add(1)
+	if entry, ok := db.cacheGet(cs); ok {
+		db.cacheHits.Add(1)
+		if entry.ok {
+			db.validated.Add(1)
+			db.validatedFromCache.Add(1)
+		}
+		return entry.info, entry.ok
+	}
+
+	info, ok := db.lookupCallsignPortableNoCache(cs)
+	if ok {
+		db.validated.Add(1)
+	}
+
+	entry := cacheEntry{info: info, ok: ok}
+	db.cacheStore(cs, entry)
+	return entry.info, entry.ok
+}
+
 // Purpose: Resolve CTY metadata without using the cache.
 // Key aspects: Checks exact callsign first, then longest-prefix in trie.
 // Upstream: CTYDatabase.LookupCallsign.
@@ -268,6 +291,49 @@ func (db *CTYDatabase) lookupCallsignNoCache(cs string) (*PrefixInfo, bool) {
 		return clonePrefix(info), true
 	}
 	return nil, false
+}
+
+// Purpose: Resolve CTY metadata for slash calls without using the cache.
+// Key aspects: Picks the shortest matching segment; ignores /B beacon suffix; falls back to full callsign.
+// Upstream: LookupCallsignPortable.
+// Downstream: lookupCallsignNoCache.
+func (db *CTYDatabase) lookupCallsignPortableNoCache(cs string) (*PrefixInfo, bool) {
+	if db == nil || cs == "" {
+		return nil, false
+	}
+	lookup := cs
+	if strings.HasSuffix(lookup, "/B") {
+		lookup = strings.TrimSuffix(lookup, "/B")
+	}
+	if !strings.Contains(lookup, "/") {
+		return db.lookupCallsignNoCache(lookup)
+	}
+	var (
+		bestSeg  string
+		bestInfo *PrefixInfo
+		bestLen  int
+	)
+	segments := strings.Split(lookup, "/")
+	for _, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		info, ok := db.lookupCallsignNoCache(seg)
+		if !ok {
+			continue
+		}
+		segLen := len(seg)
+		if bestInfo == nil || segLen < bestLen || (segLen == bestLen && seg < bestSeg) {
+			bestSeg = seg
+			bestLen = segLen
+			bestInfo = info
+		}
+	}
+	if bestInfo != nil {
+		return bestInfo, true
+	}
+	return db.lookupCallsignNoCache(lookup)
 }
 
 // Purpose: Return CTY keys that share a prefix (test helper).

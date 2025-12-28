@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"dxcluster/cty"
+	"dxcluster/spot"
 )
 
 func main() {
@@ -33,13 +34,14 @@ func main() {
 		if call == "" {
 			continue
 		}
-		info, ok := db.LookupCallsign(call)
+		normalized := spot.NormalizeCallsign(call)
+		info, ok := db.LookupCallsignPortable(normalized)
 		if !ok {
 			fmt.Println("no matching prefix")
 			continue
 		}
 		fmt.Printf("%s -> prefix=%s, country=%s, CQ=%d, ITU=%d, lat=%.4f, lon=%.4f\n",
-			call, info.Prefix, info.Country, info.CQZone, info.ITUZone, info.Latitude, info.Longitude)
+			normalized, info.Prefix, info.Country, info.CQZone, info.ITUZone, info.Latitude, info.Longitude)
 	}
 
 	if err := scanner.Err(); err != nil {

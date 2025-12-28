@@ -31,8 +31,8 @@ const (
 // Spot represents a DX spot in canonical form
 type Spot struct {
 	ID         uint64       // Unique spot ID (monotonic counter)
-	DXCall     string       // Station being spotted (e.g., "LZ5VV")
-	DECall     string       // Station reporting the spot (e.g., "W1ABC")
+	DXCall     string       // Station being spotted (normalized callsign, portable suffix stripped)
+	DECall     string       // Station reporting the spot (normalized callsign, portable suffix stripped)
 	Frequency  float64      // Frequency in kHz (e.g., 14074.5)
 	Band       string       // Band (e.g., "20m")
 	Mode       string       // Mode (e.g., "CW", "USB", "FT8")
@@ -83,9 +83,11 @@ type CallMetadata struct {
 func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
 	freq = roundFrequencyTo100Hz(freq)
 	mode = NormalizeVoiceMode(mode, freq)
+	dxNorm := NormalizeCallsign(dxCall)
+	deNorm := NormalizeCallsign(deCall)
 	spot := &Spot{
-		DXCall:     strings.ToUpper(dxCall),
-		DECall:     strings.ToUpper(deCall),
+		DXCall:     dxNorm,
+		DECall:     deNorm,
 		Frequency:  freq,
 		Mode:       strings.ToUpper(mode),
 		Band:       FreqToBand(freq),
@@ -95,6 +97,38 @@ func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
 		Report:     0, // Meaningful only when HasReport is true
 		HasReport:  false,
 		IsHuman:    true,
+		DXCallNorm: dxNorm,
+		DECallNorm: deNorm,
+	}
+	spot.EnsureNormalized()
+	spot.RefreshBeaconFlag()
+	return spot
+}
+
+// Purpose: Construct a new spot using pre-normalized callsigns.
+// Key aspects: Assumes NormalizeCallsign already ran on DX/DE calls.
+// Upstream: Ingest paths that normalize once.
+// Downstream: EnsureNormalized and RefreshBeaconFlag.
+// NewSpotNormalized builds a spot without re-normalizing DX/DE calls.
+func NewSpotNormalized(dxCallNorm, deCallNorm string, freq float64, mode string) *Spot {
+	freq = roundFrequencyTo100Hz(freq)
+	mode = NormalizeVoiceMode(mode, freq)
+	dxCall := strings.TrimSpace(dxCallNorm)
+	deCall := strings.TrimSpace(deCallNorm)
+	spot := &Spot{
+		DXCall:     dxCall,
+		DECall:     deCall,
+		Frequency:  freq,
+		Mode:       strings.ToUpper(mode),
+		Band:       FreqToBand(freq),
+		Time:       time.Now().UTC(),
+		SourceType: SourceManual,
+		TTL:        5, // Default hop count
+		Report:     0, // Meaningful only when HasReport is true
+		HasReport:  false,
+		IsHuman:    true,
+		DXCallNorm: dxCall,
+		DECallNorm: deCall,
 	}
 	spot.EnsureNormalized()
 	spot.RefreshBeaconFlag()
@@ -177,8 +211,6 @@ const (
 )
 
 const dxDisplayMaxLen = 10
-
-var dxDisplayStripSuffixes = []string{"/QRP", "/MM", "/AM", "/M", "/P"}
 
 type stringBuilder struct {
 	buf []byte
@@ -302,25 +334,19 @@ func writeSpaces(b *stringBuilder, count int) {
 	}
 }
 
-// Purpose: Normalize and truncate the DX callsign for telnet display.
-// Key aspects: Strips portable suffixes and truncates to 10 chars to preserve spacing.
+// Purpose: Truncate a normalized DX callsign for telnet display.
+// Key aspects: Assumes portable suffixes were stripped during normalization.
 // Upstream: FormatDXCluster (DX callsign field only).
-// Downstream: NormalizeCallsign.
+// Downstream: None.
 func displayDXCall(call string) string {
-	normalized := NormalizeCallsign(call)
-	if normalized == "" {
-		return normalized
+	call = strings.TrimSpace(call)
+	if call == "" {
+		return call
 	}
-	for _, suffix := range dxDisplayStripSuffixes {
-		if strings.HasSuffix(normalized, suffix) {
-			normalized = strings.TrimSuffix(normalized, suffix)
-			break
-		}
+	if len(call) > dxDisplayMaxLen {
+		call = call[:dxDisplayMaxLen]
 	}
-	if len(normalized) > dxDisplayMaxLen {
-		normalized = normalized[:dxDisplayMaxLen]
-	}
-	return normalized
+	return call
 }
 
 // Purpose: Format a spot as a fixed-width DX cluster line.
@@ -352,6 +378,7 @@ func displayDXCall(call string) string {
 //   - CW/RTTY: no '+' prefix (e.g., "CW 23 dB")
 //   - All other modes: '+' is shown for non-negative values (e.g., "FT8 +12 dB")
 func (s *Spot) FormatDXCluster() string {
+	s.EnsureNormalized()
 	// Purpose: Populate s.formatted once for reuse on repeat formatting.
 	// Key aspects: Uses sync.Once to avoid redundant allocations.
 	// Upstream: FormatDXCluster.
@@ -406,7 +433,10 @@ func (s *Spot) FormatDXCluster() string {
 
 		// DX callsigns longer than the available space are truncated to keep the
 		// mode anchor fixed at column 40.
-		dxCall := displayDXCall(s.DXCall)
+		dxCall := displayDXCall(s.DXCallNorm)
+		if dxCall == "" {
+			dxCall = displayDXCall(s.DXCall)
+		}
 		maxDXLen := commentColumn - b.Len()
 		if maxDXLen < 0 {
 			maxDXLen = 0

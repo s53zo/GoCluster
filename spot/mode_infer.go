@@ -107,7 +107,11 @@ func (a *ModeAssigner) Assign(s *Spot, explicitMode bool) string {
 		mode = strings.ToUpper(strings.TrimSpace(mode))
 		s.Mode = mode
 		if a.shouldObserveDigital(s, mode) {
-			a.digital.Observe(freqKeyFromSpot(s), mode, s.DECall, now)
+			spotter := s.DECallNorm
+			if spotter == "" {
+				spotter = NormalizeCallsign(s.DECall)
+			}
+			a.digital.Observe(freqKeyFromSpot(s), mode, spotter, now)
 		}
 		a.dxCache.Set(dxKeyFromSpot(s), mode, now)
 		return mode
@@ -366,13 +370,13 @@ func (m *digitalFreqMap) Seed(freq int, mode string, now time.Time) {
 
 func (m *digitalFreqMap) Observe(freq int, mode string, spotter string, now time.Time) {
 	// Purpose: Record a skimmer observation for a digital mode at a frequency.
-	// Key aspects: Normalizes spotter, prunes old evidence, caps spotter count.
+	// Key aspects: Assumes normalized spotter, prunes old evidence, caps spotter count.
 	// Upstream: ModeAssigner.Assign explicit mode path.
 	// Downstream: getOrCreate, ensureMode, pruneSpotters.
 	if m == nil || freq <= 0 || strings.TrimSpace(mode) == "" {
 		return
 	}
-	spotter = NormalizeCallsign(spotter)
+	spotter = strings.TrimSpace(strings.ToUpper(spotter))
 	if spotter == "" {
 		return
 	}

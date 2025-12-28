@@ -393,11 +393,11 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 
 	dxCall := norm.dxCall
 	deCall := norm.deCall
-	if !spot.IsValidCallsign(dxCall) {
+	if !spot.IsValidNormalizedCallsign(dxCall) {
 		// log.Printf("PSKReporter: invalid DX call %s", msg.SenderCall) // noisy: caller requested silence
 		return nil
 	}
-	if !spot.IsValidCallsign(deCall) {
+	if !spot.IsValidNormalizedCallsign(deCall) {
 		// log.Printf("PSKReporter: invalid DE call %s", msg.ReceiverCall) // noisy: caller requested silence
 		return nil
 	}
@@ -429,10 +429,12 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 
 	dxInfo, ok := c.fetchCallsignInfo(dxCall)
 	if !ok {
+		log.Printf("PSKReporter drop: CTY miss for DX %s freq=%.1f mode=%s", dxCall, freqKHz, norm.modeUpper)
 		return nil
 	}
 	deInfo, ok := c.fetchCallsignInfo(deCall)
 	if !ok {
+		log.Printf("PSKReporter drop: CTY miss for DE %s freq=%.1f mode=%s", deCall, freqKHz, norm.modeUpper)
 		return nil
 	}
 	// Prune US spotters lacking an active FCC license early to keep ingest lightweight.
@@ -443,7 +445,7 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 	// Create spot
 	// In PSKReporter: sender = DX station, receiver = spotter
 	// In our model: DXCall = sender, DECall = receiver
-	s := spot.NewSpot(dxCall, deCall, freqKHz, norm.modeUpper)
+	s := spot.NewSpotNormalized(dxCall, deCall, freqKHz, norm.modeUpper)
 	s.IsHuman = false
 
 	// CRITICAL: Set the actual observation timestamp from PSKReporter
@@ -473,6 +475,7 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 
 	return s
 }
+
 // Purpose: Convert CTY prefix metadata into Spot CallMetadata.
 // Key aspects: Returns zero-value metadata on nil input.
 // Upstream: convertToSpot.
@@ -569,7 +572,7 @@ func (c *Client) decorateSpotterCall(raw string) string {
 // Purpose: Look up CTY metadata with a small local cache.
 // Key aspects: Uses TTL-based cache and tolerates missing CTY DB.
 // Upstream: convertToSpot.
-// Downstream: getInfoFromCache, setInfoCache, CTYDatabase.LookupCallsign.
+// Downstream: getInfoFromCache, setInfoCache, CTYDatabase.LookupCallsignPortable.
 func (c *Client) fetchCallsignInfo(call string) (*cty.PrefixInfo, bool) {
 	if c.lookup == nil {
 		return nil, true
@@ -586,7 +589,7 @@ func (c *Client) fetchCallsignInfo(call string) (*cty.PrefixInfo, bool) {
 	if db == nil {
 		return nil, true
 	}
-	info, ok := db.LookupCallsign(call)
+	info, ok := db.LookupCallsignPortable(call)
 	c.setInfoCache(call, info, ok, now)
 	if !ok {
 		// log.Printf("PSKReporter: unknown call %s", call) // suppressed per user request

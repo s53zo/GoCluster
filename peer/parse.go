@@ -42,25 +42,27 @@ func parsePC11(fields []string, hop int, fallbackOrigin string) (*spot.Spot, err
 	if err != nil {
 		return nil, fmt.Errorf("pc11: freq parse: %w", err)
 	}
-	dx := strings.TrimSpace(fields[1])
+	dxRaw := strings.TrimSpace(fields[1])
+	dx := spot.NormalizeCallsign(dxRaw)
 	date := strings.TrimSpace(fields[2])
 	timeStr := strings.TrimSpace(fields[3])
 	comment := fields[4]
-	spotter := strings.TrimSpace(fields[5])
+	spotterRaw := strings.TrimSpace(fields[5])
+	spotter := spot.NormalizeCallsign(spotterRaw)
 	origin := strings.TrimSpace(fields[6])
 	if origin == "" {
 		origin = fallbackOrigin
 	}
-	if !spot.IsValidCallsign(dx) {
+	if !spot.IsValidNormalizedCallsign(dx) {
 		return nil, fmt.Errorf("pc11: invalid DX callsign")
 	}
-	if !spot.IsValidCallsign(spotter) {
+	if !spot.IsValidNormalizedCallsign(spotter) {
 		return nil, fmt.Errorf("pc11: invalid DE callsign")
 	}
 	ts := parsePCDateTime(date, timeStr)
 	parsed := spot.ParseSpotComment(comment, freq)
 	// PC11 timestamps are authoritative; ignore any comment time tokens.
-	s := spot.NewSpot(dx, spotter, freq, parsed.Mode)
+	s := spot.NewSpotNormalized(dx, spotter, freq, parsed.Mode)
 	s.Time = ts
 	s.Comment = parsed.Comment
 	s.SourceType = spot.SourcePeer
@@ -87,26 +89,28 @@ func parsePC61(fields []string, hop int, fallbackOrigin string) (*spot.Spot, err
 	if err != nil {
 		return nil, fmt.Errorf("pc61: freq parse: %w", err)
 	}
-	dx := strings.TrimSpace(fields[1])
+	dxRaw := strings.TrimSpace(fields[1])
+	dx := spot.NormalizeCallsign(dxRaw)
 	date := strings.TrimSpace(fields[2])
 	timeStr := strings.TrimSpace(fields[3])
 	comment := fields[4]
-	spotter := strings.TrimSpace(fields[5])
+	spotterRaw := strings.TrimSpace(fields[5])
+	spotter := spot.NormalizeCallsign(spotterRaw)
 	origin := strings.TrimSpace(fields[6])
 	if origin == "" {
 		origin = fallbackOrigin
 	}
-	if !spot.IsValidCallsign(dx) {
+	if !spot.IsValidNormalizedCallsign(dx) {
 		return nil, fmt.Errorf("pc61: invalid DX callsign")
 	}
-	if !spot.IsValidCallsign(spotter) {
+	if !spot.IsValidNormalizedCallsign(spotter) {
 		return nil, fmt.Errorf("pc61: invalid DE callsign")
 	}
 	spotterIP := strings.TrimSpace(fields[7])
 	ts := parsePCDateTime(date, timeStr)
 	parsed := spot.ParseSpotComment(comment, freq)
 	// PC61 timestamps are authoritative; ignore any comment time tokens.
-	s := spot.NewSpot(dx, spotter, freq, parsed.Mode)
+	s := spot.NewSpotNormalized(dx, spotter, freq, parsed.Mode)
 	s.Time = ts
 	s.Comment = parsed.Comment
 	s.SourceType = spot.SourcePeer

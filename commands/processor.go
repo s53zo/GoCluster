@@ -165,11 +165,12 @@ Examples:
 // Upstream: ProcessCommandForClient (DX).
 // Downstream: spot.ParseSpotComment, spot.NewSpot, spotInput channel.
 func (p *Processor) handleDX(fields []string, spotter string, spotterIP string) string {
-	spotter = strings.TrimSpace(spotter)
-	if spotter == "" {
+	spotterRaw := strings.TrimSpace(spotter)
+	if spotterRaw == "" {
 		return "DX command requires a logged-in callsign.\n"
 	}
-	if !spot.IsValidCallsign(spotter) {
+	spotterNorm := spot.NormalizeCallsign(spotterRaw)
+	if !spot.IsValidNormalizedCallsign(spotterNorm) {
 		return "DX command requires a valid callsign.\n"
 	}
 	if len(fields) < 4 {
@@ -179,17 +180,18 @@ func (p *Processor) handleDX(fields []string, spotter string, spotterIP string) 
 	if err != nil || freq <= 0 {
 		return "Invalid frequency. Use a kHz value like 7001.0.\n"
 	}
-	dx := strings.TrimSpace(fields[2])
-	if !spot.IsValidCallsign(dx) {
+	dxRaw := strings.TrimSpace(fields[2])
+	dx := spot.NormalizeCallsign(dxRaw)
+	if !spot.IsValidNormalizedCallsign(dx) {
 		return "Invalid DX callsign.\n"
 	}
 	comment := strings.TrimSpace(strings.Join(fields[3:], " "))
 	parsed := spot.ParseSpotComment(comment, freq)
-	s := spot.NewSpot(dx, spotter, freq, parsed.Mode)
+	s := spot.NewSpotNormalized(dx, spotterNorm, freq, parsed.Mode)
 	s.Comment = parsed.Comment
 	s.Report = parsed.Report
 	s.HasReport = parsed.HasReport
-	s.SourceNode = strings.ToUpper(spotter)
+	s.SourceNode = spotterNorm
 	s.SpotterIP = strings.TrimSpace(spotterIP)
 
 	if p.spotInput == nil {

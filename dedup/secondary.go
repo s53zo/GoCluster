@@ -219,11 +219,14 @@ const (
 // suppress a human spot (and vice versa) during broadcast-only dedupe.
 func secondaryHash(s *spot.Spot, deDXCC int, deZone int) uint32 {
 	var buf [32]byte
+	if s != nil {
+		s.EnsureNormalized()
+	}
 	freq := uint32(s.Frequency)
 	binary.LittleEndian.PutUint32(buf[0:4], freq)
 	binary.LittleEndian.PutUint16(buf[4:6], uint16(deDXCC))
 	binary.LittleEndian.PutUint16(buf[6:8], uint16(deZone))
-	writeFixedCallNormalized(buf[8:20], s.DXCall)
+	writeFixedCallNormalized(buf[8:20], s.DXCallNorm)
 	buf[20] = secondarySourceClass(s)
 	return uint32(xxh3.Hash(buf[:]))
 }
@@ -242,20 +245,15 @@ func secondarySourceClass(s *spot.Spot) byte {
 }
 
 // Purpose: Write a normalized callsign into a fixed-width buffer.
-// Key aspects: Uppercases, trims, and zero-pads to 12 bytes.
+// Key aspects: Assumes input is already normalized; zero-pads to 12 bytes.
 // Upstream: secondaryHash.
-// Downstream: spot.NormalizeCallsign.
-// writeFixedCallNormalized uppercases, trims, and pads/truncates into 12 bytes.
+// Downstream: None.
+// writeFixedCallNormalized pads/truncates into 12 bytes.
 func writeFixedCallNormalized(dst []byte, call string) {
 	const maxLen = 12
-	call = spot.NormalizeCallsign(call)
 	n := 0
 	for i := 0; i < len(call) && n < maxLen; i++ {
-		ch := call[i]
-		if ch >= 'a' && ch <= 'z' {
-			ch = ch - ('a' - 'A')
-		}
-		dst[n] = ch
+		dst[n] = call[i]
 		n++
 	}
 	for n < maxLen {
