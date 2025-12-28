@@ -693,7 +693,6 @@ func (c *Client) parseSpot(line string) {
 		return
 	}
 	if dxCall == "" {
-		log.Printf("RBN spot missing DX callsign: %s", line)
 		return
 	}
 
