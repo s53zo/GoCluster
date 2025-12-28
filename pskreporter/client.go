@@ -459,8 +459,8 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 	s.Report = msg.Report
 	s.HasReport = true
 
-	// Build comment with locators
-	s.Comment = fmt.Sprintf("%s>%s", norm.dxGrid, norm.deGrid)
+	// Comment intentionally left empty for PSKReporter; grids are stored in metadata
+	// and rendered in the DX cluster tail to avoid duplicating payload.
 
 	// Set source type and node
 	s.SourceType = spot.SourcePSKReporter
