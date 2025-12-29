@@ -126,6 +126,49 @@ func (lc *licenseCache) set(call string, licensed bool, now time.Time) {
 	lc.mu.Unlock()
 }
 
+// sweepExpired removes entries older than ttl. Returns the number removed.
+func (lc *licenseCache) sweepExpired(now time.Time) int {
+	if lc == nil || lc.ttl <= 0 {
+		return 0
+	}
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	if len(lc.entries) == 0 {
+		return 0
+	}
+	var removed int
+	for k, v := range lc.entries {
+		if now.Sub(v.at) > lc.ttl {
+			delete(lc.entries, k)
+			removed++
+		}
+	}
+	return removed
+}
+
+// startLicenseCacheSweeper launches a periodic TTL sweep that stops when ctx is done.
+func startLicenseCacheSweeper(ctx context.Context, lc *licenseCache) {
+	if lc == nil || lc.ttl <= 0 {
+		return
+	}
+	interval := lc.ttl / 2
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				lc.sweepExpired(time.Now())
+			}
+		}
+	}()
+}
+
 // Version will be set at build time
 var Version = "dev"
 
@@ -392,6 +435,8 @@ func main() {
 	log.Printf("DX Cluster Server v%s starting...", Version)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	startLicenseCacheSweeper(ctx, licCache)
+
 	callCacheTTL := time.Duration(cfg.CallCache.TTLSeconds) * time.Second
 	spot.ConfigureNormalizeCallCache(cfg.CallCache.Size, callCacheTTL)
 	rbn.ConfigureCallCache(cfg.CallCache.Size, callCacheTTL)
@@ -1236,30 +1281,6 @@ func processOutputSpots(
 
 			s.RefreshBeaconFlag()
 
-			if gridLookup != nil {
-				// Backfill missing grids from the persisted store so downstream consumers
-				// see metadata even when the upstream spot omitted it.
-				dxCall := s.DXCallNorm
-				if dxCall == "" {
-					dxCall = s.DXCall
-				}
-				if strings.TrimSpace(s.DXMetadata.Grid) == "" {
-					if grid, ok := gridLookup(dxCall); ok {
-						s.DXMetadata.Grid = grid
-						dirty = true
-					}
-				}
-				deCall := s.DECallNorm
-				if deCall == "" {
-					deCall = s.DECall
-				}
-				if strings.TrimSpace(s.DEMetadata.Grid) == "" {
-					if grid, ok := gridLookup(deCall); ok {
-						s.DEMetadata.Grid = grid
-						dirty = true
-					}
-				}
-			}
 			if s.IsBeacon {
 				// Beacons are tagged with a strong confidence so they still display a glyph.
 				s.Confidence = "V"
@@ -1371,20 +1392,6 @@ func processOutputSpots(
 			}
 
 			if gridUpdate != nil {
-				if dxGrid := strings.TrimSpace(s.DXMetadata.Grid); dxGrid != "" {
-					dxCall := s.DXCallNorm
-					if dxCall == "" {
-						dxCall = s.DXCall
-					}
-					gridUpdate(dxCall, dxGrid)
-				}
-				if deGrid := strings.TrimSpace(s.DEMetadata.Grid); deGrid != "" {
-					deCall := s.DECallNorm
-					if deCall == "" {
-						deCall = s.DECall
-					}
-					gridUpdate(deCall, deGrid)
-				}
 			}
 
 			buf.Add(s)
@@ -1416,6 +1423,45 @@ func processOutputSpots(
 			// failed to drop them.
 			if isStale(s, spotPolicy) {
 				return
+			}
+
+			// Backfill grids only for spots that will be forwarded, to reduce cache/DB churn.
+			if gridLookup != nil {
+				dxCall := s.DXCallNorm
+				if dxCall == "" {
+					dxCall = s.DXCall
+				}
+				if strings.TrimSpace(s.DXMetadata.Grid) == "" {
+					if grid, ok := gridLookup(dxCall); ok {
+						s.DXMetadata.Grid = grid
+					}
+				}
+				deCall := s.DECallNorm
+				if deCall == "" {
+					deCall = s.DECall
+				}
+				if strings.TrimSpace(s.DEMetadata.Grid) == "" {
+					if grid, ok := gridLookup(deCall); ok {
+						s.DEMetadata.Grid = grid
+					}
+				}
+			}
+
+			if gridUpdate != nil {
+				if dxGrid := strings.TrimSpace(s.DXMetadata.Grid); dxGrid != "" {
+					dxCall := s.DXCallNorm
+					if dxCall == "" {
+						dxCall = s.DXCall
+					}
+					gridUpdate(dxCall, dxGrid)
+				}
+				if deGrid := strings.TrimSpace(s.DEMetadata.Grid); deGrid != "" {
+					deCall := s.DECallNorm
+					if deCall == "" {
+						deCall = s.DECall
+					}
+					gridUpdate(deCall, deGrid)
+				}
 			}
 
 			if lastOutput != nil {

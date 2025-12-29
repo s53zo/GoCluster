@@ -1,5 +1,7 @@
 data/
+logs/
 .env
 cmd/daily_analysis/.env
 gocluster.exe
+gocluster_pgo.exe
 NUL

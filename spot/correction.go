@@ -213,11 +213,8 @@ func (dc *distanceCache) put(key string, distance int, now time.Time) {
 		distance: distance,
 		expires:  now.Add(dc.ttl),
 	}
-	// Only track the key once in the order slice to avoid unbounded growth when the same
-	// key is updated repeatedly. We still bias toward recent inserts by appending here.
+	// Track insertion order only for new keys so hot keys don't bloat the order slice.
 	if !exists {
-		dc.order = append(dc.order, key)
-	} else {
 		dc.order = append(dc.order, key)
 		if len(dc.order) > dc.max*2 {
 			dc.condenseOrderLocked()
