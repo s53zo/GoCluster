@@ -396,6 +396,7 @@ func main() {
 	spot.ConfigureNormalizeCallCache(cfg.CallCache.Size, callCacheTTL)
 	rbn.ConfigureCallCache(cfg.CallCache.Size, callCacheTTL)
 	pskreporter.ConfigureCallCache(cfg.CallCache.Size, callCacheTTL)
+	ingestCTYCacheTTL := time.Duration(cfg.PSKReporter.CTYCacheTTLSeconds) * time.Second
 	filter.SetDefaultModeSelection(cfg.Filter.DefaultModes)
 	filter.SetDefaultSourceSelection(cfg.Filter.DefaultSources)
 	if err := filter.EnsureUserDataDir(); err != nil {
@@ -622,6 +623,11 @@ func main() {
 		log.Println("Deduplication disabled (cluster window=0); spots pass through unfiltered")
 	}
 
+	dedupInput := deduplicator.GetInputChannel()
+	ingestValidator := newIngestValidator(ctyLookup, dedupInput, unlicensedReporter, cfg.PSKReporter.CTYCacheSize, ingestCTYCacheTTL)
+	ingestValidator.Start()
+	ingestInput := ingestValidator.Input()
+
 	secondaryWindow := time.Duration(cfg.Dedup.SecondaryWindowSeconds) * time.Second
 	var secondaryDeduper *dedup.SecondaryDeduper
 	if secondaryWindow > 0 {
@@ -659,7 +665,7 @@ func main() {
 	// Start peering manager (DXSpider PC protocol) if enabled.
 	var peerManager *peer.Manager
 	if cfg.Peering.Enabled {
-		pm, err := peer.NewManager(cfg.Peering, cfg.Peering.LocalCallsign, deduplicator.GetInputChannel(), cfg.SpotPolicy.MaxAgeSeconds)
+		pm, err := peer.NewManager(cfg.Peering, cfg.Peering.LocalCallsign, ingestInput, cfg.SpotPolicy.MaxAgeSeconds)
 		if err != nil {
 			log.Fatalf("Failed to init peering manager: %v", err)
 		}
@@ -684,7 +690,7 @@ func main() {
 	}
 
 	// Create command processor (SHOW/DX reads from archive when available, otherwise ring buffer)
-	processor := commands.NewProcessor(spotBuffer, archiveWriter, deduplicator.GetInputChannel())
+	processor := commands.NewProcessor(spotBuffer, archiveWriter, ingestInput)
 
 	// Create and start telnet server
 	telnetServer := telnet.NewServer(telnet.ServerOptions{
@@ -732,9 +738,8 @@ func main() {
 	// RBN spots go INTO the deduplicator input channel
 	var rbnClient *rbn.Client
 	if cfg.RBN.Enabled {
-		rbnClient = rbn.NewClient(cfg.RBN.Host, cfg.RBN.Port, cfg.RBN.Callsign, cfg.RBN.Name, ctyLookup, skewStore, cfg.RBN.KeepSSIDSuffix, cfg.RBN.SlotBuffer)
+		rbnClient = rbn.NewClient(cfg.RBN.Host, cfg.RBN.Port, cfg.RBN.Callsign, cfg.RBN.Name, skewStore, cfg.RBN.KeepSSIDSuffix, cfg.RBN.SlotBuffer)
 		rbnClient.SetTelnetTransport(cfg.RBN.TelnetTransport)
-		rbnClient.SetUnlicensedReporter(unlicensedReporter)
 		if cfg.RBN.KeepaliveSec > 0 {
 			rbnClient.EnableKeepalive(time.Duration(cfg.RBN.KeepaliveSec) * time.Second)
 		}
@@ -746,7 +751,7 @@ func main() {
 			// Key aspects: Runs in its own goroutine to keep ingest non-blocking.
 			// Upstream: main startup after RBN connect.
 			// Downstream: processRBNSpots.
-			go processRBNSpots(rbnClient, deduplicator, "RBN-CW", cfg.SpotPolicy)
+			go processRBNSpots(rbnClient, ingestInput, "RBN-CW", cfg.SpotPolicy)
 			log.Println("RBN CW/RTTY client feeding spots into unified dedup engine")
 		}
 	}
@@ -755,9 +760,8 @@ func main() {
 	// RBN Digital spots go INTO the deduplicator input channel
 	var rbnDigitalClient *rbn.Client
 	if cfg.RBNDigital.Enabled {
-		rbnDigitalClient = rbn.NewClient(cfg.RBNDigital.Host, cfg.RBNDigital.Port, cfg.RBNDigital.Callsign, cfg.RBNDigital.Name, ctyLookup, skewStore, cfg.RBNDigital.KeepSSIDSuffix, cfg.RBNDigital.SlotBuffer)
+		rbnDigitalClient = rbn.NewClient(cfg.RBNDigital.Host, cfg.RBNDigital.Port, cfg.RBNDigital.Callsign, cfg.RBNDigital.Name, skewStore, cfg.RBNDigital.KeepSSIDSuffix, cfg.RBNDigital.SlotBuffer)
 		rbnDigitalClient.SetTelnetTransport(cfg.RBNDigital.TelnetTransport)
-		rbnDigitalClient.SetUnlicensedReporter(unlicensedReporter)
 		if cfg.RBNDigital.KeepaliveSec > 0 {
 			rbnDigitalClient.EnableKeepalive(time.Duration(cfg.RBNDigital.KeepaliveSec) * time.Second)
 		}
@@ -769,7 +773,7 @@ func main() {
 			// Key aspects: Runs in its own goroutine to keep ingest non-blocking.
 			// Upstream: main startup after RBN Digital connect.
 			// Downstream: processRBNSpots.
-			go processRBNSpots(rbnDigitalClient, deduplicator, "RBN-FT", cfg.SpotPolicy)
+			go processRBNSpots(rbnDigitalClient, ingestInput, "RBN-FT", cfg.SpotPolicy)
 			log.Println("RBN Digital (FT4/FT8) client feeding spots into unified dedup engine")
 		}
 	}
@@ -797,7 +801,7 @@ func main() {
 			}
 		}()
 
-		humanTelnetClient = rbn.NewClient(cfg.HumanTelnet.Host, cfg.HumanTelnet.Port, cfg.HumanTelnet.Callsign, cfg.HumanTelnet.Name, ctyLookup, skewStore, cfg.HumanTelnet.KeepSSIDSuffix, cfg.HumanTelnet.SlotBuffer)
+		humanTelnetClient = rbn.NewClient(cfg.HumanTelnet.Host, cfg.HumanTelnet.Port, cfg.HumanTelnet.Callsign, cfg.HumanTelnet.Name, skewStore, cfg.HumanTelnet.KeepSSIDSuffix, cfg.HumanTelnet.SlotBuffer)
 		humanTelnetClient.SetTelnetTransport(cfg.HumanTelnet.TelnetTransport)
 		humanTelnetClient.UseMinimalParser()
 		humanTelnetClient.SetRawPassthrough(rawPassthrough)
@@ -805,7 +809,6 @@ func main() {
 			// Prevent idle disconnects on upstream telnet feeds by sending periodic CRLF.
 			humanTelnetClient.EnableKeepalive(time.Duration(cfg.HumanTelnet.KeepaliveSec) * time.Second)
 		}
-		humanTelnetClient.SetUnlicensedReporter(unlicensedReporter)
 		err = humanTelnetClient.Connect()
 		if err != nil {
 			log.Printf("Warning: Failed to connect to human/relay telnet feed: %v", err)
@@ -814,7 +817,7 @@ func main() {
 			// Key aspects: Runs in its own goroutine to keep ingest non-blocking.
 			// Upstream: main startup after human telnet connect.
 			// Downstream: processHumanTelnetSpots.
-			go processHumanTelnetSpots(humanTelnetClient, deduplicator, "HUMAN-TELNET", cfg.SpotPolicy)
+			go processHumanTelnetSpots(humanTelnetClient, ingestInput, "HUMAN-TELNET", cfg.SpotPolicy)
 			log.Println("Human/relay telnet client feeding spots into unified dedup engine")
 		}
 	}
@@ -827,8 +830,7 @@ func main() {
 	)
 	if cfg.PSKReporter.Enabled {
 		pskrTopics = cfg.PSKReporter.SubscriptionTopics()
-		pskrClient = pskreporter.NewClient(cfg.PSKReporter.Broker, cfg.PSKReporter.Port, pskrTopics, cfg.PSKReporter.Name, cfg.PSKReporter.Workers, ctyLookup, skewStore, cfg.PSKReporter.AppendSpotterSSID, cfg.PSKReporter.SpotChannelSize)
-		pskrClient.SetUnlicensedReporter(unlicensedReporter)
+		pskrClient = pskreporter.NewClient(cfg.PSKReporter.Broker, cfg.PSKReporter.Port, pskrTopics, cfg.PSKReporter.Name, cfg.PSKReporter.Workers, skewStore, cfg.PSKReporter.AppendSpotterSSID, cfg.PSKReporter.SpotChannelSize, cfg.PSKReporter.MaxPayloadBytes)
 		err = pskrClient.Connect()
 		if err != nil {
 			log.Printf("Warning: Failed to connect to PSKReporter: %v", err)
@@ -837,7 +839,7 @@ func main() {
 			// Key aspects: Runs in its own goroutine to keep ingest non-blocking.
 			// Upstream: main startup after PSKReporter connect.
 			// Downstream: processPSKRSpots.
-			go processPSKRSpots(pskrClient, deduplicator, cfg.SpotPolicy)
+			go processPSKRSpots(pskrClient, ingestInput, cfg.SpotPolicy)
 			log.Println("PSKReporter client feeding spots into unified dedup engine")
 		}
 	}
@@ -1070,9 +1072,8 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *
 // Key aspects: Drops stale spots and avoids blocking on dedup input.
 // Upstream: RBN client ingest goroutine.
 // Downstream: deduplicator.GetInputChannel and isStale.
-func processRBNSpots(client *rbn.Client, deduplicator *dedup.Deduplicator, source string, spotPolicy config.SpotPolicy) {
+func processRBNSpots(client *rbn.Client, ingest chan<- *spot.Spot, source string, spotPolicy config.SpotPolicy) {
 	spotChan := client.GetSpotChannel()
-	dedupInput := deduplicator.GetInputChannel()
 	var drops atomic.Uint64
 
 	for spot := range spotChan {
@@ -1081,11 +1082,11 @@ func processRBNSpots(client *rbn.Client, deduplicator *dedup.Deduplicator, sourc
 		}
 		// Non-blocking send to avoid wedging ingest if dedup blocks.
 		select {
-		case dedupInput <- spot:
+		case ingest <- spot:
 		default:
 			count := drops.Add(1)
 			if count == 1 || count%100 == 0 {
-				log.Printf("%s: Dedup input full, dropping spot (total drops=%d)", source, count)
+				log.Printf("%s: Ingest input full, dropping spot (total drops=%d)", source, count)
 			}
 		}
 	}
@@ -1097,9 +1098,8 @@ func processRBNSpots(client *rbn.Client, deduplicator *dedup.Deduplicator, sourc
 // Key aspects: Ensures SourceType/Mode defaults and enforces staleness guard.
 // Upstream: human telnet client ingest.
 // Downstream: deduplicator.GetInputChannel and isStale.
-func processHumanTelnetSpots(client *rbn.Client, deduplicator *dedup.Deduplicator, source string, spotPolicy config.SpotPolicy) {
+func processHumanTelnetSpots(client *rbn.Client, ingest chan<- *spot.Spot, source string, spotPolicy config.SpotPolicy) {
 	spotChan := client.GetSpotChannel()
-	dedupInput := deduplicator.GetInputChannel()
 	var drops atomic.Uint64
 
 	for sp := range spotChan {
@@ -1118,11 +1118,11 @@ func processHumanTelnetSpots(client *rbn.Client, deduplicator *dedup.Deduplicato
 			}
 		}
 		select {
-		case dedupInput <- sp:
+		case ingest <- sp:
 		default:
 			count := drops.Add(1)
 			if count == 1 || count%100 == 0 {
-				log.Printf("%s: Dedup input full, dropping spot (total drops=%d)", source, count)
+				log.Printf("%s: Ingest input full, dropping spot (total drops=%d)", source, count)
 			}
 		}
 	}
@@ -1135,9 +1135,8 @@ func processHumanTelnetSpots(client *rbn.Client, deduplicator *dedup.Deduplicato
 // Key aspects: Drops stale spots and avoids blocking on dedup input.
 // Upstream: PSKReporter client worker pool.
 // Downstream: deduplicator.GetInputChannel and isStale.
-func processPSKRSpots(client *pskreporter.Client, deduplicator *dedup.Deduplicator, spotPolicy config.SpotPolicy) {
+func processPSKRSpots(client *pskreporter.Client, ingest chan<- *spot.Spot, spotPolicy config.SpotPolicy) {
 	spotChan := client.GetSpotChannel()
-	dedupInput := deduplicator.GetInputChannel()
 	var drops atomic.Uint64
 
 	for spot := range spotChan {
@@ -1146,11 +1145,11 @@ func processPSKRSpots(client *pskreporter.Client, deduplicator *dedup.Deduplicat
 		}
 		// Non-blocking send to avoid backing up the PSK worker pool when dedup is slow.
 		select {
-		case dedupInput <- spot:
+		case ingest <- spot:
 		default:
 			count := drops.Add(1)
 			if count == 1 || count%100 == 0 {
-				log.Printf("PSKReporter: Dedup input full, dropping spot (total drops=%d)", count)
+				log.Printf("PSKReporter: Ingest input full, dropping spot (total drops=%d)", count)
 			}
 		}
 	}
@@ -1233,26 +1232,7 @@ func processOutputSpots(
 				refresher.IncrementSpots()
 			}
 
-			// CTY validation gate (drop when DX or DE is not recognized). This protects all
-			// sources uniformly before further processing/broadcast.
-			if ctyDB != nil {
-				dxCall := s.DXCallNorm
-				if dxCall == "" {
-					dxCall = s.DXCall
-				}
-				if _, ok := ctyDB.LookupCallsignPortable(dxCall); !ok {
-					log.Printf("CTY drop: unknown DX %s at %.1f kHz (source=%s)", dxCall, s.Frequency, s.SourceNode)
-					return
-				}
-				deCall := s.DECallNorm
-				if deCall == "" {
-					deCall = s.DECall
-				}
-				if _, ok := ctyDB.LookupCallsignPortable(deCall); !ok {
-					log.Printf("CTY drop: unknown DE %s at %.1f kHz (source=%s)", deCall, s.Frequency, s.SourceNode)
-					return
-				}
-			}
+			// CTY validation happens in the ingest gate before deduplication.
 
 			s.RefreshBeaconFlag()
 
@@ -1362,7 +1342,7 @@ func processOutputSpots(
 				s.EnsureNormalized()
 				dirty = false
 			}
-			// Final CTY/licensing gate runs after corrections so busted calls can be fixed first.
+			// Final license gate runs after corrections so busted calls can be fixed first.
 			if applyLicenseGate(s, ctyDB, unlicensedReporter) {
 				return
 			}
@@ -1603,9 +1583,9 @@ func cloneSpotForBroadcast(src *spot.Spot) *spot.Spot {
 	}
 }
 
-// applyLicenseGate runs the FCC/CTY check after all corrections and returns true when the spot should be dropped.
-// Purpose: Enforce FCC ULS licensing gates for US calls.
-// Key aspects: Uses cache, CTY metadata, and reporter callback on drops.
+// applyLicenseGate runs the FCC license check after all corrections and returns true when the spot should be dropped.
+// Purpose: Enforce FCC ULS licensing gates for US calls (DX only; DE checked at ingest).
+// Key aspects: Uses cache, CTY metadata refresh for corrected calls, and reporter callback on drops.
 // Upstream: processOutputSpots before broadcast.
 // Downstream: licCache, uls.IsLicensedUS, reporter.
 func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, reporter func(source, role, call, mode string, freq float64)) bool {
@@ -1627,36 +1607,32 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, reporter func(source
 	if deCall == "" {
 		deCall = s.DECall
 	}
-	dxInfo := effectivePrefixInfo(ctyDB, dxCall)
-	deInfo := effectivePrefixInfo(ctyDB, deCall)
+	needsMetadata := s.DXMetadata.ADIF == 0 || s.DEMetadata.ADIF == 0 || s.Confidence == "C"
+	if needsMetadata {
+		dxInfo := effectivePrefixInfo(ctyDB, dxCall)
+		deInfo := effectivePrefixInfo(ctyDB, deCall)
+
+		// Refresh metadata from the final CTY match but preserve any grid data we already attached.
+		dxGrid := strings.TrimSpace(s.DXMetadata.Grid)
+		deGrid := strings.TrimSpace(s.DEMetadata.Grid)
+		s.DXMetadata = metadataFromPrefix(dxInfo)
+		s.DEMetadata = metadataFromPrefix(deInfo)
+		if dxGrid != "" {
+			s.DXMetadata.Grid = dxGrid
+		}
+		if deGrid != "" {
+			s.DEMetadata.Grid = deGrid
+		}
+	}
 
 	// License checks use the base callsign (portable segment order-independent) so
 	// location prefixes like /VE3 still map to the operator's home license.
 	dxLicenseCall := strings.TrimSpace(uls.NormalizeForLicense(dxCall))
-	deLicenseCall := strings.TrimSpace(uls.NormalizeForLicense(deCall))
 	var dxLicenseInfo *cty.PrefixInfo
 	if dxLicenseCall != "" {
 		if info, ok := ctyDB.LookupCallsign(dxLicenseCall); ok {
 			dxLicenseInfo = info
 		}
-	}
-	var deLicenseInfo *cty.PrefixInfo
-	if deLicenseCall != "" {
-		if info, ok := ctyDB.LookupCallsign(deLicenseCall); ok {
-			deLicenseInfo = info
-		}
-	}
-
-	// Refresh metadata from the final CTY match but preserve any grid data we already attached.
-	dxGrid := strings.TrimSpace(s.DXMetadata.Grid)
-	deGrid := strings.TrimSpace(s.DEMetadata.Grid)
-	s.DXMetadata = metadataFromPrefix(dxInfo)
-	s.DEMetadata = metadataFromPrefix(deInfo)
-	if dxGrid != "" {
-		s.DXMetadata.Grid = dxGrid
-	}
-	if deGrid != "" {
-		s.DEMetadata.Grid = deGrid
 	}
 
 	now := time.Now()
@@ -1676,28 +1652,6 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, reporter func(source
 			licCache.set(callKey, false, now)
 			if reporter != nil {
 				reporter(s.SourceNode, "DX", callKey, s.ModeNorm, s.Frequency)
-			}
-			return true
-		} else {
-			licCache.set(callKey, true, now)
-		}
-	}
-	if deLicenseInfo != nil && deLicenseInfo.ADIF == 291 {
-		callKey := deLicenseCall
-		if callKey == "" {
-			callKey = deCall
-		}
-		if licensed, ok := licCache.get(callKey, now); ok {
-			if !licensed {
-				if reporter != nil {
-					reporter(s.SourceNode, "DE", callKey, s.ModeNorm, s.Frequency)
-				}
-				return true
-			}
-		} else if !uls.IsLicensedUS(callKey) {
-			licCache.set(callKey, false, now)
-			if reporter != nil {
-				reporter(s.SourceNode, "DE", callKey, s.ModeNorm, s.Frequency)
 			}
 			return true
 		} else {

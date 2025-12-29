@@ -159,7 +159,7 @@ func readPeerFeed(conn net.Conn, reader *lineReader, writeMu *sync.Mutex, localC
 
 // startTelnetTap connects to the local cluster telnet server and streams broadcast spots via the rbn minimal parser.
 func startTelnetTap(host string, port int, callsign string, out chan<- spotEvent) {
-	client := rbn.NewClient(host, port, callsign, "CLUSTER-TAP", nil, nil, true, 1024)
+	client := rbn.NewClient(host, port, callsign, "CLUSTER-TAP", nil, true, 1024)
 	client.UseMinimalParser()
 	if err := client.Connect(); err != nil {
 		log.Fatalf("telnet tap connect failed: %v", err)

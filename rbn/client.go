@@ -1,6 +1,6 @@
 // Package rbn maintains TCP connections to the Reverse Beacon Network (CW/RTTY
 // and FT4/FT8 feeds), parsing telnet lines into canonical *spot.Spot entries
-// with CTY enrichment and optional skew corrections.
+// with optional skew corrections.
 package rbn
 
 import (
@@ -14,10 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"dxcluster/cty"
 	"dxcluster/skew"
 	"dxcluster/spot"
-	"dxcluster/uls"
 	ztelnet "github.com/ziutek/telnet"
 )
 
@@ -32,17 +30,6 @@ var (
 	rbnNormalizeCache = spot.NewCallCache(rbnCallCacheSize, rbnCallCacheTTL)
 )
 
-// UnlicensedReporter receives drop notifications for US calls failing FCC license checks.
-type UnlicensedReporter func(source, role, call, mode string, freqKHz float64)
-
-type unlicensedEvent struct {
-	source string
-	role   string
-	call   string
-	mode   string
-	freq   float64
-}
-
 // Client represents an RBN telnet client
 type Client struct {
 	host      string
@@ -55,7 +42,6 @@ type Client struct {
 	connected bool
 	shutdown  chan struct{}
 	spotChan  chan *spot.Spot
-	lookup    func() *cty.CTYDatabase
 	skewStore *skew.Store
 	reconnect chan struct{}
 	stopOnce  sync.Once
@@ -63,9 +49,6 @@ type Client struct {
 	keepSSID  bool
 
 	bufferSize int
-
-	unlicensedReporter UnlicensedReporter
-	unlicensedQueue    chan unlicensedEvent
 
 	minimalParse bool
 
@@ -156,7 +139,7 @@ func ConfigureCallCache(size int, ttl time.Duration) {
 // Key aspects: Initializes channels and caches; bufferSize absorbs bursty ingest.
 // Upstream: main.go startup.
 // Downstream: Client.Connect.
-func NewClient(host string, port int, callsign string, name string, lookup func() *cty.CTYDatabase, skewStore *skew.Store, keepSSID bool, bufferSize int) *Client {
+func NewClient(host string, port int, callsign string, name string, skewStore *skew.Store, keepSSID bool, bufferSize int) *Client {
 	if bufferSize <= 0 {
 		bufferSize = 100 // legacy default; callers should override via config
 	}
@@ -167,7 +150,6 @@ func NewClient(host string, port int, callsign string, name string, lookup func(
 		name:       name,
 		shutdown:   make(chan struct{}),
 		spotChan:   make(chan *spot.Spot, bufferSize),
-		lookup:     lookup,
 		skewStore:  skewStore,
 		reconnect:  make(chan struct{}, 1),
 		keepSSID:   keepSSID,
@@ -265,46 +247,6 @@ func extractCallAndFreq(tok spotToken) (string, float64, bool) {
 	return callPart, freq, ok
 }
 
-// Purpose: Install a reporter for unlicensed US drops.
-// Key aspects: Uses a bounded queue and a background goroutine for delivery.
-// Upstream: main.go startup.
-// Downstream: unlicensedLoop goroutine.
-func (c *Client) SetUnlicensedReporter(rep UnlicensedReporter) {
-	c.unlicensedReporter = rep
-	if rep != nil && c.unlicensedQueue == nil {
-		c.unlicensedQueue = make(chan unlicensedEvent, 256)
-		// Goroutine: drain unlicensed queue and invoke reporter callbacks.
-		go c.unlicensedLoop()
-	}
-}
-
-// Purpose: Drain unlicensed events and invoke the reporter safely.
-// Key aspects: Recovers from reporter panics to keep the loop alive.
-// Upstream: SetUnlicensedReporter goroutine.
-// Downstream: UnlicensedReporter callback.
-func (c *Client) unlicensedLoop() {
-	for {
-		select {
-		case evt := <-c.unlicensedQueue:
-			if evt.call == "" {
-				continue
-			}
-			if rep := c.unlicensedReporter; rep != nil {
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("rbn: unlicensed reporter panic: %v", r)
-						}
-					}()
-					rep(evt.source, evt.role, evt.call, evt.mode, evt.freq)
-				}()
-			}
-		case <-c.shutdown:
-			return
-		}
-	}
-}
-
 // Purpose: Establish initial RBN connection and start supervision.
 // Key aspects: First dial is synchronous; reconnects happen in background.
 // Upstream: main.go startup.
@@ -316,27 +258,6 @@ func (c *Client) Connect() error {
 	// Goroutine: monitor reconnect signals and re-establish connections.
 	go c.connectionSupervisor()
 	return nil
-}
-
-// Purpose: Dispatch an unlicensed event without blocking ingest.
-// Key aspects: Enqueues when possible; otherwise calls reporter asynchronously.
-// Upstream: parseSpot US license check.
-// Downstream: unlicensedQueue or UnlicensedReporter.
-func (c *Client) dispatchUnlicensed(role, call, mode string, freq float64) {
-	rep := c.unlicensedReporter
-	if rep == nil {
-		return
-	}
-	if c.unlicensedQueue != nil {
-		select {
-		case c.unlicensedQueue <- unlicensedEvent{source: c.sourceKey(), role: role, call: call, mode: mode, freq: freq}:
-			return
-		default:
-			// fall through to async direct call
-		}
-	}
-	// Goroutine: best-effort direct reporter call when queue is full.
-	go rep(c.sourceKey(), role, call, mode, freq)
 }
 
 // Purpose: Dial the RBN feed and start login/read loops.
@@ -632,7 +553,7 @@ func buildComment(tokens []spotToken, consumed []bool) string {
 // Purpose: Parse a DX line into a canonical Spot.
 // Key aspects: Extracts DE/DX/freq/time locally and delegates comment parsing.
 // Upstream: readLoop for RBN/minimal feeds.
-// Downstream: spot.ParseSpotComment, fetchCallsignInfo, skew.ApplyCorrection.
+// Downstream: spot.ParseSpotComment, skew.ApplyCorrection.
 // parseSpot converts a DX cluster-style telnet line into a canonical Spot.
 // Structural fields (DE/DX/freq/time) are parsed locally; comment parsing
 // (explicit mode/report/time token handling) is delegated to spot.ParseSpotComment
@@ -702,39 +623,6 @@ func (c *Client) parseSpot(line string) {
 		return
 	}
 
-	var dxMeta, deMeta spot.CallMetadata
-	if c.minimalParse {
-		if info, ok := c.fetchCallsignInfo(dxCall); ok {
-			dxMeta = metadataFromPrefix(info)
-		} else {
-			log.Printf("RBN drop: CTY miss for DX %s (line=%s)", dxCall, line)
-			return
-		}
-		if info, ok := c.fetchCallsignInfo(deCall); ok {
-			deMeta = metadataFromPrefix(info)
-		} else {
-			log.Printf("RBN drop: CTY miss for DE %s (line=%s)", deCall, line)
-			return
-		}
-	} else {
-		dxInfo, ok := c.fetchCallsignInfo(dxCall)
-		if !ok {
-			log.Printf("RBN drop: CTY miss for DX %s (line=%s)", dxCall, line)
-			return
-		}
-		deInfo, ok := c.fetchCallsignInfo(deCall)
-		if !ok {
-			log.Printf("RBN drop: CTY miss for DE %s (line=%s)", deCall, line)
-			return
-		}
-		if deInfo != nil && deInfo.ADIF == 291 && !uls.IsLicensedUS(deCall) {
-			c.dispatchUnlicensed("DE", deCall, mode, freq)
-			return
-		}
-		dxMeta = metadataFromPrefix(dxInfo)
-		deMeta = metadataFromPrefix(deInfo)
-	}
-
 	comment := parsed.Comment
 	report := parsed.Report
 	hasReport := parsed.HasReport
@@ -744,8 +632,6 @@ func (c *Client) parseSpot(line string) {
 	}
 
 	s := spot.NewSpotNormalized(dxCall, deCall, freq, mode)
-	s.DXMetadata = dxMeta
-	s.DEMetadata = deMeta
 	if parsed.TimeToken != "" {
 		s.Time = parseTimeFromRBN(parsed.TimeToken)
 	}
@@ -785,42 +671,6 @@ func (c *Client) parseSpot(line string) {
 	case c.spotChan <- s:
 	default:
 		log.Printf("%s: Spot channel full (capacity=%d), dropping spot", c.displayName(), cap(c.spotChan))
-	}
-}
-
-// Purpose: Look up CTY metadata for a callsign.
-// Key aspects: Tolerates missing CTY DB; no local cache in this client.
-// Upstream: parseSpot.
-// Downstream: CTYDatabase.LookupCallsignPortable.
-func (c *Client) fetchCallsignInfo(call string) (*cty.PrefixInfo, bool) {
-	if c.lookup == nil {
-		return nil, true
-	}
-	db := c.lookup()
-	if db == nil {
-		return nil, true
-	}
-	info, ok := db.LookupCallsignPortable(call)
-	// if !ok {
-	// 	log.Printf("RBN: unknown call %s", call)
-	// }
-	return info, ok
-}
-
-// Purpose: Convert CTY prefix metadata into Spot CallMetadata.
-// Key aspects: Returns zero-value metadata on nil input.
-// Upstream: parseSpot.
-// Downstream: None.
-func metadataFromPrefix(info *cty.PrefixInfo) spot.CallMetadata {
-	if info == nil {
-		return spot.CallMetadata{}
-	}
-	return spot.CallMetadata{
-		Continent: info.Continent,
-		Country:   info.Country,
-		CQZone:    info.CQZone,
-		ITUZone:   info.ITUZone,
-		ADIF:      info.ADIF,
 	}
 }
 

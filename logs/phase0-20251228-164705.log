@@ -1,0 +1,1895 @@
+2025/12/28 16:47:08 DX Cluster Server vdev starting...
+Server: Go Cluster beta
+ (N2WQ-2)
+Telnet: port 9300 (transport=native echo_mode=server broadcast workers=auto queue=8192 worker_queue=1024 client_buffer=1024 skip_handshake=false)
+UI: mode=tview refresh=300ms color=true clear_screen=true panes(stats=10 calls=9 unlicensed=9 harm=9 system=9)
+RBN CW/RTTY: telnet.reversebeacon.net:7000 (as N2WQ-2, transport=ziutek slot_buffer=1000 keepalive=180s)
+RBN Digital (FT4/FT8): telnet.reversebeacon.net:7001 (as N2WQ-2, transport=ziutek slot_buffer=1000 keepalive=180s)
+Archive: data/archive/spots.db (queue=10000 batch=500/1000ms cleanup=3600s cleanup_batch=2000 yield=50ms retain_ft=43200s retain_other=86400s)
+PSKReporter: mqtt.pskreporter.info:1883 (topic:  buffer=25000 workers=auto)
+Dedup: cluster=120s (prefer_stronger=true) secondary=60s (prefer_stronger=true)
+Default modes: CW, LSB, USB, RTTY, MSK144, PSK31, SSTV
+Default sources: HUMAN
+Peering: listen_port=7300 peers=1 hop=99 transport=native keepalive=600s config=1800s topology= retention=24h
+Stats interval: 60s
+Call correction: enabled (min_reports=2 advantage>1 confidence>=55% recency=360s max_edit=3 tol=1000.0Hz distance_cw=morse distance_rtty=baudot invalid_action=broadcast d3_extra:+0/+0/+5%)
+Call correction voice: tol=2000Hz search=2.0kHz min_snr=0
+Call correction cache: size=512 ttl=120s
+Harmonics: enabled (recency=120s max_multiple=3 tolerance=500.0Hz min_report_delta=6dB)
+Spot policy: max_age=300s
+CTY database: data/cty/cty.plist
+CTY refresh: 00:10 UTC (source=https://www.country-files.com/cty/cty.plist)
+Known calls refresh: 00:20 UTC (source=https://www.supercheckpartial.com/MASTER.SCP)
+Grid/known DB: data/grids/calls.db (flush=60s cache=10240 cache_ttl=3600s db_check_on_miss=true ttl=90d)
+Skew: refresh 00:30 UTC (min_spots=500 source=https://sm7iun.se/rbnskew.csv)
+Ring buffer capacity: 250000 spots
+2025/12/28 16:47:10 Loaded CTY database from data/cty/cty.plist
+2025/12/28 16:47:10 Warning: failed to load quality priors from data/quality/quality_priors.dat: open data/quality/quality_priors.dat: The system cannot find the file specified.
+2025/12/28 16:47:10 Warning: failed to load spotter reliability from data/quality/spotter_reliability.dat: open data/quality/spotter_reliability.dat: The system cannot find the file specified.
+2025/12/28 16:47:10 Ring buffer created (capacity: 250000)
+2025/12/28 16:47:10 Loaded 50314 known callsigns from data/scp/MASTER.SCP
+2025/12/28 16:47:17 Gridstore: db_check_on_miss=true (source=data\config)
+2025/12/28 16:47:17 Loaded 125 RBN skew corrections from data/skm_correction/rbnskew.json
+2025/12/28 16:47:17 Deduplicator: Starting unified processing loop for ALL sources
+2025/12/28 16:47:17 Deduplication active with 2m0s window
+2025/12/28 16:47:17 Secondary deduplication active with 1m0s window (broadcast-only)
+2025/12/28 16:47:17 Mode inference: dx_cache=50000 ttl=300s digital_window=300s min_corrob=10 seeds=46 seed_ttl=21600s
+2025/12/28 16:47:17 Peering: listen_port=7300 peers=1 hop=99 keepalive=600s
+2025/12/28 16:47:17 Peering: dialing dxs.n2wq.com:7300 as N2WQ-77
+2025/12/28 16:47:17 Archive: writing to data/archive/spots.db (batch=500/1000ms queue=10000 cleanup=3600s ft_retention=43200s other_retention=86400s)
+2025/12/28 16:47:17 Telnet server listening on port 9300
+2025/12/28 16:47:17 Broadcast worker 2 started
+2025/12/28 16:47:17 Broadcast worker 8 started
+2025/12/28 16:47:17 Broadcast worker 3 started
+2025/12/28 16:47:17 Broadcast worker 4 started
+2025/12/28 16:47:17 Broadcast worker 5 started
+2025/12/28 16:47:17 Broadcast worker 6 started
+2025/12/28 16:47:17 Broadcast worker 7 started
+2025/12/28 16:47:17 Broadcast worker 11 started
+2025/12/28 16:47:17 Broadcast worker 0 started
+2025/12/28 16:47:17 Broadcast worker 9 started
+2025/12/28 16:47:17 Broadcast worker 18 started
+2025/12/28 16:47:17 Broadcast worker 15 started
+2025/12/28 16:47:17 Broadcast worker 16 started
+2025/12/28 16:47:17 Broadcast worker 10 started
+2025/12/28 16:47:17 Broadcast worker 14 started
+2025/12/28 16:47:17 Broadcast worker 12 started
+2025/12/28 16:47:17 Broadcast worker 1 started
+2025/12/28 16:47:17 Broadcast worker 19 started
+2025/12/28 16:47:17 RBN-CW-RTTY: connecting to telnet.reversebeacon.net:7000...
+2025/12/28 16:47:17 Broadcast worker 13 started
+2025/12/28 16:47:17 Broadcast worker 17 started
+2025/12/28 16:47:17 Peering: connected to dxs.n2wq.com:7300
+2025/12/28 16:47:17 RBN-CW-RTTY: connection established
+2025/12/28 16:47:17 RBN CW/RTTY client feeding spots into unified dedup engine
+2025/12/28 16:47:17 RBN-FT4-FT8: connecting to telnet.reversebeacon.net:7001...
+2025/12/28 16:47:17 Peering hs N2WQ-77 -> dxs.n2wq.com RX login: PC18^DXSpider Version: 1.57 Build: 633 Git: mojo/c3350180[r] pc9x 91^5457^
+2025/12/28 16:47:17 Peering hs N2WQ-77 -> dxs.n2wq.com TX init (pc9x=true)
+2025/12/28 16:47:17 RBN-FT4-FT8: connection established
+2025/12/28 16:47:17 RBN Digital (FT4/FT8) client feeding spots into unified dedup engine
+2025/12/28 16:47:17 PSKReporter worker 1 started
+2025/12/28 16:47:17 PSKReporter worker 10 started
+2025/12/28 16:47:17 PSKReporter worker 2 started
+2025/12/28 16:47:17 PSKReporter worker 3 started
+2025/12/28 16:47:17 PSKReporter worker 4 started
+2025/12/28 16:47:17 PSKReporter worker 5 started
+2025/12/28 16:47:17 PSKReporter worker 6 started
+2025/12/28 16:47:17 PSKReporter worker 7 started
+2025/12/28 16:47:17 PSKReporter worker 8 started
+2025/12/28 16:47:17 PSKReporter worker 9 started
+2025/12/28 16:47:17 PSKReporter worker 14 started
+2025/12/28 16:47:17 PSKReporter worker 11 started
+2025/12/28 16:47:17 PSKReporter worker 12 started
+2025/12/28 16:47:17 Connecting to PSKReporter MQTT broker at tcp://mqtt.pskreporter.info:1883 (topics=pskr/filter/v2/+/FT8/#,pskr/filter/v2/+/FT4/#,pskr/filter/v2/+/CW/#,pskr/filter/v2/+/RTTY/#,pskr/filter/v2/+/MSK144/#,pskr/filter/v2/+/PSK31/#)...
+2025/12/28 16:47:17 PSKReporter worker 0 started
+2025/12/28 16:47:17 PSKReporter worker 19 started
+2025/12/28 16:47:17 PSKReporter worker 13 started
+2025/12/28 16:47:17 PSKReporter worker 17 started
+2025/12/28 16:47:17 PSKReporter worker 15 started
+2025/12/28 16:47:17 PSKReporter worker 18 started
+2025/12/28 16:47:17 PSKReporter worker 16 started
+2025/12/28 16:47:17 Peering hs N2WQ-77 -> dxs.n2wq.com RX PC92^N2WQ-73^78440^A^^5N2WQ-77:24.228.199.45^H99^
+2025/12/28 16:47:17 Peering hs N2WQ-77 -> dxs.n2wq.com RX PC92^N2WQ-73^78440.01^K^5N2WQ-73:5457:633^30^3^3.18.69.242^mojo/c3350180[r]^H99^
+2025/12/28 16:47:17 Peering hs N2WQ-77 -> dxs.n2wq.com RX PC22^
+2025/12/28 16:47:18 PSKReporter: Connected, subscribing to 6 topic(s)
+2025/12/28 16:47:18 Connected to PSKReporter MQTT broker
+2025/12/28 16:47:18 PSKReporter client feeding spots into unified dedup engine
+2025/12/28 16:47:18 Cluster is running. Press Ctrl+C to stop.
+2025/12/28 16:47:18 Connect via: telnet localhost 9300
+2025/12/28 16:47:18 Receiving CW/RTTY spots from RBN (port 7000)...
+2025/12/28 16:47:18 Receiving FT4/FT8 spots from RBN Digital (port 7001)...
+2025/12/28 16:47:18 Receiving digital mode spots from PSKReporter (topics: pskr/filter/v2/+/FT8/#, pskr/filter/v2/+/FT4/#, pskr/filter/v2/+/CW/#, pskr/filter/v2/+/RTTY/#, pskr/filter/v2/+/MSK144/#, pskr/filter/v2/+/PSK31/#)...
+2025/12/28 16:47:18 Unified deduplication active: 120 second window
+2025/12/28 16:47:18 Architecture: ALL sources -> Dedup Engine -> Ring Buffer -> Clients
+2025/12/28 16:47:18 Statistics will be displayed every 60 seconds...
+2025/12/28 16:47:18 ---
+2025/12/28 16:47:18 Diagnostics server listening on localhost:6061 (pprof + /debug/heapdump)
+2025/12/28 16:47:18 PSKReporter: Subscribed to pskr/filter/v2/+/FT8/#
+2025/12/28 16:47:18 PSKReporter: Subscribed to pskr/filter/v2/+/FT4/#
+2025/12/28 16:47:18 PSKReporter: Subscribed to pskr/filter/v2/+/CW/#
+2025/12/28 16:47:18 PSKReporter: Subscribed to pskr/filter/v2/+/RTTY/#
+2025/12/28 16:47:18 PSKReporter: Subscribed to pskr/filter/v2/+/MSK144/#
+2025/12/28 16:47:18 PSKReporter: Subscribed to pskr/filter/v2/+/PSK31/#
+2025/12/28 16:47:18 PSKReporter: Successfully subscribed, receiving spots...
+2025/12/28 16:47:19 Logging in to RBN-CW-RTTY as N2WQ-2
+2025/12/28 16:47:19 Logging in to RBN-FT4-FT8 as N2WQ-2
+2025/12/28 16:47:21 RBN drop: CTY miss for DX 1E2OCV (line=DX de BG2TFW-#:   7007.7  1E2OCV         CW    16 dB  22 WPM  CQ      2147Z)
+2025/12/28 16:47:33 Call corrected: W2IIT -> W2II at 3551.6 kHz (3 / 60%)
+2025/12/28 16:47:38 New connection from [::1]:60480
+2025/12/28 16:47:41 Client [::1]:60480 logged in as K3TO
+2025/12/28 16:47:41 Loaded saved filter for K3TO
+2025/12/28 16:47:41 Registered client: K3TO (total: 1)
+2025/12/28 16:47:45 New connection from 127.0.0.1:62848
+2025/12/28 16:47:46 RBN drop: CTY miss for DX 1E2OCV (line=DX de BI4MPH-#:   7007.7  1E2OCV         CW    10 dB  22 WPM  CQ      2147Z)
+2025/12/28 16:47:47 Client 127.0.0.1:62848 logged in as LZ1BB
+2025/12/28 16:47:47 Loaded saved filter for LZ1BB
+2025/12/28 16:47:47 Registered client: LZ1BB (total: 2)
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7048.2 mode=FT4
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.2 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.9 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.4 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.5 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.3 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.8 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.8 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7077.0 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.6 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.6 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.9 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.9 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7048.2 mode=FT4
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.4 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.9 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.1 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.1 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.2 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.4 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.6 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.7 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5357.8 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.2 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.9 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.6 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.5 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.2 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.1 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7050.2 mode=FT4
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.3 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.2 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.5 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.5 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.0 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.5 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.2 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.3 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5357.4 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.7 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.7 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.3 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.3 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.6 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.7 mode=FT8
+2025/12/28 16:47:48 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.9 mode=FT8
+2025/12/28 16:47:57 Call corrected: S57S -> S57WX at 1822.4 kHz (3 / 100%)
+2025/12/28 16:47:59 Call corrected: HA5RM -> HA5RO at 7006.3 kHz (14 / 93%)
+2025/12/28 16:48:02 Call corrected: S51BA -> S51BW at 7024.6 kHz (3 / 75%)
+2025/12/28 16:48:05 Call corrected: W5PFN -> W5PFD at 14062.4 kHz (12 / 92%)
+2025/12/28 16:48:11 Call corrected: JM7MDW -> JM7OLW at 21019.0 kHz (4 / 80%)
+2025/12/28 16:48:13 PSKReporter drop: CTY miss for DE CHM-10 freq=144176.1 mode=FT8
+2025/12/28 16:48:13 PSKReporter drop: CTY miss for DE CHM-10 freq=144174.4 mode=FT8
+2025/12/28 16:48:13 PSKReporter drop: CTY miss for DE CHM-10 freq=144174.8 mode=FT8
+2025/12/28 16:48:13 PSKReporter drop: CTY miss for DE CHM-10 freq=144176.1 mode=FT8
+2025/12/28 16:48:18 Uptime: 00:01   Memory MB: 49.7 / 17.0 / 0.7 (0.1%) / 0.1 / 0.7 (96.1%) / 1.2 (42.7%)
+2025/12/28 16:48:18 Grid database: 261,017 TOTAL / 78%
+2025/12/28 16:48:18 CTY: age 1m
+2025/12/28 16:48:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 16:48:18 RBN: 1660 TOTAL / 351 CW / 0 RTTY / 1197 FT8 / 112 FT4
+2025/12/28 16:48:18 PSKReporter: 30,001 TOTAL / 60 CW / 0 RTTY / 29,057 FT8 / 882 FT4 / 0 MSK144
+2025/12/28 16:48:18 Corrected calls: 6 (C) / 0 (U) / 17 (F) / 0 (H)
+2025/12/28 16:48:18 Secondary dedup: 31,666 in / 12,135 dup / 19,531 fwd
+2025/12/28 16:48:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 16:48:18 
+2025/12/28 16:49:18 Uptime: 00:02   Memory MB: 83.4 / 25.4 / 0.7 (0.1%) / 0.0 / 0.8 (97.0%) / 1.2 (46.3%)
+2025/12/28 16:49:18 Grid database: 261,020 TOTAL / 84%
+2025/12/28 16:49:18 CTY: age 2m
+2025/12/28 16:49:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 16:49:18 RBN: 1627 TOTAL / 188 CW / 0 RTTY / 1287 FT8 / 152 FT4
+2025/12/28 16:49:18 PSKReporter: 16,034 TOTAL / 57 CW / 0 RTTY / 15,537 FT8 / 440 FT4 / 0 MSK144
+2025/12/28 16:49:18 Corrected calls: 6 (C) / 0 (U) / 26 (F) / 0 (H)
+2025/12/28 16:49:18 Secondary dedup: 49,332 in / 18,981 dup / 30,351 fwd
+2025/12/28 16:49:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 16:49:18 
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.7 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.1 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.7 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.2 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.7 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.5 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.5 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.5 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.2 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.8 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.1 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.4 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.5 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.8 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.7 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.1 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.6 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.9 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.4 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.6 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.6 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.5 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.2 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.7 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.7 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.4 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.0 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.5 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.8 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.4 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.4 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.0 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.7 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.1 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.0 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.7 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.7 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.9 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.9 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.1 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.0 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.6 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.1 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.3 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.6 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.6 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.7 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.3 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.3 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.4 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.0 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.2 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.9 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.6 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.2 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.1 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.6 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.2 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.6 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.1 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.7 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.8 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.4 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.7 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.5 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.9 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.3 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.3 mode=FT8
+2025/12/28 16:49:31 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.6 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 20WW2-WEBRX freq=28074.9 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 20WW2-WEBRX freq=28076.5 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 20WW2-WEBRX freq=28076.0 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.9 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7074.9 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.1 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.1 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7074.9 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.5 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7074.9 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.5 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.6 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.1 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.6 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7074.9 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.0 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.1 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.8 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.8 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.4 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.6 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.1 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.8 mode=FT8
+2025/12/28 16:49:33 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.8 mode=FT8
+2025/12/28 16:49:34 Call corrected: N0TPH -> G0TPH at 3538.3 kHz (16 / 94%)
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=14074.4 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.3 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.5 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.8 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.1 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.9 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.2 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.1 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.5 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.0 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.0 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.7 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.3 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.9 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.5 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=10138.1 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=10136.2 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.6 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.1 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.7 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.6 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.3 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.7 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.1 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.7 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.3 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.0 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.6 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.5 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=1840.5 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.8 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.4 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.3 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.4 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.7 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.4 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.0 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.7 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.7 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.8 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.2 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=1840.9 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.7 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.0 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.0 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.4 mode=FT8
+2025/12/28 16:49:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.3 mode=FT8
+2025/12/28 16:50:10 Call corrected: JM7OAW -> JM7OLW at 21019.2 kHz (7 / 87%)
+2025/12/28 16:50:13 Call corrected: N8BB -> NI6L at 14031.0 kHz (2 / 66%)
+2025/12/28 16:50:18 Uptime: 00:03   Memory MB: 110.2 / 44.0 / 0.8 (0.2%) / 0.1 / 1.0 (97.9%) / 1.2 (46.2%)
+2025/12/28 16:50:18 Grid database: 261,026 TOTAL / 84%
+2025/12/28 16:50:18 CTY: age 3m
+2025/12/28 16:50:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 16:50:18 RBN: 1647 TOTAL / 350 CW / 4 RTTY / 1220 FT8 / 73 FT4
+2025/12/28 16:50:18 PSKReporter: 37,352 TOTAL / 77 CW / 0 RTTY / 36,323 FT8 / 949 FT4 / 0 MSK144
+2025/12/28 16:50:18 Corrected calls: 9 (C) / 0 (U) / 55 (F) / 0 (H)
+2025/12/28 16:50:18 Secondary dedup: 88,334 in / 35,535 dup / 52,799 fwd
+2025/12/28 16:50:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 16:50:18 
+2025/12/28 16:50:18 PSKReporter drop: CTY miss for DE 13RF029-# freq=14075.8 mode=FT8
+2025/12/28 16:50:18 PSKReporter drop: CTY miss for DE 13RF029-# freq=14075.7 mode=FT8
+2025/12/28 16:50:18 PSKReporter drop: CTY miss for DE 13RF029-# freq=14074.6 mode=FT8
+2025/12/28 16:50:18 PSKReporter drop: CTY miss for DE 13RF029-# freq=14075.9 mode=FT8
+2025/12/28 16:50:18 PSKReporter drop: CTY miss for DE 13RF029-# freq=14074.4 mode=FT8
+2025/12/28 16:50:38 Call corrected: KE8VC -> KI8R at 14056.5 kHz (17 / 94%)
+2025/12/28 16:50:45 Call corrected: 9A3J -> 9A3JH at 1828.6 kHz (45 / 97%)
+2025/12/28 16:50:53 PSKReporter drop: CTY miss for DE ZE185-# freq=5357.9 mode=FT8
+2025/12/28 16:50:53 PSKReporter drop: CTY miss for DE ZE185-# freq=5359.0 mode=FT8
+2025/12/28 16:50:53 PSKReporter drop: CTY miss for DE ZE185-# freq=5357.5 mode=FT8
+2025/12/28 16:50:53 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.7 mode=FT8
+2025/12/28 16:50:53 PSKReporter drop: CTY miss for DE ZE185-# freq=5359.5 mode=FT8
+2025/12/28 16:51:04 Call corrected: VE3DT -> VE3EDT at 10118.5 kHz (3 / 75%)
+2025/12/28 16:51:18 Uptime: 00:04   Memory MB: 118.1 / 63.7 / 1.0 (0.2%) / 0.1 / 1.1 (98.4%) / 1.2 (47.3%)
+2025/12/28 16:51:18 Grid database: 261,032 TOTAL / 85%
+2025/12/28 16:51:18 CTY: age 4m
+2025/12/28 16:51:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 16:51:18 RBN: 1589 TOTAL / 301 CW / 2 RTTY / 1187 FT8 / 99 FT4
+2025/12/28 16:51:18 PSKReporter: 39,723 TOTAL / 98 CW / 0 RTTY / 38,674 FT8 / 950 FT4 / 0 MSK144
+2025/12/28 16:51:18 Corrected calls: 12 (C) / 0 (U) / 79 (F) / 0 (H)
+2025/12/28 16:51:18 Secondary dedup: 129,653 in / 53,966 dup / 75,687 fwd
+2025/12/28 16:51:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 16:51:18 
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.7 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.3 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7048.9 mode=FT4
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5357.5 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.5 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.6 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.8 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.7 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.0 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7049.5 mode=FT4
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.2 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.0 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.3 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.2 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.6 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.5 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.7 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.0 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.3 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.6 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.4 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.0 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.4 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.3 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.1 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.9 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.2 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.6 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.7 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.7 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.5 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7049.1 mode=FT4
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7049.0 mode=FT4
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.4 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.0 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.4 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.8 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3576.0 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.0 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.1 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.4 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.6 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.1 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.3 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7047.9 mode=FT4
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.8 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.9 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10136.9 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5357.6 mode=FT8
+2025/12/28 16:51:20 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.0 mode=FT8
+2025/12/28 16:51:32 Call corrected: WA8VTT -> WA8VTD at 21001.5 kHz (13 / 92%)
+2025/12/28 16:51:32 Call corrected: LU7HU -> LU7HF at 24895.0 kHz (14 / 93%)
+2025/12/28 16:51:32 Call corrected: K9UCX -> K9UC at 14039.0 kHz (9 / 81%)
+2025/12/28 16:51:32 Call corrected: K9UCX -> K9UC at 14039.0 kHz (11 / 84%)
+2025/12/28 16:51:41 Call corrected: K9UCX -> K9UC at 14039.0 kHz (36 / 94%)
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.8 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.5 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.3 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.8 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.1 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.0 mode=FT4
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.8 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.8 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.9 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.0 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.9 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.2 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.1 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.3 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.2 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.8 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.4 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.6 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.6 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.4 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.4 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.6 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.7 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.6 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.9 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.0 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.9 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.7 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.7 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.8 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.8 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.9 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.6 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.3 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.6 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.5 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.5 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.4 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.7 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.8 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.7 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.0 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.1 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.6 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.0 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.6 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.1 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.3 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.0 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.3 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.2 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3576.0 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.9 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.3 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.7 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.9 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.5 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.9 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.8 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.9 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.6 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.7 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.5 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.2 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.7 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.3 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.6 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.5 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.9 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.4 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.1 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.1 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.5 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.7 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.4 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.4 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.4 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.9 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.8 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.7 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.8 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.5 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.9 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.6 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.2 mode=FT8
+2025/12/28 16:51:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.4 mode=FT8
+2025/12/28 16:51:51 Call corrected: 4X2S -> 4X25X at 3515.1 kHz (6 / 85%)
+2025/12/28 16:52:18 Uptime: 00:05   Memory MB: 201.8 / 78.8 / 1.0 (0.2%) / 0.1 / 1.1 (98.7%) / 1.2 (44.9%)
+2025/12/28 16:52:18 Grid database: 261,034 TOTAL / 86%
+2025/12/28 16:52:18 CTY: age 5m
+2025/12/28 16:52:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 16:52:18 RBN: 1656 TOTAL / 202 CW / 0 RTTY / 1331 FT8 / 123 FT4
+2025/12/28 16:52:18 PSKReporter: 29,990 TOTAL / 33 CW / 0 RTTY / 29,404 FT8 / 552 FT4 / 0 MSK144
+2025/12/28 16:52:18 Corrected calls: 18 (C) / 0 (U) / 100 (F) / 0 (H)
+2025/12/28 16:52:18 Secondary dedup: 161,301 in / 67,708 dup / 93,593 fwd
+2025/12/28 16:52:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 16:52:18 
+2025/12/28 16:52:22 Call corrected: S57S -> S57WX at 1822.4 kHz (5 / 100%)
+2025/12/28 16:52:27 Call corrected: W5PFN -> W5PFD at 14062.4 kHz (20 / 90%)
+2025/12/28 16:52:49 PSKReporter drop: CTY miss for DE 1HS1322-# freq=1841.6 mode=FT8
+2025/12/28 16:52:49 PSKReporter drop: CTY miss for DE 1HS1322-# freq=1840.6 mode=FT8
+2025/12/28 16:52:49 PSKReporter drop: CTY miss for DE 1HS1322-# freq=1840.7 mode=FT8
+2025/12/28 16:52:49 PSKReporter drop: CTY miss for DE 1HS1322-# freq=1841.7 mode=FT8
+2025/12/28 16:53:18 Uptime: 00:06   Memory MB: 182.8 / 96.4 / 1.0 (0.2%) / 0.1 / 1.2 (98.9%) / 1.2 (44.6%)
+2025/12/28 16:53:18 Grid database: 261,041 TOTAL / 87%
+2025/12/28 16:53:18 CTY: age 6m
+2025/12/28 16:53:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 16:53:18 RBN: 1642 TOTAL / 146 CW / 4 RTTY / 1335 FT8 / 157 FT4
+2025/12/28 16:53:18 PSKReporter: 35,208 TOTAL / 53 CW / 1 RTTY / 34,407 FT8 / 746 FT4 / 1 MSK144
+2025/12/28 16:53:18 Corrected calls: 20 (C) / 0 (U) / 114 (F) / 0 (H)
+2025/12/28 16:53:18 Secondary dedup: 198,156 in / 83,919 dup / 114,237 fwd
+2025/12/28 16:53:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 16:53:18 
+2025/12/28 16:53:30 Call corrected: JO2ASQ/T -> JO2ASQ/6 at 7015.9 kHz (3 / 75%)
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.2 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.9 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.1 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.4 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.9 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=14076.2 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=14075.0 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.4 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.3 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3576.0 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.0 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.8 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.4 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.6 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.6 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.4 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.1 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.6 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.6 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.2 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.2 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.2 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.7 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.0 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.6 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.4 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.2 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.6 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=14074.8 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.4 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.6 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.8 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.1 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.9 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=10138.0 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.8 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.2 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.8 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.2 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.3 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=10136.2 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.5 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=10136.6 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.9 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=14075.1 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.1 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.5 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.8 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.4 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.5 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.5 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=10136.5 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.4 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.2 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.6 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.0 mode=FT8
+2025/12/28 16:53:34 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.1 mode=FT8
+2025/12/28 16:53:42 Call corrected: K9UCX -> K9UC at 14039.0 kHz (43 / 95%)
+2025/12/28 16:53:49 Call corrected: N8BB -> NI6L at 14031.0 kHz (4 / 80%)
+2025/12/28 16:53:50 PSKReporter drop: CTY miss for DE CHM-10 freq=144176.1 mode=FT8
+2025/12/28 16:53:50 PSKReporter drop: CTY miss for DE CHM-10 freq=144176.3 mode=FT8
+2025/12/28 16:53:50 PSKReporter drop: CTY miss for DE CHM-10 freq=144175.1 mode=FT8
+2025/12/28 16:53:50 PSKReporter drop: CTY miss for DE CHM-10 freq=144175.4 mode=FT8
+2025/12/28 16:53:50 PSKReporter drop: CTY miss for DE CHM-10 freq=144175.3 mode=FT8
+2025/12/28 16:54:18 Uptime: 00:07   Memory MB: 240.4 / 111.4 / 1.0 (0.2%) / 0.1 / 1.2 (99.0%) / 1.2 (44.3%)
+2025/12/28 16:54:18 Grid database: 261,051 TOTAL / 87%
+2025/12/28 16:54:18 CTY: age 7m
+2025/12/28 16:54:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 16:54:18 RBN: 1715 TOTAL / 258 CW / 0 RTTY / 1302 FT8 / 155 FT4
+2025/12/28 16:54:18 PSKReporter: 29,799 TOTAL / 92 CW / 0 RTTY / 29,037 FT8 / 671 FT4 / 0 MSK144
+2025/12/28 16:54:18 Corrected calls: 23 (C) / 0 (U) / 132 (F) / 0 (H)
+2025/12/28 16:54:18 Secondary dedup: 229,679 in / 97,303 dup / 132,376 fwd
+2025/12/28 16:54:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 16:54:18 
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.0 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.9 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.9 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.8 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.2 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.0 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.1 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.2 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=1840.4 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.8 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=1840.6 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.1 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.3 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=14076.3 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.8 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.0 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.9 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.6 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.8 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.9 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.6 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.8 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.7 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.4 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.4 mode=FT8
+2025/12/28 16:54:20 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.5 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.7 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.7 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.3 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.9 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.5 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.5 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.0 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.6 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.6 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.3 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.2 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.5 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.8 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.1 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.1 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.7 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.8 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.9 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.1 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.4 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7074.9 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.8 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.0 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.0 mode=FT8
+2025/12/28 16:54:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.3 mode=FT8
+2025/12/28 16:54:26 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.0 mode=FT8
+2025/12/28 16:54:26 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.0 mode=FT8
+2025/12/28 16:54:26 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.6 mode=FT8
+2025/12/28 16:54:26 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.2 mode=FT8
+2025/12/28 16:54:26 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.9 mode=FT8
+2025/12/28 16:54:26 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.9 mode=FT8
+2025/12/28 16:54:26 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.1 mode=FT8
+2025/12/28 16:54:26 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.8 mode=FT8
+2025/12/28 16:54:27 Call corrected: 4X2HX -> 4X25X at 3515.0 kHz (9 / 81%)
+2025/12/28 16:54:39 Call corrected: K9UCX -> K9UC at 14039.0 kHz (46 / 95%)
+2025/12/28 16:54:41 PSKReporter drop: CTY miss for DE 13RF029-# freq=14076.5 mode=FT8
+2025/12/28 16:54:41 PSKReporter drop: CTY miss for DE 13RF029-# freq=14076.3 mode=FT8
+2025/12/28 16:54:43 Call corrected: 9A3J -> 9A3JH at 1828.6 kHz (13 / 92%)
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.9 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.2 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.5 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.0 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.5 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.0 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10136.6 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.2 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5357.9 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.8 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.1 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.8 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.2 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.1 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.9 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.3 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.9 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7048.6 mode=FT4
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7050.1 mode=FT4
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.9 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.2 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.4 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.7 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.4 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7049.2 mode=FT4
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7049.1 mode=FT4
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.4 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7048.9 mode=FT4
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.0 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7049.4 mode=FT4
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5357.9 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.6 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.4 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.6 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.5 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.1 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.8 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.6 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.1 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.4 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.4 mode=FT8
+2025/12/28 16:54:47 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.9 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.3 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.7 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.6 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.5 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.5 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=1840.5 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.5 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.7 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.6 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.4 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.2 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.2 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.7 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.9 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.3 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.9 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.6 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.4 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.6 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.0 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.8 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.9 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.8 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.1 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.2 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.9 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.0 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.2 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.4 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.8 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.7 mode=FT8
+2025/12/28 16:54:48 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.4 mode=FT8
+2025/12/28 16:54:57 Call corrected: HA5R -> HA5RO at 7003.1 kHz (24 / 96%)
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.2 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.3 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.8 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.4 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.6 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.9 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.7 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.2 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.6 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.5 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.1 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.5 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.8 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.9 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.3 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.8 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.1 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.9 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.6 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.3 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.7 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.8 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.6 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.8 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.2 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.4 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.6 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.1 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.9 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.4 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.0 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.0 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.5 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.0 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.3 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.4 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=14076.3 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=14076.5 mode=FT8
+2025/12/28 16:55:03 PSKReporter drop: CTY miss for DE 14AC76-# freq=14076.5 mode=FT8
+2025/12/28 16:55:05 Call corrected: VE3BX -> VE3BXG at 14017.3 kHz (32 / 96%)
+2025/12/28 16:55:13 RBN drop: CTY miss for DX 91XF806J (line=DX de W2NNN-#:    7074.0  91XF806J       FT8  -21 dB          CQ      2155Z)
+2025/12/28 16:55:18 Uptime: 00:08   Memory MB: 281.1 / 121.1 / 1.0 (0.2%) / 0.1 / 1.2 (99.1%) / 1.2 (44.6%)
+2025/12/28 16:55:18 Grid database: 261,055 TOTAL / 87%
+2025/12/28 16:55:18 CTY: age 8m
+2025/12/28 16:55:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 16:55:18 RBN: 1538 TOTAL / 278 CW / 0 RTTY / 1144 FT8 / 116 FT4
+2025/12/28 16:55:18 PSKReporter: 29,263 TOTAL / 31 CW / 0 RTTY / 28,624 FT8 / 607 FT4 / 0 MSK144
+2025/12/28 16:55:18 Corrected calls: 28 (C) / 0 (U) / 150 (F) / 0 (H)
+2025/12/28 16:55:18 Secondary dedup: 260,489 in / 110,128 dup / 150,361 fwd
+2025/12/28 16:55:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 16:55:18 
+2025/12/28 16:55:44 Call corrected: M4KW -> OM4KW at 7014.0 kHz (29 / 96%)
+2025/12/28 16:55:47 Call corrected: 4X2I -> 4X25X at 3515.0 kHz (13 / 92%)
+2025/12/28 16:55:49 Call corrected: W2IIT -> W2II at 7062.2 kHz (9 / 90%)
+2025/12/28 16:55:50 Call corrected: W2IIT -> W2II at 7062.2 kHz (11 / 91%)
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.4 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.1 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.4 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.3 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.0 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.0 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.6 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.6 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.7 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.7 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.5 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=10136.7 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.8 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.4 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.5 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.3 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.5 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.1 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.3 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.2 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.3 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.2 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.4 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.2 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.6 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.9 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.4 mode=FT8
+2025/12/28 16:55:51 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.0 mode=FT8
+2025/12/28 16:55:54 Call corrected: 4X2H -> 4X25X at 3515.0 kHz (15 / 88%)
+2025/12/28 16:55:55 Call corrected: W2IIT -> W2II at 7062.2 kHz (23 / 95%)
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.2 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5357.9 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5359.2 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.4 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.2 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.5 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.3 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5357.9 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5359.4 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.8 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5359.6 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5359.4 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.1 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.3 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE ZE185-# freq=5359.6 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE 20WW2-WEBRX freq=28076.2 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DE 20WW2-WEBRX freq=28076.1 mode=FT8
+2025/12/28 16:55:59 PSKReporter drop: CTY miss for DX B91AFN freq=28074.9 mode=FT8
+2025/12/28 16:56:00 Call corrected: LU7HUI -> LU7HF at 28012.0 kHz (19 / 95%)
+2025/12/28 16:56:18 Uptime: 00:09   Memory MB: 297.4 / 121.1 / 1.0 (0.2%) / 0.1 / 1.2 (99.2%) / 1.2 (46.0%)
+2025/12/28 16:56:18 Grid database: 261,063 TOTAL / 87%
+2025/12/28 16:56:18 CTY: age 9m
+2025/12/28 16:56:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 16:56:18 RBN: 1794 TOTAL / 405 CW / 4 RTTY / 1283 FT8 / 102 FT4
+2025/12/28 16:56:18 PSKReporter: 28,651 TOTAL / 68 CW / 0 RTTY / 28,070 FT8 / 513 FT4 / 0 MSK144
+2025/12/28 16:56:18 Corrected calls: 35 (C) / 0 (U) / 172 (F) / 0 (H)
+2025/12/28 16:56:18 Secondary dedup: 290,937 in / 123,851 dup / 167,086 fwd
+2025/12/28 16:56:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 16:56:18 
+2025/12/28 16:56:28 Call corrected: NO3Z -> RO3Z at 7020.0 kHz (19 / 95%)
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.1 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7049.7 mode=FT4
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.6 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.0 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.2 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.5 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7047.8 mode=FT4
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.2 mode=FT4
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.8 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.6 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.0 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.5 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.6 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.2 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.7 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.4 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.2 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.0 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.3 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.3 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.4 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.4 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.7 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.4 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.1 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.4 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.7 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.6 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.5 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.0 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.8 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.9 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.4 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.0 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.5 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.6 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.6 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.3 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.8 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.6 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.0 mode=FT4
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.0 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.6 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.4 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.6 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.1 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.2 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.2 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.7 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.3 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.7 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.0 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.2 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.2 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7047.8 mode=FT4
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.9 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.3 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.1 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.7 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.6 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.8 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.6 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.8 mode=FT4
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.5 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.1 mode=FT8
+2025/12/28 16:56:30 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.5 mode=FT8
+2025/12/28 16:56:30 Call corrected: HA5R -> HA5RO at 7003.1 kHz (25 / 96%)
+2025/12/28 16:56:42 Call corrected: T8BB -> N8BB at 14046.0 kHz (20 / 95%)
+2025/12/28 16:56:46 Call corrected: K9UCX -> K9UC at 14039.0 kHz (46 / 95%)
+2025/12/28 16:56:56 Call corrected: W2IIT -> W2II at 7062.2 kHz (32 / 96%)
+2025/12/28 16:57:18 Uptime: 00:10   Memory MB: 294.5 / 121.1 / 0.9 (0.2%) / 0.1 / 1.2 (99.3%) / 1.2 (44.0%)
+2025/12/28 16:57:18 Grid database: 261,068 TOTAL / 87%
+2025/12/28 16:57:18 CTY: age 10m
+2025/12/28 16:57:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 16:57:18 RBN: 1679 TOTAL / 323 CW / 1 RTTY / 1258 FT8 / 97 FT4
+2025/12/28 16:57:18 PSKReporter: 27,821 TOTAL / 51 CW / 2 RTTY / 27,311 FT8 / 455 FT4 / 1 MSK144
+2025/12/28 16:57:18 Corrected calls: 40 (C) / 0 (U) / 196 (F) / 0 (H)
+2025/12/28 16:57:18 Secondary dedup: 320,438 in / 136,377 dup / 184,061 fwd
+2025/12/28 16:57:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 16:57:18 
+2025/12/28 16:57:25 PSKReporter drop: CTY miss for DE 14FRS6218-# freq=14074.7 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.6 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.7 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.3 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.1 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.0 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.2 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.6 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.8 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.9 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.1 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.3 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.5 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.7 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.1 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=10136.7 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.4 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.9 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.1 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.0 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.3 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.2 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.8 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.5 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.3 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.2 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.0 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=14075.8 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=14076.5 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.7 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=14075.8 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.6 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.9 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.7 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.0 mode=FT8
+2025/12/28 16:57:26 PSKReporter drop: CTY miss for DE 161OS344-# freq=10138.0 mode=FT8
+2025/12/28 16:57:44 Call corrected: EW2WE -> EW2W at 7011.0 kHz (43 / 97%)
+2025/12/28 16:58:18 Uptime: 00:11   Memory MB: 318.5 / 121.1 / 1.0 (0.2%) / 0.1 / 1.2 (99.3%) / 1.2 (44.3%)
+2025/12/28 16:58:18 Grid database: 261,070 TOTAL / 87%
+2025/12/28 16:58:18 CTY: age 11m
+2025/12/28 16:58:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 16:58:18 RBN: 1366 TOTAL / 173 CW / 0 RTTY / 1135 FT8 / 58 FT4
+2025/12/28 16:58:18 PSKReporter: 35,475 TOTAL / 32 CW / 0 RTTY / 34,773 FT8 / 668 FT4 / 0 MSK144
+2025/12/28 16:58:18 Corrected calls: 41 (C) / 0 (U) / 206 (F) / 0 (H)
+2025/12/28 16:58:18 Secondary dedup: 357,284 in / 153,039 dup / 204,245 fwd
+2025/12/28 16:58:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 16:58:18 
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.7 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.2 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.4 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.6 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.5 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.4 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.2 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10136.8 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.1 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.8 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.3 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.2 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.1 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.2 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.5 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.9 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.9 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.5 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.6 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.6 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.5 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.1 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10139.0 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.3 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.8 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.9 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=14075.8 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.6 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.2 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.3 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.0 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=14076.5 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.0 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.6 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10136.5 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.9 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5357.7 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.3 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.0 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.7 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.3 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.8 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.2 mode=FT8
+2025/12/28 16:58:18 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.2 mode=FT8
+2025/12/28 16:58:36 Call corrected: K4VN -> K4VOZ at 14048.5 kHz (20 / 95%)
+2025/12/28 16:59:01 PSKReporter drop: CTY miss for DE CHM-10 freq=144176.5 mode=FT8
+2025/12/28 16:59:01 PSKReporter drop: CTY miss for DE CHM-10 freq=144175.1 mode=FT8
+2025/12/28 16:59:01 PSKReporter drop: CTY miss for DE CHM-10 freq=144174.5 mode=FT8
+2025/12/28 16:59:01 PSKReporter drop: CTY miss for DE CHM-10 freq=144174.7 mode=FT8
+2025/12/28 16:59:01 PSKReporter drop: CTY miss for DE CHM-10 freq=144176.5 mode=FT8
+2025/12/28 16:59:01 PSKReporter drop: CTY miss for DE CHM-10 freq=144176.0 mode=FT8
+2025/12/28 16:59:01 PSKReporter drop: CTY miss for DE CHM-10 freq=144174.8 mode=FT8
+2025/12/28 16:59:01 PSKReporter drop: CTY miss for DE CHM-10 freq=144174.8 mode=FT8
+2025/12/28 16:59:01 PSKReporter drop: CTY miss for DE CHM-10 freq=144175.6 mode=FT8
+2025/12/28 16:59:04 Call corrected: AF8A -> W4FOA at 14028.1 kHz (41 / 97%)
+2025/12/28 16:59:09 Call corrected: DK5JP -> DK5JPL at 3542.0 kHz (37 / 97%)
+2025/12/28 16:59:13 Call corrected: K2EGL -> IK2EGL at 7001.1 kHz (15 / 93%)
+2025/12/28 16:59:16 Call corrected: IK2EGW -> IK2EGL at 7001.0 kHz (33 / 94%)
+2025/12/28 16:59:18 Uptime: 00:12   Memory MB: 342.4 / 121.1 / 1.0 (0.2%) / 0.1 / 1.3 (99.4%) / 1.2 (43.1%)
+2025/12/28 16:59:18 Grid database: 261,081 TOTAL / 87%
+2025/12/28 16:59:18 CTY: age 12m
+2025/12/28 16:59:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 16:59:18 RBN: 1820 TOTAL / 384 CW / 0 RTTY / 1336 FT8 / 100 FT4
+2025/12/28 16:59:18 PSKReporter: 31,908 TOTAL / 98 CW / 0 RTTY / 31,208 FT8 / 601 FT4 / 0 MSK144
+2025/12/28 16:59:18 Corrected calls: 46 (C) / 0 (U) / 233 (F) / 0 (H)
+2025/12/28 16:59:18 Secondary dedup: 391,016 in / 167,751 dup / 223,265 fwd
+2025/12/28 16:59:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 16:59:18 
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.0 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.5 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.2 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.1 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.2 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.1 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.1 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.1 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.7 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.3 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.0 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.4 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.3 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.1 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.0 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.7 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.7 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.4 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.1 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.1 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.9 mode=FT8
+2025/12/28 16:59:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.5 mode=FT8
+2025/12/28 16:59:32 Call corrected: LZ3A -> LZ3AN at 7008.0 kHz (52 / 98%)
+2025/12/28 16:59:32 Call corrected: AA7F -> AA7FV at 18090.0 kHz (12 / 92%)
+2025/12/28 16:59:36 PSKReporter drop: CTY miss for DE 13RF029-# freq=14074.7 mode=FT8
+2025/12/28 16:59:36 PSKReporter drop: CTY miss for DE 13RF029-# freq=14074.7 mode=FT8
+2025/12/28 16:59:36 PSKReporter drop: CTY miss for DE 13RF029-# freq=14075.8 mode=FT8
+2025/12/28 16:59:36 PSKReporter drop: CTY miss for DE 13RF029-# freq=14075.8 mode=FT8
+2025/12/28 16:59:39 Call corrected: W2IIT -> W2II at 7061.0 kHz (16 / 94%)
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.2 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.8 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.0 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.7 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.7 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.3 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.6 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.0 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.7 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.5 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.0 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.7 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.3 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.6 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.1 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.1 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.5 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=14075.8 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.2 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.3 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.3 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.2 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.5 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.8 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.8 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.2 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.4 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.0 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.9 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.9 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.0 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.2 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.6 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.8 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.0 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.9 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.8 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.0 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.5 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.2 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.1 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.4 mode=FT8
+2025/12/28 16:59:50 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.0 mode=FT8
+2025/12/28 17:00:02 Call corrected: DL2MS -> DL2MH at 3531.0 kHz (20 / 95%)
+2025/12/28 17:00:12 Call corrected: W2IIT -> W2II at 7061.0 kHz (18 / 94%)
+2025/12/28 17:00:18 Uptime: 00:13   Memory MB: 328.8 / 121.1 / 1.0 (0.2%) / 0.1 / 1.3 (99.4%) / 1.2 (42.7%)
+2025/12/28 17:00:18 Grid database: 261,085 TOTAL / 87%
+2025/12/28 17:00:18 CTY: age 13m
+2025/12/28 17:00:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 17:00:18 RBN: 1761 TOTAL / 352 CW / 3 RTTY / 1291 FT8 / 115 FT4
+2025/12/28 17:00:18 PSKReporter: 25,627 TOTAL / 53 CW / 0 RTTY / 25,113 FT8 / 458 FT4 / 0 MSK144
+2025/12/28 17:00:18 Corrected calls: 51 (C) / 0 (U) / 254 (F) / 0 (H)
+2025/12/28 17:00:18 Secondary dedup: 418,409 in / 180,202 dup / 238,207 fwd
+2025/12/28 17:00:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 17:00:18 
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14075.2 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14075.8 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14076.0 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14074.7 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14074.7 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14076.1 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14076.2 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14075.5 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14075.4 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14075.8 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14075.7 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14075.7 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14075.1 mode=FT8
+2025/12/28 17:00:53 PSKReporter drop: CTY miss for DE 14AC76-# freq=14075.7 mode=FT8
+2025/12/28 17:01:17 PSKReporter drop: CTY miss for DE ZE185-# freq=5357.7 mode=FT8
+2025/12/28 17:01:17 PSKReporter drop: CTY miss for DE ZE185-# freq=5357.8 mode=FT8
+2025/12/28 17:01:17 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.2 mode=FT8
+2025/12/28 17:01:17 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.5 mode=FT8
+2025/12/28 17:01:18 Uptime: 00:14   Memory MB: 364.1 / 121.1 / 1.0 (0.2%) / 0.1 / 1.3 (99.5%) / 1.2 (42.4%)
+2025/12/28 17:01:18 Grid database: 261,092 TOTAL / 87%
+2025/12/28 17:01:18 CTY: age 14m
+2025/12/28 17:01:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 17:01:18 RBN: 1943 TOTAL / 454 CW / 2 RTTY / 1367 FT8 / 120 FT4
+2025/12/28 17:01:18 PSKReporter: 32,717 TOTAL / 50 CW / 0 RTTY / 32,007 FT8 / 660 FT4 / 0 MSK144
+2025/12/28 17:01:18 Corrected calls: 51 (C) / 0 (U) / 281 (F) / 0 (H)
+2025/12/28 17:01:18 Secondary dedup: 453,074 in / 195,678 dup / 257,396 fwd
+2025/12/28 17:01:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 17:01:18 
+2025/12/28 17:01:19 Call corrected: KK4GS -> KY4GS at 10118.0 kHz (13 / 92%)
+2025/12/28 17:01:19 Call corrected: AF8A -> W4FOA at 14028.1 kHz (4 / 80%)
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.6 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.8 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.7 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.7 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10136.1 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.0 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7048.4 mode=FT4
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5357.8 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5357.6 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.8 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.9 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.0 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.2 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.5 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.1 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=14075.7 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10136.5 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.5 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.2 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.8 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.7 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.8 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7049.3 mode=FT4
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7049.6 mode=FT4
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.1 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.1 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.7 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.5 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.3 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10136.4 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.4 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.1 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.5 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.5 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.3 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5357.7 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.0 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.3 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.5 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.7 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7049.7 mode=FT4
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.9 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.8 mode=FT8
+2025/12/28 17:01:26 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10136.9 mode=FT8
+2025/12/28 17:01:30 Call corrected: W2X -> W2XU at 14010.7 kHz (23 / 95%)
+2025/12/28 17:01:33 Call corrected: KY4G -> KY4GS at 10118.0 kHz (15 / 93%)
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3576.0 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.6 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7049.2 mode=FT4
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.5 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.1 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.3 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.5 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.1 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.4 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.3 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.4 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.5 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.5 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.0 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.5 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.1 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.0 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.3 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.1 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.3 mode=FT4
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.7 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.2 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.4 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.9 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7049.2 mode=FT4
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.2 mode=FT4
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.7 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.4 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.0 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.5 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.7 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.5 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.6 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.5 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.2 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.9 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.6 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.1 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.7 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.7 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.9 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.5 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.4 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.6 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7047.8 mode=FT4
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.4 mode=FT4
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.9 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.9 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.4 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.5 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.0 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.4 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.7 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.0 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.7 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.9 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.3 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.6 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.9 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.7 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.4 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.7 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.2 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.8 mode=FT4
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.7 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.4 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7049.8 mode=FT4
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.3 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.0 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.6 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.6 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.6 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.1 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.9 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.6 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.3 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.3 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.6 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.8 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.7 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.7 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7049.7 mode=FT4
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.5 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.9 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.6 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.1 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.9 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.0 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.0 mode=FT8
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 22DX-# freq=3577.6 mode=FT4
+2025/12/28 17:01:40 PSKReporter drop: CTY miss for DE 20WW2-WEBRX freq=28075.5 mode=FT8
+2025/12/28 17:02:00 PSKReporter drop: CTY miss for DE 14FRS6218-# freq=14075.5 mode=FT8
+2025/12/28 17:02:03 Call corrected: F5PL -> F5PLC at 3507.0 kHz (62 / 98%)
+2025/12/28 17:02:04 Call corrected: K9UCX -> K9UC at 14039.0 kHz (1 / 50%)
+2025/12/28 17:02:14 Call corrected: M3KHG -> W3KHG at 14008.6 kHz (20 / 100%)
+2025/12/28 17:02:18 Uptime: 00:15   Memory MB: 237.8 / 121.1 / 1.1 (0.2%) / 0.1 / 1.3 (99.5%) / 1.2 (42.3%)
+2025/12/28 17:02:18 Grid database: 261,102 TOTAL / 87%
+2025/12/28 17:02:18 CTY: age 15m
+2025/12/28 17:02:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 17:02:18 RBN: 1661 TOTAL / 253 CW / 12 RTTY / 1309 FT8 / 87 FT4
+2025/12/28 17:02:18 PSKReporter: 39,670 TOTAL / 102 CW / 0 RTTY / 38,837 FT8 / 729 FT4 / 0 MSK144
+2025/12/28 17:02:18 Corrected calls: 58 (C) / 0 (U) / 322 (F) / 0 (H)
+2025/12/28 17:02:18 Secondary dedup: 494,409 in / 214,434 dup / 279,975 fwd
+2025/12/28 17:02:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 17:02:18 
+2025/12/28 17:02:24 Call corrected: G4HMM -> G4HOM at 7018.9 kHz (18 / 90%)
+2025/12/28 17:02:28 Call corrected: W2DX -> W2XU at 14010.7 kHz (25 / 96%)
+2025/12/28 17:02:38 Call corrected: K4VN -> K4VOZ at 14048.5 kHz (19 / 86%)
+2025/12/28 17:02:46 Call corrected: 4X2HX -> 4X25X at 3515.0 kHz (11 / 78%)
+2025/12/28 17:02:46 Call corrected: EW2E -> EW2W at 7010.5 kHz (9 / 100%)
+2025/12/28 17:02:47 Call corrected: W2IIT -> W2II at 7061.0 kHz (28 / 96%)
+2025/12/28 17:02:50 Call corrected: W6EF -> W6EFI at 14044.1 kHz (7 / 87%)
+2025/12/28 17:02:50 Call corrected: G4HON -> G4HOM at 7018.9 kHz (22 / 91%)
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.7 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.4 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.2 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.2 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.5 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.7 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=10138.1 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.7 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.4 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.6 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.1 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.3 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.4 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.8 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.7 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.3 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.3 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.0 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.8 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.7 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.5 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.1 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.7 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.0 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.2 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.2 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.7 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.7 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.1 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.9 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.9 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.6 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=14076.5 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.5 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.6 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.4 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.3 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.3 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.5 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.2 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.5 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.4 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.0 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=10137.3 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=14075.4 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.8 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.6 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=1840.3 mode=FT8
+2025/12/28 17:02:54 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.4 mode=FT8
+2025/12/28 17:03:07 Call corrected: N5LCI -> F5LCI at 7022.0 kHz (25 / 96%)
+2025/12/28 17:03:18 Uptime: 00:16   Memory MB: 244.6 / 121.1 / 1.1 (0.2%) / 0.1 / 1.3 (99.5%) / 1.2 (42.1%)
+2025/12/28 17:03:18 Grid database: 261,110 TOTAL / 87%
+2025/12/28 17:03:18 CTY: age 16m
+2025/12/28 17:03:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 17:03:18 RBN: 1417 TOTAL / 193 CW / 1 RTTY / 1128 FT8 / 95 FT4
+2025/12/28 17:03:18 PSKReporter: 32,527 TOTAL / 36 CW / 0 RTTY / 31,801 FT8 / 689 FT4 / 0 MSK144
+2025/12/28 17:03:18 Corrected calls: 67 (C) / 0 (U) / 349 (F) / 0 (H)
+2025/12/28 17:03:18 Secondary dedup: 528,358 in / 229,914 dup / 298,444 fwd
+2025/12/28 17:03:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 17:03:18 
+2025/12/28 17:03:27 Call corrected: M3KHG -> W3KHG at 14013.8 kHz (16 / 94%)
+2025/12/28 17:03:29 Call corrected: N1MB -> N1MX at 7006.0 kHz (11 / 73%)
+2025/12/28 17:03:44 Call corrected: LZ3AT -> LZ3AN at 7008.0 kHz (50 / 89%)
+2025/12/28 17:04:18 Uptime: 00:17   Memory MB: 216.1 / 121.1 / 0.9 (0.2%) / 0.1 / 1.3 (99.5%) / 1.2 (41.6%)
+2025/12/28 17:04:18 Grid database: 261,116 TOTAL / 87%
+2025/12/28 17:04:18 CTY: age 17m
+2025/12/28 17:04:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 17:04:18 RBN: 1610 TOTAL / 314 CW / 9 RTTY / 1169 FT8 / 118 FT4
+2025/12/28 17:04:18 PSKReporter: 23,024 TOTAL / 27 CW / 0 RTTY / 22,290 FT8 / 706 FT4 / 0 MSK144
+2025/12/28 17:04:18 Corrected calls: 70 (C) / 0 (U) / 368 (F) / 0 (H)
+2025/12/28 17:04:18 Secondary dedup: 552,997 in / 240,375 dup / 312,622 fwd
+2025/12/28 17:04:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 17:04:18 
+2025/12/28 17:04:19 Call corrected: XE2GRC -> W6/XE2GRC at 14058.0 kHz (4 / 80%)
+2025/12/28 17:04:19 Call corrected: AF8A -> W4FOA at 14028.1 kHz (1 / 50%)
+2025/12/28 17:04:19 Call corrected: K9UCX -> K9UC at 14039.1 kHz (2 / 66%)
+2025/12/28 17:04:25 Call corrected: AF8A -> W4FOA at 14028.1 kHz (2 / 66%)
+2025/12/28 17:04:25 Call corrected: K9UCX -> K9UC at 14039.0 kHz (3 / 60%)
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE CHM-10 freq=144175.4 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE CHM-10 freq=144176.3 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE CHM-10 freq=144175.9 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE CHM-10 freq=144174.6 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.5 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.3 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7074.9 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.3 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.4 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.1 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.6 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.6 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.1 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.4 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.7 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.3 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.3 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.2 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.4 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.0 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7076.1 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.7 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.4 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.4 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.4 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.3 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.3 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.0 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.3 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.9 mode=FT8
+2025/12/28 17:04:25 PSKReporter drop: CTY miss for DE 30HS200-# freq=7075.1 mode=FT8
+2025/12/28 17:04:27 Call corrected: OM4TA -> OM4KW at 7014.0 kHz (24 / 100%)
+2025/12/28 17:04:35 Call corrected: UT8E -> UT8ER at 1822.5 kHz (4 / 100%)
+2025/12/28 17:04:35 Call corrected: RW7HJL -> W7HJL at 28020.6 kHz (12 / 85%)
+2025/12/28 17:04:35 PSKReporter drop: CTY miss for DE 13RF029-# freq=14074.8 mode=FT8
+2025/12/28 17:04:41 Call corrected: M3KHG -> W3KHG at 14016.2 kHz (6 / 85%)
+2025/12/28 17:04:41 Call corrected: WA8VD -> WA8VTD at 14051.0 kHz (21 / 95%)
+2025/12/28 17:04:41 Call corrected: M3KHG -> W3KHG at 14016.2 kHz (7 / 87%)
+2025/12/28 17:04:50 RBN drop: CTY miss for DX 449TMDSB9CB (line=DX de CT1EYQ-#:  14074.0  449TMDSB9CB    FT8  -23 dB          CQ      2204Z)
+2025/12/28 17:04:50 Call corrected: AF8A -> W4FOA at 14028.1 kHz (3 / 75%)
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.4 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.2 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.7 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.1 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.3 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.9 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.9 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.2 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.6 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.7 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.3 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.3 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.7 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.4 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.3 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.9 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.3 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.6 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.2 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.7 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.4 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.2 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.7 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.4 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.8 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.9 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.7 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7048.7 mode=FT4
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.5 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.0 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.3 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.6 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.4 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.0 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.3 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.1 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.9 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.5 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10136.8 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.9 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.4 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.5 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.9 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.8 mode=FT8
+2025/12/28 17:04:51 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.0 mode=FT8
+2025/12/28 17:05:18 Uptime: 00:18   Memory MB: 266.6 / 121.1 / 1.0 (0.2%) / 0.1 / 1.3 (99.6%) / 1.2 (41.3%)
+2025/12/28 17:05:18 Grid database: 261,125 TOTAL / 87%
+2025/12/28 17:05:18 CTY: age 18m
+2025/12/28 17:05:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 17:05:18 RBN: 1734 TOTAL / 298 CW / 1 RTTY / 1362 FT8 / 73 FT4
+2025/12/28 17:05:18 PSKReporter: 38,396 TOTAL / 125 CW / 1 RTTY / 37,495 FT8 / 775 FT4 / 0 MSK144
+2025/12/28 17:05:18 Corrected calls: 82 (C) / 0 (U) / 420 (F) / 0 (H)
+2025/12/28 17:05:18 Secondary dedup: 593,133 in / 258,828 dup / 334,305 fwd
+2025/12/28 17:05:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 17:05:18 
+2025/12/28 17:05:23 Call corrected: IZ3NYM -> IZ3NYG at 7015.0 kHz (97 / 98%)
+2025/12/28 17:05:48 Call corrected: N2WJM -> N2WJW at 7045.1 kHz (28 / 96%)
+2025/12/28 17:05:51 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.7 mode=FT8
+2025/12/28 17:05:51 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.1 mode=FT8
+2025/12/28 17:05:51 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.4 mode=FT8
+2025/12/28 17:05:51 PSKReporter drop: CTY miss for DE ZE185-# freq=5359.3 mode=FT8
+2025/12/28 17:05:51 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.9 mode=FT8
+2025/12/28 17:05:51 PSKReporter drop: CTY miss for DE ZE185-# freq=5359.0 mode=FT8
+2025/12/28 17:05:51 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.1 mode=FT8
+2025/12/28 17:05:51 PSKReporter drop: CTY miss for DE ZE185-# freq=5357.4 mode=FT8
+2025/12/28 17:05:51 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.4 mode=FT8
+2025/12/28 17:05:51 PSKReporter drop: CTY miss for DE ZE185-# freq=5359.1 mode=FT8
+2025/12/28 17:05:51 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.0 mode=FT8
+2025/12/28 17:05:51 PSKReporter drop: CTY miss for DE ZE185-# freq=5357.7 mode=FT8
+2025/12/28 17:05:51 Call corrected: M0PK -> M0PKD at 3535.0 kHz (25 / 96%)
+2025/12/28 17:06:02 Call corrected: DL2M -> DL2MH at 3531.0 kHz (9 / 100%)
+2025/12/28 17:06:02 Call corrected: KS9W -> KH0W at 24902.1 kHz (14 / 73%)
+2025/12/28 17:06:03 Call corrected: W2X -> W2XU at 14010.7 kHz (10 / 83%)
+2025/12/28 17:06:08 Call corrected: W2IIT -> W2II at 7061.0 kHz (1 / 50%)
+2025/12/28 17:06:08 Call corrected: AF8A -> W4FOA at 14028.1 kHz (6 / 85%)
+2025/12/28 17:06:08 Call corrected: N6HI -> NI6L at 14031.0 kHz (10 / 71%)
+2025/12/28 17:06:08 Call corrected: KS9W -> KH0W at 24902.1 kHz (14 / 73%)
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=14074.7 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=14075.8 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=14075.9 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=14075.0 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.3 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.6 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.6 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.5 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.3 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.5 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.7 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.7 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.5 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.2 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.4 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.7 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.2 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.4 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.9 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.7 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.4 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.9 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.0 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.6 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.5 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.6 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.6 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.5 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.4 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.3 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.9 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.9 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.3 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.4 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.0 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.4 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.6 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.4 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.7 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.8 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.9 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.1 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.5 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.5 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.2 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.3 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.7 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.6 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.3 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.3 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.4 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7077.0 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.8 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.6 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.3 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.7 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.2 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.1 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.7 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.4 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.0 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.9 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.0 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.2 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.9 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7074.8 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.1 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7076.0 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.1 mode=FT8
+2025/12/28 17:06:13 PSKReporter drop: CTY miss for DE 14AC76-# freq=7075.5 mode=FT8
+2025/12/28 17:06:15 Call corrected: HA5J -> HA5JI at 3516.6 kHz (24 / 96%)
+2025/12/28 17:06:18 Uptime: 00:19   Memory MB: 261.6 / 121.1 / 1.0 (0.2%) / 0.1 / 1.3 (99.6%) / 1.2 (42.0%)
+2025/12/28 17:06:18 Grid database: 261,125 TOTAL / 88%
+2025/12/28 17:06:18 CTY: age 19m
+2025/12/28 17:06:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 17:06:18 RBN: 1581 TOTAL / 251 CW / 0 RTTY / 1257 FT8 / 73 FT4
+2025/12/28 17:06:18 PSKReporter: 28,888 TOTAL / 52 CW / 2 RTTY / 28,200 FT8 / 635 FT4 / 0 MSK144
+2025/12/28 17:06:18 Corrected calls: 93 (C) / 0 (U) / 448 (F) / 0 (H)
+2025/12/28 17:06:18 Secondary dedup: 623,608 in / 272,849 dup / 350,759 fwd
+2025/12/28 17:06:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 17:06:18 
+2025/12/28 17:06:29 Call corrected: JS1DEI -> JS1DEH at 7007.0 kHz (15 / 93%)
+2025/12/28 17:06:43 Call corrected: A4ANV -> UA4ANV at 7001.5 kHz (37 / 92%)
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.0 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.2 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.1 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.6 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.8 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.0 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.4 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.0 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.1 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.9 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.5 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.2 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.9 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.7 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.3 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.4 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=14075.4 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.0 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.2 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=1841.1 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.4 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.0 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.2 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.7 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.5 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.3 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.8 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.6 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.5 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.1 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.0 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.9 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=5357.4 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.8 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=14075.1 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.2 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.7 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.3 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7077.0 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.8 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.7 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7076.3 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.8 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=1840.6 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3573.3 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.0 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.6 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=1842.1 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.9 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=5358.4 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3575.9 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.8 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=5359.4 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.8 mode=FT8
+2025/12/28 17:06:44 PSKReporter drop: CTY miss for DE 161OS344-# freq=3574.4 mode=FT8
+2025/12/28 17:06:45 PSKReporter drop: CTY miss for DE 14FRS6218-# freq=14075.1 mode=FT8
+2025/12/28 17:06:53 Call corrected: DL1D -> DL1DAW at 7012.0 kHz (43 / 97%)
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.9 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.4 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.2 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.2 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.9 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.7 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.0 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.8 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.9 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.3 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.0 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.6 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.7 mode=FT4
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.2 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.0 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.5 mode=FT4
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.3 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.4 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.7 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.7 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.4 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.7 mode=FT4
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.7 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.4 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.6 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.2 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.1 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.0 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.5 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.9 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.4 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.8 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.1 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.0 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.7 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.2 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.8 mode=FT4
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.2 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.0 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.7 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.4 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.3 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.3 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.6 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.9 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.7 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.5 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.8 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.7 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.1 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.5 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.4 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.2 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.6 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.6 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.1 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.0 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.0 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.4 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.5 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.8 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.8 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.9 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7049.8 mode=FT4
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3575.4 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.7 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.9 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.5 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.3 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.6 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.8 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.3 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.1 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.1 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.6 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.8 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7074.8 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.2 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3574.3 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.2 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.4 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7048.1 mode=FT4
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=14076.3 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.9 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7050.0 mode=FT4
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.4 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.3 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3576.0 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.1 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.9 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.7 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.2 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.6 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.9 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.3 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=3573.8 mode=FT8
+2025/12/28 17:07:06 PSKReporter drop: CTY miss for DE 22DX-# freq=7075.5 mode=FT8
+2025/12/28 17:07:09 Call corrected: A4ANV -> UA4ANV at 7001.5 kHz (43 / 95%)
+2025/12/28 17:07:12 Call corrected: A4ANV -> UA4ANV at 7001.5 kHz (44 / 95%)
+2025/12/28 17:07:14 Call corrected: OM4K -> OM4KW at 7014.0 kHz (24 / 85%)
+2025/12/28 17:07:18 Uptime: 00:20   Memory MB: 300.9 / 121.1 / 1.1 (0.2%) / 0.1 / 1.3 (99.6%) / 1.2 (41.5%)
+2025/12/28 17:07:18 Grid database: 261,135 TOTAL / 88%
+2025/12/28 17:07:18 CTY: age 20m
+2025/12/28 17:07:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 17:07:18 RBN: 1767 TOTAL / 306 CW / 1 RTTY / 1335 FT8 / 125 FT4
+2025/12/28 17:07:18 PSKReporter: 35,419 TOTAL / 56 CW / 0 RTTY / 34,577 FT8 / 785 FT4 / 0 MSK144
+2025/12/28 17:07:18 Corrected calls: 99 (C) / 0 (U) / 464 (F) / 0 (H)
+2025/12/28 17:07:18 Secondary dedup: 660,795 in / 289,709 dup / 371,086 fwd
+2025/12/28 17:07:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 17:07:18 
+2025/12/28 17:07:18 Call corrected: KE4STN -> KE4SC at 14029.1 kHz (47 / 97%)
+2025/12/28 17:07:49 Call corrected: A4ANV -> UA4ANV at 7001.5 kHz (47 / 95%)
+2025/12/28 17:07:51 Call corrected: A4ANV -> UA4ANV at 7001.5 kHz (48 / 96%)
+2025/12/28 17:08:18 Uptime: 00:21   Memory MB: 249.3 / 121.1 / 0.8 (0.2%) / 0.1 / 1.4 (99.6%) / 1.2 (41.1%)
+2025/12/28 17:08:18 Grid database: 261,137 TOTAL / 88%
+2025/12/28 17:08:18 CTY: age 21m
+2025/12/28 17:08:18 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 17:08:18 RBN: 1564 TOTAL / 328 CW / 0 RTTY / 1123 FT8 / 113 FT4
+2025/12/28 17:08:18 PSKReporter: 18,853 TOTAL / 9 CW / 1 RTTY / 18,436 FT8 / 407 FT4 / 0 MSK144
+2025/12/28 17:08:18 Corrected calls: 102 (C) / 0 (U) / 484 (F) / 0 (H)
+2025/12/28 17:08:18 Secondary dedup: 681,215 in / 298,405 dup / 382,810 fwd
+2025/12/28 17:08:18 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 17:08:18 
+2025/12/28 17:08:18 Call corrected: KS9W -> KH0W at 24902.0 kHz (8 / 72%)
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10136.5 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.7 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.0 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.8 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.8 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.7 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.6 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.9 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.7 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5357.7 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.1 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.0 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.8 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.8 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7074.9 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10138.7 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.0 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.3 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.1 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.5 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.7 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.8 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7049.6 mode=FT4
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.4 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.3 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7050.0 mode=FT4
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3575.9 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.6 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.3 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.2 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.7 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3573.3 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.8 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.9 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.6 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.2 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.2 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5359.2 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.6 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=5358.3 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.4 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.1 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.8 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.9 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.7 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=3574.2 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.2 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=10137.2 mode=FT8
+2025/12/28 17:08:21 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7075.9 mode=FT8
+2025/12/28 17:08:53 Call corrected: HA5J -> HA5JI at 3516.6 kHz (26 / 96%)
+2025/12/28 17:09:05 Received signal: terminated
+2025/12/28 17:09:05 Shutting down gracefully...
+2025/12/28 17:09:05 Deduplicator: Stopping...
+2025/12/28 17:09:05 Deduplicator: Cleanup loop stopped
+2025/12/28 17:09:05 Deduplicator: Process loop stopped
+2025/12/28 17:09:05 Stopping RBN-CW-RTTY client...
+2025/12/28 17:09:05 Stopping RBN-FT4-FT8 client...
+2025/12/28 17:09:05 Stopping PSKReporter client...
+2025/12/28 17:09:05 PSKReporter client stopped
+2025/12/28 17:09:05 Stopping telnet server...
+2025/12/28 17:09:05 Client K3TO disconnected: read tcp [::1]:9300->[::1]:60480: use of closed network connection
+2025/12/28 17:09:05 Client LZ1BB disconnected: read tcp 127.0.0.1:9300->127.0.0.1:62848: use of closed network connection
+2025/12/28 17:09:05 Cluster stopped
+2025/12/28 17:09:05 archive: begin tx: sql: database is closed
+2025/12/28 17:09:05 Saved user record for K3TO
+2025/12/28 17:09:05 Unregistered client: K3TO (total: 1)
+2025/12/28 17:09:05 Saved user record for LZ1BB
+2025/12/28 17:09:05 Unregistered client: LZ1BB (total: 0)

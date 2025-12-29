@@ -34,19 +34,8 @@ func NewWriter(cfg config.ArchiveConfig) (*Writer, error) {
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
 		return nil, fmt.Errorf("archive: mkdir: %w", err)
 	}
-	db, err := sql.Open("sqlite", cfg.DBPath)
+	db, err := openArchiveDB(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("archive: open db: %w", err)
-	}
-	// Serialize all archive writes through a single connection to avoid SQLITE_BUSY
-	// contention between inserts and cleanup deletes, and to ensure PRAGMA settings
-	// (busy_timeout, journal_mode) are consistently applied.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	if _, err := db.Exec(`pragma journal_mode=WAL; pragma synchronous=NORMAL; pragma busy_timeout=` + fmt.Sprintf("%d", cfg.BusyTimeoutMS)); err != nil {
-		return nil, fmt.Errorf("archive: pragmas: %w", err)
-	}
-	if err := ensureSchema(db); err != nil {
 		return nil, err
 	}
 	qsize := cfg.QueueSize
@@ -59,6 +48,146 @@ func NewWriter(cfg config.ArchiveConfig) (*Writer, error) {
 		queue: make(chan *spot.Spot, qsize),
 		stop:  make(chan struct{}),
 	}, nil
+}
+
+// Purpose: Open the archive DB with durability settings and optional corruption recovery.
+// Key aspects: Applies pragmas, validates integrity when enabled, and recreates on corruption.
+// Upstream: NewWriter.
+// Downstream: applyArchivePragmas, checkArchiveIntegrity, ensureSchema.
+func openArchiveDB(cfg config.ArchiveConfig) (*sql.DB, error) {
+	const maxAttempts = 2
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		db, err := sql.Open("sqlite", cfg.DBPath)
+		if err != nil {
+			return nil, fmt.Errorf("archive: open db: %w", err)
+		}
+		// Serialize all archive writes through a single connection to avoid SQLITE_BUSY
+		// contention between inserts and cleanup deletes, and to ensure PRAGMA settings
+		// (busy_timeout, journal_mode) are consistently applied.
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+		if err := applyArchivePragmas(db, cfg); err != nil {
+			_ = db.Close()
+			if cfg.AutoDeleteCorruptDB && isSQLiteCorrupted(err) {
+				if err := DropDB(cfg.DBPath); err != nil {
+					return nil, fmt.Errorf("archive: delete corrupt db: %w", err)
+				}
+				log.Printf("archive: pragmas failed (%v), deleted %s", err, cfg.DBPath)
+				continue
+			}
+			return nil, fmt.Errorf("archive: pragmas: %w", err)
+		}
+		if cfg.AutoDeleteCorruptDB {
+			healthy, detail, err := checkArchiveIntegrity(db)
+			if err != nil && !isSQLiteCorrupted(err) {
+				_ = db.Close()
+				return nil, fmt.Errorf("archive: integrity check failed: %w", err)
+			}
+			if err != nil || !healthy {
+				_ = db.Close()
+				if err := DropDB(cfg.DBPath); err != nil {
+					return nil, fmt.Errorf("archive: delete corrupt db: %w", err)
+				}
+				if detail == "" && err != nil {
+					detail = err.Error()
+				}
+				if detail == "" {
+					detail = "unknown corruption"
+				}
+				log.Printf("archive: integrity check failed (%s), deleted %s", detail, cfg.DBPath)
+				continue
+			}
+		}
+		if err := ensureSchema(db); err != nil {
+			if cfg.AutoDeleteCorruptDB && isSQLiteCorrupted(err) {
+				_ = db.Close()
+				if err := DropDB(cfg.DBPath); err != nil {
+					return nil, fmt.Errorf("archive: delete corrupt db: %w", err)
+				}
+				log.Printf("archive: schema failed (%v), deleted %s", err, cfg.DBPath)
+				continue
+			}
+			_ = db.Close()
+			return nil, err
+		}
+		return db, nil
+	}
+	return nil, fmt.Errorf("archive: failed to initialize after removing corrupt db")
+}
+
+// Purpose: Apply SQLite durability and busy-timeout pragmas for the archive writer.
+// Key aspects: WAL mode, configurable synchronous, and bounded busy timeout.
+// Upstream: openArchiveDB.
+// Downstream: sqlite pragmas.
+func applyArchivePragmas(db *sql.DB, cfg config.ArchiveConfig) error {
+	syncMode, err := archiveSynchronousPragma(cfg)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(fmt.Sprintf("pragma journal_mode=WAL; pragma synchronous=%s; pragma busy_timeout=%d", syncMode, cfg.BusyTimeoutMS))
+	return err
+}
+
+// Purpose: Normalize archive synchronous setting to a SQLite pragma value.
+// Key aspects: Defaults to OFF to favor throughput when the archive is disposable.
+// Upstream: applyArchivePragmas.
+// Downstream: sqlite pragma string.
+func archiveSynchronousPragma(cfg config.ArchiveConfig) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Synchronous))
+	if mode == "" {
+		mode = "off"
+	}
+	switch mode {
+	case "off", "normal", "full", "extra":
+		return strings.ToUpper(mode), nil
+	default:
+		return "", fmt.Errorf("archive: invalid synchronous mode %q", cfg.Synchronous)
+	}
+}
+
+// Purpose: Run a fast integrity check for obvious SQLite corruption.
+// Key aspects: quick_check returns "ok" when healthy; any other row signals corruption.
+// Upstream: openArchiveDB.
+// Downstream: sqlite pragma query.
+func checkArchiveIntegrity(db *sql.DB) (bool, string, error) {
+	rows, err := db.Query("pragma quick_check")
+	if err != nil {
+		return false, "", err
+	}
+	defer rows.Close()
+
+	seen := false
+	for rows.Next() {
+		seen = true
+		var result string
+		if err := rows.Scan(&result); err != nil {
+			return false, "", err
+		}
+		if strings.ToLower(strings.TrimSpace(result)) != "ok" {
+			return false, result, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, "", err
+	}
+	if !seen {
+		return false, "", fmt.Errorf("archive: integrity check returned no rows")
+	}
+	return true, "", nil
+}
+
+// Purpose: Identify common SQLite corruption errors.
+// Key aspects: String match keeps dependencies minimal and matches modernc/sqlite errors.
+// Upstream: openArchiveDB.
+// Downstream: None.
+func isSQLiteCorrupted(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database disk image is malformed") ||
+		strings.Contains(msg, "file is encrypted or is not a database") ||
+		strings.Contains(msg, "file is not a database")
 }
 
 // Purpose: Start background loops for inserts and retention cleanup.
@@ -299,15 +428,29 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// Purpose: Delete the archive DB file (test helper).
-// Key aspects: Validates path to avoid removing empty target.
+// Purpose: Delete the archive DB files (test helper).
+// Key aspects: Removes main DB plus WAL/SHM/journal sidecars when present.
 // Upstream: Tests or maintenance tools.
 // Downstream: os.Remove.
 func DropDB(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("archive: empty path")
 	}
-	return os.Remove(path)
+	targets := []string{
+		path,
+		path + "-wal",
+		path + "-shm",
+		path + "-journal",
+	}
+	var firstErr error
+	for _, target := range targets {
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 // Purpose: Return the most recent N archived spots, newest-first.

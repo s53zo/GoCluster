@@ -53,3 +53,41 @@ func TestArchiveCleanupBatchOverrides(t *testing.T) {
 		t.Fatalf("expected cleanup_batch_yield_ms=0, got %d", cfg.Archive.CleanupBatchYieldMS)
 	}
 }
+
+// Purpose: Verify archive synchronous defaults to off when omitted.
+// Key aspects: Ensures config normalization applies durability default.
+// Upstream: go test.
+// Downstream: Load.
+func TestArchiveSynchronousDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	cfgText := "archive:\n  enabled: true\n"
+	if err := os.WriteFile(path, []byte(cfgText), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Archive.Synchronous != "off" {
+		t.Fatalf("expected archive.synchronous=off, got %q", cfg.Archive.Synchronous)
+	}
+}
+
+// Purpose: Verify invalid archive synchronous mode fails validation.
+// Key aspects: Confirms config rejects unknown durability strings.
+// Upstream: go test.
+// Downstream: Load.
+func TestArchiveSynchronousInvalid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	cfgText := "archive:\n  synchronous: \"fast\"\n"
+	if err := os.WriteFile(path, []byte(cfgText), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatalf("expected Load() to fail for invalid archive.synchronous")
+	}
+}

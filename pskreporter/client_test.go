@@ -28,7 +28,7 @@ func TestDecorateSpotterCall(t *testing.T) {
 }
 
 func TestConvertToSpotOmitsCommentAndCarriesGrids(t *testing.T) {
-	client := NewClient("localhost", 1883, nil, "", 1, nil, nil, false, 16)
+	client := NewClient("localhost", 1883, nil, "", 1, nil, false, 16, 0)
 
 	msg := &PSKRMessage{
 		SequenceNumber:  1,
@@ -54,5 +54,32 @@ func TestConvertToSpotOmitsCommentAndCarriesGrids(t *testing.T) {
 	}
 	if spot.DEMetadata.Grid != "EM10" {
 		t.Fatalf("expected DE grid EM10, got %q", spot.DEMetadata.Grid)
+	}
+}
+
+type testMessage struct {
+	payload []byte
+}
+
+func (m testMessage) Duplicate() bool { return false }
+func (m testMessage) Qos() byte       { return 0 }
+func (m testMessage) Retained() bool  { return false }
+func (m testMessage) Topic() string   { return "" }
+func (m testMessage) MessageID() uint16 {
+	return 0
+}
+func (m testMessage) Payload() []byte { return m.payload }
+func (m testMessage) Ack()            {}
+
+func TestMessageHandlerDropsOversizePayload(t *testing.T) {
+	client := NewClient("localhost", 1883, nil, "", 1, nil, false, 16, 4)
+	client.processing = make(chan []byte, 1)
+
+	client.messageHandler(nil, testMessage{payload: make([]byte, 10)})
+
+	select {
+	case <-client.processing:
+		t.Fatalf("expected oversized payload to be dropped")
+	default:
 	}
 }

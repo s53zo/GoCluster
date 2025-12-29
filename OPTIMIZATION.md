@@ -30,7 +30,7 @@
 **Phase 2 (completed): Reduce per-spot DB/call lookups**
 - CTY cache reuse and normalized Spot metadata; small drop in CTY cumulative time.
 - License: added short-TTL cache to avoid repeated FCC checks for the same calls.
-- PSKReporter: added per-callsign CTY cache to avoid repeated lookups.
+- PSKReporter: added per-callsign CTY cache to avoid repeated lookups (superseded in Phase 4 by the shared ingest CTY cache).
 - After Phase 2 CPU: `cpu-after-phase2-20251208-121926.pprof` (120s).
   - `runtime.cgocall` 17.1% flat (was ~21% after Phase 1).
   - `memeqbody` 13.7% flat (was ~21% after Phase 1).
@@ -43,7 +43,7 @@
 - Distance cache key builder uses pre-sized `strings.Builder`; correction maps/slices pre-sized.
 - Levenshtein buffers pooled via `sync.Pool`; optional, bounded sizes.
 - Dedup cleanup switched to short-lock two-phase delete.
-- Added license cache (5m TTL) to avoid repeated FCC checks; PSKReporter CTY cache TTL 5m.
+- Added license cache (5m TTL) to avoid repeated FCC checks; ingest CTY cache TTL 5m.
 - After Phase 3 CPU: `cpu-after-phase3-20251208-123914.pprof` (120s).
   - `memeqbody` 26.2% flat, `runtime.cgocall` 17.3% flat, `cty.lookupCallsignNoCache` ~32.2% cum, PSKReporter ingest ~46.6% cum, `uls.IsLicensedUS` ~16.7% cum, `gridstore.Get` ~15.3% cum.
 
@@ -51,6 +51,16 @@
 - Captured with `ui.mode: headless`, `GOGC=50`: `cpu-pskopt-20251208-130954.pprof` and `heap-pskopt-20251208-130954.pprof`.
 - Results: `memeqbody` 25.3% flat, `runtime.cgocall` 22.3% flat, `cty.lookupCallsignNoCache` ~31.7% cum, PSKReporter ingest ~45.8% cum, `uls.IsLicensedUS` ~15.3% cum, `gridstore.Get` ~12.8% cum.
 - Delta vs Phase 3 profile is within noise (traffic variance). No additional CPU drop observed from PSKReporter/CTY changes; controlled load is needed to make a clean comparison.
+
+**Phase 4 (completed): Centralize CTY/ULS validation at ingest**
+- Moved CTY and DE license validation into a shared ingest gate before deduplication.
+- Removed redundant per-client CTY/ULS lookups in RBN/PSKReporter; output stage only runs DX license check after correction.
+- Reuses a bounded ingest CTY cache (config via `pskreporter.cty_cache_size` / `pskreporter.cty_cache_ttl_seconds`).
+- Expected impact: fewer CTY/ULS lookups on high-rate ingest, lower CPU/allocs; reprofile under controlled load to quantify.
+
+**Phase 5 (completed): PSKReporter JSON decode fast-path**
+- Switched PSKReporter JSON parsing to jsoniter `ConfigFastest` with a compatibility fallback on error.
+- Expected impact: modest CPU/alloc reductions in PSKReporter ingest; correctness preserved via fallback if the fast parser rejects edge-case payloads.
 
 ### Measurement Harness (already available)
 - Enable profiling: set `DXC_PPROF_ADDR=localhost:6061` and `DXC_HEAP_LOG_INTERVAL=60s` (opt-in) and run the cluster.

@@ -1,0 +1,384 @@
+2025/12/28 18:14:14 DX Cluster Server vdev starting...
+Server: Go Cluster beta
+ (N2WQ-2)
+Telnet: port 9300 (transport=native echo_mode=server broadcast workers=auto queue=8192 worker_queue=1024 client_buffer=1024 skip_handshake=false)
+UI: mode=tview refresh=300ms color=true clear_screen=true panes(stats=10 calls=9 unlicensed=9 harm=9 system=9)
+RBN CW/RTTY: telnet.reversebeacon.net:7000 (as N2WQ-2, transport=ziutek slot_buffer=1000 keepalive=180s)
+RBN Digital (FT4/FT8): telnet.reversebeacon.net:7001 (as N2WQ-2, transport=ziutek slot_buffer=1000 keepalive=180s)
+Archive: data/archive/spots.db (queue=10000 batch=500/1000ms cleanup=3600s cleanup_batch=2000 yield=50ms retain_ft=43200s retain_other=86400s sync=off auto_delete_corrupt=true)
+PSKReporter: mqtt.pskreporter.info:1883 (topic:  buffer=25000 workers=auto)
+Dedup: cluster=120s (prefer_stronger=true) secondary=60s (prefer_stronger=true)
+Default modes: CW, LSB, USB, RTTY, MSK144, PSK31, SSTV
+Default sources: HUMAN
+Peering: listen_port=7300 peers=1 hop=99 transport=native keepalive=600s config=1800s topology= retention=24h
+Stats interval: 60s
+Call correction: enabled (min_reports=2 advantage>1 confidence>=55% recency=360s max_edit=3 tol=1000.0Hz distance_cw=morse distance_rtty=baudot invalid_action=broadcast d3_extra:+0/+0/+5%)
+Call correction voice: tol=2000Hz search=2.0kHz min_snr=0
+Call correction cache: size=512 ttl=120s
+Harmonics: enabled (recency=120s max_multiple=3 tolerance=500.0Hz min_report_delta=6dB)
+Spot policy: max_age=300s
+CTY database: data/cty/cty.plist
+CTY refresh: 00:10 UTC (source=https://www.country-files.com/cty/cty.plist)
+Known calls refresh: 00:20 UTC (source=https://www.supercheckpartial.com/MASTER.SCP)
+Grid/known DB: data/grids/calls.db (flush=60s cache=10240 cache_ttl=3600s db_check_on_miss=true ttl=90d)
+Skew: refresh 00:30 UTC (min_spots=500 source=https://sm7iun.se/rbnskew.csv)
+Ring buffer capacity: 250000 spots
+2025/12/28 18:14:15 Loaded CTY database from data/cty/cty.plist
+2025/12/28 18:14:15 Warning: failed to load quality priors from data/quality/quality_priors.dat: open data/quality/quality_priors.dat: The system cannot find the file specified.
+2025/12/28 18:14:15 Warning: failed to load spotter reliability from data/quality/spotter_reliability.dat: open data/quality/spotter_reliability.dat: The system cannot find the file specified.
+2025/12/28 18:14:15 Ring buffer created (capacity: 250000)
+2025/12/28 18:14:15 Loaded 50314 known callsigns from data/scp/MASTER.SCP
+2025/12/28 18:14:22 Gridstore: db_check_on_miss=true (source=data\config)
+2025/12/28 18:14:22 Loaded 125 RBN skew corrections from data/skm_correction/rbnskew.json
+2025/12/28 18:14:22 Deduplicator: Starting unified processing loop for ALL sources
+2025/12/28 18:14:22 Deduplication active with 2m0s window
+2025/12/28 18:14:22 Secondary deduplication active with 1m0s window (broadcast-only)
+2025/12/28 18:14:22 Mode inference: dx_cache=50000 ttl=300s digital_window=300s min_corrob=10 seeds=46 seed_ttl=21600s
+2025/12/28 18:14:22 Peering: listen_port=7300 peers=1 hop=99 keepalive=600s
+2025/12/28 18:14:22 Peering: dialing dxs.n2wq.com:7300 as N2WQ-77
+2025/12/28 18:14:22 Peering: connected to dxs.n2wq.com:7300
+2025/12/28 18:14:22 Peering hs N2WQ-77 -> dxs.n2wq.com RX login: PC18^DXSpider Version: 1.57 Build: 633 Git: mojo/c3350180[r] pc9x 91^5457^
+2025/12/28 18:14:22 Peering hs N2WQ-77 -> dxs.n2wq.com TX init (pc9x=true)
+2025/12/28 18:14:22 Peering hs N2WQ-77 -> dxs.n2wq.com RX PC92^N2WQ-73^83665^A^^5N2WQ-77:24.228.199.45^H99^
+2025/12/28 18:14:22 Peering hs N2WQ-77 -> dxs.n2wq.com RX PC92^N2WQ-73^83665.01^K^5N2WQ-73:5457:633^30^3^3.18.69.242^mojo/c3350180[r]^H99^
+2025/12/28 18:14:22 Peering hs N2WQ-77 -> dxs.n2wq.com RX PC22^
+2025/12/28 18:14:41 Archive: writing to data/archive/spots.db (batch=500/1000ms queue=10000 cleanup=3600s ft_retention=43200s other_retention=86400s)
+2025/12/28 18:14:41 Telnet server listening on port 9300
+2025/12/28 18:14:41 Broadcast worker 2 started
+2025/12/28 18:14:41 Broadcast worker 0 started
+2025/12/28 18:14:41 Broadcast worker 10 started
+2025/12/28 18:14:41 Broadcast worker 7 started
+2025/12/28 18:14:41 Broadcast worker 8 started
+2025/12/28 18:14:41 Broadcast worker 1 started
+2025/12/28 18:14:41 Broadcast worker 16 started
+2025/12/28 18:14:41 Broadcast worker 11 started
+2025/12/28 18:14:41 Broadcast worker 12 started
+2025/12/28 18:14:41 Broadcast worker 9 started
+2025/12/28 18:14:41 Broadcast worker 13 started
+2025/12/28 18:14:41 Broadcast worker 14 started
+2025/12/28 18:14:41 Broadcast worker 6 started
+2025/12/28 18:14:41 Broadcast worker 15 started
+2025/12/28 18:14:41 Broadcast worker 3 started
+2025/12/28 18:14:41 Broadcast worker 17 started
+2025/12/28 18:14:41 Broadcast worker 4 started
+2025/12/28 18:14:41 RBN-CW-RTTY: connecting to telnet.reversebeacon.net:7000...
+2025/12/28 18:14:41 Broadcast worker 5 started
+2025/12/28 18:14:41 Broadcast worker 19 started
+2025/12/28 18:14:41 Broadcast worker 18 started
+2025/12/28 18:14:42 RBN-CW-RTTY: connection established
+2025/12/28 18:14:42 RBN CW/RTTY client feeding spots into unified dedup engine
+2025/12/28 18:14:42 RBN-FT4-FT8: connecting to telnet.reversebeacon.net:7001...
+2025/12/28 18:14:42 RBN-FT4-FT8: connection established
+2025/12/28 18:14:42 RBN Digital (FT4/FT8) client feeding spots into unified dedup engine
+2025/12/28 18:14:42 PSKReporter worker 5 started
+2025/12/28 18:14:42 PSKReporter worker 2 started
+2025/12/28 18:14:42 PSKReporter worker 0 started
+2025/12/28 18:14:42 PSKReporter worker 1 started
+2025/12/28 18:14:42 PSKReporter worker 12 started
+2025/12/28 18:14:42 PSKReporter worker 6 started
+2025/12/28 18:14:42 PSKReporter worker 7 started
+2025/12/28 18:14:42 PSKReporter worker 8 started
+2025/12/28 18:14:42 PSKReporter worker 9 started
+2025/12/28 18:14:42 PSKReporter worker 10 started
+2025/12/28 18:14:42 Connecting to PSKReporter MQTT broker at tcp://mqtt.pskreporter.info:1883 (topics=pskr/filter/v2/+/FT8/#,pskr/filter/v2/+/FT4/#,pskr/filter/v2/+/CW/#,pskr/filter/v2/+/RTTY/#,pskr/filter/v2/+/MSK144/#,pskr/filter/v2/+/PSK31/#)...
+2025/12/28 18:14:42 PSKReporter worker 3 started
+2025/12/28 18:14:42 PSKReporter worker 19 started
+2025/12/28 18:14:42 PSKReporter worker 11 started
+2025/12/28 18:14:42 PSKReporter worker 16 started
+2025/12/28 18:14:42 PSKReporter worker 15 started
+2025/12/28 18:14:42 PSKReporter worker 13 started
+2025/12/28 18:14:42 PSKReporter worker 17 started
+2025/12/28 18:14:42 PSKReporter worker 18 started
+2025/12/28 18:14:42 PSKReporter worker 14 started
+2025/12/28 18:14:42 PSKReporter worker 4 started
+2025/12/28 18:14:42 PSKReporter: Connected, subscribing to 6 topic(s)
+2025/12/28 18:14:42 Connected to PSKReporter MQTT broker
+2025/12/28 18:14:42 PSKReporter client feeding spots into unified dedup engine
+2025/12/28 18:14:42 Cluster is running. Press Ctrl+C to stop.
+2025/12/28 18:14:42 Connect via: telnet localhost 9300
+2025/12/28 18:14:42 Receiving CW/RTTY spots from RBN (port 7000)...
+2025/12/28 18:14:42 Receiving FT4/FT8 spots from RBN Digital (port 7001)...
+2025/12/28 18:14:42 Receiving digital mode spots from PSKReporter (topics: pskr/filter/v2/+/FT8/#, pskr/filter/v2/+/FT4/#, pskr/filter/v2/+/CW/#, pskr/filter/v2/+/RTTY/#, pskr/filter/v2/+/MSK144/#, pskr/filter/v2/+/PSK31/#)...
+2025/12/28 18:14:42 Unified deduplication active: 120 second window
+2025/12/28 18:14:42 Architecture: ALL sources -> Dedup Engine -> Ring Buffer -> Clients
+2025/12/28 18:14:42 Statistics will be displayed every 60 seconds...
+2025/12/28 18:14:42 ---
+2025/12/28 18:14:42 Diagnostics server listening on localhost:6061 (pprof + /debug/heapdump)
+2025/12/28 18:14:42 PSKReporter: Subscribed to pskr/filter/v2/+/FT8/#
+2025/12/28 18:14:42 PSKReporter: Subscribed to pskr/filter/v2/+/FT4/#
+2025/12/28 18:14:42 PSKReporter: Subscribed to pskr/filter/v2/+/CW/#
+2025/12/28 18:14:42 PSKReporter: Subscribed to pskr/filter/v2/+/RTTY/#
+2025/12/28 18:14:42 PSKReporter: Subscribed to pskr/filter/v2/+/MSK144/#
+2025/12/28 18:14:42 PSKReporter: Subscribed to pskr/filter/v2/+/PSK31/#
+2025/12/28 18:14:42 PSKReporter: Successfully subscribed, receiving spots...
+2025/12/28 18:14:44 Logging in to RBN-CW-RTTY as N2WQ-2
+2025/12/28 18:14:44 Logging in to RBN-FT4-FT8 as N2WQ-2
+2025/12/28 18:15:18 PSKReporter drop: CTY miss for DE ZE185-# freq=5359.4 mode=FT8 (total=1)
+2025/12/28 18:15:34 New connection from 127.0.0.1:62530
+2025/12/28 18:15:36 Client 127.0.0.1:62530 logged in as LZ1BB
+2025/12/28 18:15:36 Loaded saved filter for LZ1BB
+2025/12/28 18:15:36 Registered client: LZ1BB (total: 1)
+2025/12/28 18:15:42 Uptime: 00:01   Memory MB: 74.2 / 14.9 / 0.7 (0.1%) / 0.2 / 0.6 (96.0%) / 1.2 (54.5%)
+2025/12/28 18:15:42 Grid database: 261,400 TOTAL / 83%
+2025/12/28 18:15:42 CTY: age 1m
+2025/12/28 18:15:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:15:42 RBN: 1318 TOTAL / 155 CW / 0 RTTY / 1058 FT8 / 105 FT4
+2025/12/28 18:15:42 PSKReporter: 25,963 TOTAL / 3 CW / 0 RTTY / 25,330 FT8 / 629 FT4 / 1 MSK144
+2025/12/28 18:15:42 Corrected calls: 0 (C) / 0 (U) / 10 (F) / 0 (H)
+2025/12/28 18:15:42 Secondary dedup: 27,286 in / 11,433 dup / 15,853 fwd
+2025/12/28 18:15:42 Telnet: 1 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:15:42 
+2025/12/28 18:15:43 Call corrected: EI7XS -> KH7XS at 7025.9 kHz (46 / 97%)
+2025/12/28 18:15:43 RBN drop: CTY miss for DX 0HICXPM (line=DX de YO2KAR-#:   7074.0  0HICXPM        FT8  -12 dB          CQ      2315Z)
+2025/12/28 18:16:03 New connection from [::1]:62533
+2025/12/28 18:16:06 Client [::1]:62533 logged in as K3TO
+2025/12/28 18:16:06 Loaded saved filter for K3TO
+2025/12/28 18:16:06 Registered client: K3TO (total: 2)
+2025/12/28 18:16:16 PSKReporter drop: CTY miss for DE CHM-10 freq=144176.2 mode=FT8 (total=8)
+2025/12/28 18:16:42 Uptime: 00:02   Memory MB: 87.2 / 28.6 / 1.2 (0.1%) / 0.2 / 0.8 (97.3%) / 1.2 (44.8%)
+2025/12/28 18:16:42 Grid database: 261,402 TOTAL / 85%
+2025/12/28 18:16:42 CTY: age 2m
+2025/12/28 18:16:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:16:42 RBN: 1346 TOTAL / 191 CW / 0 RTTY / 1062 FT8 / 93 FT4
+2025/12/28 18:16:42 PSKReporter: 27,247 TOTAL / 40 CW / 0 RTTY / 26,585 FT8 / 619 FT4 / 2 MSK144
+2025/12/28 18:16:42 Corrected calls: 1 (C) / 0 (U) / 29 (F) / 0 (H)
+2025/12/28 18:16:42 Secondary dedup: 55,881 in / 24,554 dup / 31,327 fwd
+2025/12/28 18:16:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:16:42 
+2025/12/28 18:16:48 Call corrected: TF3EM -> TF3EO at 5354.5 kHz (13 / 92%)
+2025/12/28 18:16:54 RBN drop: CTY miss for DX 1OTQMK2 (line=DX de YO2KAR-#:  21090.0  1OTQMK2        FT8  -25 dB          CQ      2316Z)
+2025/12/28 18:17:27 Call corrected: TA5UA -> CX5UA at 14026.0 kHz (10 / 90%)
+2025/12/28 18:17:42 Uptime: 00:03   Memory MB: 142.6 / 41.8 / 1.2 (0.1%) / 0.2 / 0.9 (98.0%) / 1.2 (50.5%)
+2025/12/28 18:17:42 Grid database: 261,408 TOTAL / 86%
+2025/12/28 18:17:42 CTY: age 3m
+2025/12/28 18:17:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:17:42 RBN: 1486 TOTAL / 201 CW / 0 RTTY / 1182 FT8 / 103 FT4
+2025/12/28 18:17:42 PSKReporter: 26,200 TOTAL / 27 CW / 0 RTTY / 25,530 FT8 / 638 FT4 / 0 MSK144
+2025/12/28 18:17:42 Corrected calls: 3 (C) / 0 (U) / 54 (F) / 0 (H)
+2025/12/28 18:17:42 Secondary dedup: 83,571 in / 38,761 dup / 44,810 fwd
+2025/12/28 18:17:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:17:42 
+2025/12/28 18:17:43 Call corrected: RN6LR -> RN6LRI at 7038.0 kHz (20 / 95%)
+2025/12/28 18:17:56 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (5 / 83%)
+2025/12/28 18:17:56 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (6 / 85%)
+2025/12/28 18:17:58 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (7 / 87%)
+2025/12/28 18:17:59 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (8 / 88%)
+2025/12/28 18:17:59 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (9 / 90%)
+2025/12/28 18:17:59 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (10 / 90%)
+2025/12/28 18:18:00 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (11 / 91%)
+2025/12/28 18:18:01 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (12 / 92%)
+2025/12/28 18:18:01 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (12 / 92%)
+2025/12/28 18:18:02 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (13 / 92%)
+2025/12/28 18:18:02 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (14 / 93%)
+2025/12/28 18:18:02 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (15 / 93%)
+2025/12/28 18:18:05 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (16 / 94%)
+2025/12/28 18:18:05 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (17 / 94%)
+2025/12/28 18:18:05 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (18 / 94%)
+2025/12/28 18:18:06 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (19 / 95%)
+2025/12/28 18:18:08 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (20 / 95%)
+2025/12/28 18:18:09 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (21 / 95%)
+2025/12/28 18:18:10 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (22 / 95%)
+2025/12/28 18:18:10 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (23 / 95%)
+2025/12/28 18:18:19 Call corrected: W6GRT -> W6UDT at 14059.8 kHz (7 / 77%)
+2025/12/28 18:18:19 Call corrected: W6GRT -> W6UDT at 14059.8 kHz (8 / 80%)
+2025/12/28 18:18:19 Call corrected: W6GRT -> W6UDT at 14059.8 kHz (9 / 81%)
+2025/12/28 18:18:20 Call corrected: W6GRT -> W6UDT at 14059.8 kHz (10 / 83%)
+2025/12/28 18:18:22 Call corrected: W6GRT -> W6UDT at 14059.7 kHz (11 / 91%)
+2025/12/28 18:18:25 Call corrected: PA3D -> PA3BUL at 3551.5 kHz (3 / 75%)
+2025/12/28 18:18:26 Call corrected: W6GRT -> W6UDT at 14059.8 kHz (12 / 92%)
+2025/12/28 18:18:26 Call corrected: W6GRT -> W6UDT at 14059.8 kHz (12 / 92%)
+2025/12/28 18:18:27 Call corrected: W6GRT -> W6UDT at 14059.8 kHz (13 / 92%)
+2025/12/28 18:18:28 Call corrected: W6GRT -> W6UDT at 14059.8 kHz (13 / 92%)
+2025/12/28 18:18:34 Call corrected: W6CPY -> W6YPY at 14083.0 kHz (3 / 75%)
+2025/12/28 18:18:40 Call corrected: W6CPY -> W6YPY at 14083.0 kHz (4 / 80%)
+2025/12/28 18:18:42 Uptime: 00:04   Memory MB: 99.2 / 48.3 / 0.8 (0.1%) / 0.1 / 0.9 (98.2%) / 1.2 (52.9%)
+2025/12/28 18:18:42 Grid database: 261,411 TOTAL / 87%
+2025/12/28 18:18:42 CTY: age 4m
+2025/12/28 18:18:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:18:42 RBN: 1519 TOTAL / 184 CW / 0 RTTY / 1187 FT8 / 148 FT4
+2025/12/28 18:18:42 PSKReporter: 12,287 TOTAL / 47 CW / 0 RTTY / 12,027 FT8 / 213 FT4 / 0 MSK144
+2025/12/28 18:18:42 Corrected calls: 36 (C) / 0 (U) / 85 (F) / 0 (H)
+2025/12/28 18:18:42 Secondary dedup: 97,380 in / 45,343 dup / 52,037 fwd
+2025/12/28 18:18:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:18:42 
+2025/12/28 18:18:50 Call corrected: KH7XI -> KH7XS at 7026.0 kHz (85 / 95%)
+2025/12/28 18:18:57 Call corrected: KH7NS -> KH7XS at 7026.0 kHz (87 / 95%)
+2025/12/28 18:19:01 Call corrected: KR7XS -> KH7XS at 7026.0 kHz (88 / 95%)
+2025/12/28 18:19:10 Call corrected: KH2A -> KL2A at 10108.0 kHz (3 / 75%)
+2025/12/28 18:19:12 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (24 / 96%)
+2025/12/28 18:19:22 PSKReporter drop: CTY miss for DE 161OS344-# freq=7075.7 mode=FT8 (total=65)
+2025/12/28 18:19:26 RBN drop: CTY miss for DX QN2BEJ (line=DX de JI1HFJ-#:  28074.0  QN2BEJ         FT8  -21 dB          CQ      2319Z)
+2025/12/28 18:19:33 Call corrected: KH6XS -> KH7XS at 7026.0 kHz (90 / 97%)
+2025/12/28 18:19:42 Uptime: 00:05   Memory MB: 116.7 / 63.0 / 0.9 (0.1%) / 0.2 / 1.0 (98.5%) / 1.2 (51.0%)
+2025/12/28 18:19:42 Grid database: 261,416 TOTAL / 87%
+2025/12/28 18:19:42 CTY: age 5m
+2025/12/28 18:19:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:19:42 RBN: 1287 TOTAL / 145 CW / 0 RTTY / 1084 FT8 / 58 FT4
+2025/12/28 18:19:42 PSKReporter: 29,528 TOTAL / 48 CW / 0 RTTY / 28,937 FT8 / 541 FT4 / 0 MSK144
+2025/12/28 18:19:42 Corrected calls: 42 (C) / 0 (U) / 93 (F) / 0 (H)
+2025/12/28 18:19:42 Secondary dedup: 128,199 in / 58,308 dup / 69,891 fwd
+2025/12/28 18:19:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:19:42 
+2025/12/28 18:20:04 Call corrected: PA3BU -> PA3BUL at 3551.5 kHz (5 / 100%)
+2025/12/28 18:20:22 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.0 mode=FT8 (total=103)
+2025/12/28 18:20:22 Call corrected: H7XS -> KH7XS at 7025.8 kHz (92 / 98%)
+2025/12/28 18:20:23 Call corrected: H7XS -> KH7XS at 7025.7 kHz (92 / 98%)
+2025/12/28 18:20:23 Call corrected: H7XS -> KH7XS at 7025.7 kHz (92 / 98%)
+2025/12/28 18:20:25 Call corrected: H7XS -> KH7XS at 7025.7 kHz (92 / 98%)
+2025/12/28 18:20:25 Call corrected: H7XS -> KH7XS at 7025.7 kHz (92 / 98%)
+2025/12/28 18:20:25 Call corrected: H7XS -> KH7XS at 7025.7 kHz (93 / 98%)
+2025/12/28 18:20:26 Call corrected: H7XS -> KH7XS at 7025.7 kHz (93 / 98%)
+2025/12/28 18:20:26 Call corrected: H7XS -> KH7XS at 7025.7 kHz (93 / 98%)
+2025/12/28 18:20:26 Call corrected: H7XS -> KH7XS at 7025.7 kHz (93 / 98%)
+2025/12/28 18:20:27 Call corrected: H7XS -> KH7XS at 7025.7 kHz (93 / 98%)
+2025/12/28 18:20:27 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:28 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:29 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:29 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:30 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:30 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:30 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:31 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:31 Call corrected: H7XS -> KH7XS at 7025.8 kHz (94 / 98%)
+2025/12/28 18:20:31 Call corrected: H7XS -> KH7XS at 7025.8 kHz (94 / 98%)
+2025/12/28 18:20:31 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:31 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:32 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:32 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:33 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:42 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:42 Uptime: 00:06   Memory MB: 204.4 / 79.3 / 1.1 (0.2%) / 0.2 / 1.0 (98.8%) / 1.2 (51.6%)
+2025/12/28 18:20:42 Grid database: 261,423 TOTAL / 88%
+2025/12/28 18:20:42 CTY: age 6m
+2025/12/28 18:20:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:20:42 RBN: 1278 TOTAL / 106 CW / 0 RTTY / 1093 FT8 / 79 FT4
+2025/12/28 18:20:42 PSKReporter: 32,864 TOTAL / 26 CW / 0 RTTY / 32,271 FT8 / 563 FT4 / 0 MSK144
+2025/12/28 18:20:42 Corrected calls: 69 (C) / 0 (U) / 128 (F) / 0 (H)
+2025/12/28 18:20:42 Secondary dedup: 162,343 in / 75,092 dup / 87,251 fwd
+2025/12/28 18:20:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:20:42 
+2025/12/28 18:20:42 Call corrected: H7XS -> KH7XS at 7025.7 kHz (94 / 98%)
+2025/12/28 18:20:42 Call corrected: H7XS -> KH7XS at 7025.6 kHz (94 / 98%)
+2025/12/28 18:20:46 Call corrected: H7XS -> KH7XS at 7025.7 kHz (95 / 98%)
+2025/12/28 18:20:47 Call corrected: H7XS -> KH7XS at 7025.7 kHz (95 / 98%)
+2025/12/28 18:20:47 Call corrected: H7XS -> KH7XS at 7025.7 kHz (95 / 98%)
+2025/12/28 18:20:48 Call corrected: H7XS -> KH7XS at 7025.7 kHz (95 / 98%)
+2025/12/28 18:20:57 Call corrected: H7XS -> KH7XS at 7025.7 kHz (96 / 98%)
+2025/12/28 18:20:58 Call corrected: H7XS -> KH7XS at 7025.7 kHz (96 / 98%)
+2025/12/28 18:21:01 Call corrected: H7XS -> KH7XS at 7025.6 kHz (67 / 98%)
+2025/12/28 18:21:01 Call corrected: H7XS -> KH7XS at 7025.8 kHz (67 / 98%)
+2025/12/28 18:21:02 Call corrected: H7XS -> KH7XS at 7025.7 kHz (68 / 98%)
+2025/12/28 18:21:02 Call corrected: H7XS -> KH7XS at 7025.8 kHz (68 / 98%)
+2025/12/28 18:21:03 Call corrected: H7XS -> KH7XS at 7025.7 kHz (69 / 98%)
+2025/12/28 18:21:06 Call corrected: H7XS -> KH7XS at 7025.7 kHz (71 / 98%)
+2025/12/28 18:21:07 Call corrected: H7XS -> KH7XS at 7025.8 kHz (71 / 98%)
+2025/12/28 18:21:09 Call corrected: KH7X -> KH7XS at 7025.7 kHz (72 / 98%)
+2025/12/28 18:21:19 PSKReporter drop: CTY miss for DE 13RF7373-# freq=7076.2 mode=FT8 (total=110)
+2025/12/28 18:21:35 Call corrected: KP4S -> KP4ES at 14022.0 kHz (20 / 95%)
+2025/12/28 18:21:39 RBN drop: CTY miss for DX 0MW1AT5AXI4 (line=DX de K7CO-#:     7074.0  0MW1AT5AXI4    FT8  -18 dB          CQ      2321Z)
+2025/12/28 18:21:42 Uptime: 00:07   Memory MB: 253.4 / 93.2 / 1.2 (0.1%) / 0.2 / 1.1 (98.9%) / 1.2 (50.3%)
+2025/12/28 18:21:42 Grid database: 261,431 TOTAL / 88%
+2025/12/28 18:21:42 CTY: age 7m
+2025/12/28 18:21:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:21:42 RBN: 1338 TOTAL / 91 CW / 0 RTTY / 1160 FT8 / 87 FT4
+2025/12/28 18:21:42 PSKReporter: 27,737 TOTAL / 25 CW / 0 RTTY / 27,293 FT8 / 419 FT4 / 0 MSK144
+2025/12/28 18:21:42 Corrected calls: 86 (C) / 0 (U) / 148 (F) / 0 (H)
+2025/12/28 18:21:42 Secondary dedup: 191,420 in / 88,742 dup / 102,678 fwd
+2025/12/28 18:21:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:21:42 
+2025/12/28 18:21:46 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (24 / 96%)
+2025/12/28 18:21:50 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.2 mode=FT8 (total=151)
+2025/12/28 18:21:50 Call corrected: YO9CMC -> YO9KWC at 3567.0 kHz (24 / 96%)
+2025/12/28 18:22:21 Call corrected: H7XS -> KH7XS at 7025.7 kHz (65 / 98%)
+2025/12/28 18:22:36 Call corrected: H7XS -> KH7XS at 7025.8 kHz (65 / 98%)
+2025/12/28 18:22:36 Call corrected: H7XS -> KH7XS at 7025.7 kHz (65 / 98%)
+2025/12/28 18:22:42 Uptime: 00:08   Memory MB: 287.7 / 107.0 / 1.2 (0.2%) / 0.2 / 1.1 (99.1%) / 1.2 (53.1%)
+2025/12/28 18:22:42 Grid database: 261,435 TOTAL / 88%
+2025/12/28 18:22:42 CTY: age 8m
+2025/12/28 18:22:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:22:42 RBN: 1338 TOTAL / 72 CW / 0 RTTY / 1164 FT8 / 102 FT4
+2025/12/28 18:22:42 PSKReporter: 27,717 TOTAL / 35 CW / 0 RTTY / 27,144 FT8 / 534 FT4 / 1 MSK144
+2025/12/28 18:22:42 Corrected calls: 91 (C) / 0 (U) / 153 (F) / 0 (H)
+2025/12/28 18:22:42 Secondary dedup: 220,480 in / 103,215 dup / 117,265 fwd
+2025/12/28 18:22:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:22:42 
+2025/12/28 18:22:46 Call corrected: H7XS -> KH7XS at 7025.7 kHz (66 / 98%)
+2025/12/28 18:22:57 Call corrected: TF3EG -> TF3EO at 7018.3 kHz (17 / 85%)
+2025/12/28 18:23:20 RBN drop: CTY miss for DX X1XIDV5X84 (line=DX de JI1HFJ-#:  14074.0  X1XIDV5X84     FT8  -22 dB          CQ      2323Z)
+2025/12/28 18:23:30 Call corrected: VE1EG -> VE1EM at 14027.0 kHz (20 / 95%)
+2025/12/28 18:23:33 Call corrected: F3EO -> TF3EO at 7018.4 kHz (18 / 85%)
+2025/12/28 18:23:42 Uptime: 00:09   Memory MB: 299.1 / 118.8 / 1.2 (0.2%) / 0.2 / 1.1 (99.2%) / 1.2 (50.5%)
+2025/12/28 18:23:42 Grid database: 261,438 TOTAL / 88%
+2025/12/28 18:23:42 CTY: age 9m
+2025/12/28 18:23:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:23:42 RBN: 1698 TOTAL / 206 CW / 0 RTTY / 1330 FT8 / 162 FT4
+2025/12/28 18:23:42 PSKReporter: 22,962 TOTAL / 32 CW / 0 RTTY / 22,226 FT8 / 703 FT4 / 1 MSK144
+2025/12/28 18:23:42 Corrected calls: 95 (C) / 0 (U) / 201 (F) / 0 (H)
+2025/12/28 18:23:42 Secondary dedup: 245,146 in / 115,089 dup / 130,057 fwd
+2025/12/28 18:23:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:23:42 
+2025/12/28 18:23:46 Call corrected: W6GR -> W6GRT at 14034.0 kHz (7 / 87%)
+2025/12/28 18:23:49 Call corrected: H7XS -> KH7XS at 7025.7 kHz (55 / 98%)
+2025/12/28 18:24:42 Uptime: 00:10   Memory MB: 201.3 / 121.1 / 0.6 (0.2%) / 0.1 / 1.1 (99.2%) / 1.2 (49.3%)
+2025/12/28 18:24:42 Grid database: 261,441 TOTAL / 88%
+2025/12/28 18:24:42 CTY: age 10m
+2025/12/28 18:24:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:24:42 RBN: 1282 TOTAL / 125 CW / 0 RTTY / 1014 FT8 / 143 FT4
+2025/12/28 18:24:42 PSKReporter: 5,755 TOTAL / 10 CW / 0 RTTY / 5,530 FT8 / 215 FT4 / 0 MSK144
+2025/12/28 18:24:42 Corrected calls: 97 (C) / 0 (U) / 216 (F) / 0 (H)
+2025/12/28 18:24:42 Secondary dedup: 252,186 in / 118,136 dup / 134,050 fwd
+2025/12/28 18:24:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:24:42 
+2025/12/28 18:24:45 Call corrected: KH7X -> KH7XS at 7025.7 kHz (51 / 98%)
+2025/12/28 18:24:57 Call corrected: W6CPY -> W6YPY at 14083.1 kHz (5 / 83%)
+2025/12/28 18:25:02 Call corrected: AA0AQ -> AA0RQ at 10116.1 kHz (16 / 94%)
+2025/12/28 18:25:33 RBN drop: CTY miss for DX B8YZ (line=DX de N2YCH-#:   14010.0  B8YZ           CW    31 dB  38 WPM  CQ      2325Z)
+2025/12/28 18:25:42 Uptime: 00:11   Memory MB: 273.4 / 121.1 / 0.5 (0.2%) / 0.2 / 1.1 (99.2%) / 1.2 (49.5%)
+2025/12/28 18:25:42 Grid database: 261,441 TOTAL / 88%
+2025/12/28 18:25:42 CTY: age 11m
+2025/12/28 18:25:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:25:42 RBN: 1339 TOTAL / 86 CW / 0 RTTY / 1159 FT8 / 94 FT4
+2025/12/28 18:25:42 PSKReporter: 9,472 TOTAL / 12 CW / 0 RTTY / 9,222 FT8 / 238 FT4 / 0 MSK144
+2025/12/28 18:25:42 Corrected calls: 100 (C) / 0 (U) / 224 (F) / 0 (H)
+2025/12/28 18:25:42 Secondary dedup: 262,998 in / 121,579 dup / 141,419 fwd
+2025/12/28 18:25:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:25:42 
+2025/12/28 18:25:46 PSKReporter drop: CTY miss for DE 161OS344-# freq=7074.3 mode=FT8 (total=213)
+2025/12/28 18:26:23 Call corrected: H7XS -> KH7XS at 7025.7 kHz (35 / 89%)
+2025/12/28 18:26:27 PSKReporter drop: CTY miss for DE ZE185-# freq=5358.7 mode=FT8 (total=245)
+2025/12/28 18:26:42 Uptime: 00:12   Memory MB: 243.2 / 121.1 / 1.3 (0.2%) / 0.3 / 1.1 (99.3%) / 1.2 (54.1%)
+2025/12/28 18:26:42 Grid database: 261,452 TOTAL / 88%
+2025/12/28 18:26:42 CTY: age 12m
+2025/12/28 18:26:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:26:42 RBN: 1427 TOTAL / 233 CW / 0 RTTY / 1071 FT8 / 123 FT4
+2025/12/28 18:26:42 PSKReporter: 57,914 TOTAL / 42 CW / 0 RTTY / 55,930 FT8 / 1,941 FT4 / 0 MSK144
+2025/12/28 18:26:42 Corrected calls: 101 (C) / 0 (U) / 242 (F) / 0 (H)
+2025/12/28 18:26:42 Secondary dedup: 322,344 in / 149,761 dup / 172,583 fwd
+2025/12/28 18:26:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:26:42 
+2025/12/28 18:27:31 RBN drop: CTY miss for DX 1PUEN9OSWBD (line=DX de CT1EYQ-#:   3573.0  1PUEN9OSWBD    FT8  -17 dB          CQ      2327Z)
+2025/12/28 18:27:42 Uptime: 00:13   Memory MB: 319.7 / 121.1 / 0.8 (0.2%) / 0.1 / 1.1 (99.4%) / 1.2 (54.9%)
+2025/12/28 18:27:42 Grid database: 261,458 TOTAL / 88%
+2025/12/28 18:27:42 CTY: age 13m
+2025/12/28 18:27:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:27:42 RBN: 1463 TOTAL / 97 CW / 0 RTTY / 1242 FT8 / 124 FT4
+2025/12/28 18:27:42 PSKReporter: 12,155 TOTAL / 2 CW / 0 RTTY / 11,874 FT8 / 279 FT4 / 0 MSK144
+2025/12/28 18:27:42 Corrected calls: 101 (C) / 0 (U) / 248 (F) / 0 (H)
+2025/12/28 18:27:42 Secondary dedup: 335,967 in / 156,812 dup / 179,155 fwd
+2025/12/28 18:27:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:27:42 
+2025/12/28 18:28:42 Uptime: 00:14   Memory MB: 192.5 / 121.1 / 0.3 (0.2%) / 0.0 / 1.1 (99.4%) / 1.2 (54.8%)
+2025/12/28 18:28:42 Grid database: 261,458 TOTAL / 88%
+2025/12/28 18:28:42 CTY: age 14m
+2025/12/28 18:28:42 FCC ULS: 842,186 records. Last updated 12-22-2025 19:18:47
+2025/12/28 18:28:42 RBN: 1412 TOTAL / 165 CW / 0 RTTY / 1164 FT8 / 83 FT4
+2025/12/28 18:28:42 PSKReporter: 0 TOTAL / 0 CW / 0 RTTY / 0 FT8 / 0 FT4 / 0 MSK144
+2025/12/28 18:28:42 Corrected calls: 101 (C) / 0 (U) / 262 (F) / 0 (H)
+2025/12/28 18:28:42 Secondary dedup: 337,386 in / 157,193 dup / 180,193 fwd
+2025/12/28 18:28:42 Telnet: 2 clients. Drops: 0 (Q) / 0 (C)
+2025/12/28 18:28:42 
+2025/12/28 18:28:49 Call corrected: N4ES -> KP4ES at 7022.0 kHz (30 / 88%)
+2025/12/28 18:28:51 PSKReporter drop: CTY miss for DE 22DX-# freq=7076.1 mode=FT8 (total=297)
+2025/12/28 18:28:56 Call corrected: JM7ODW -> JM7OLW at 28019.2 kHz (17 / 89%)
+2025/12/28 18:29:15 Call corrected: TA5UA -> CX5UA at 14026.0 kHz (9 / 60%)
+2025/12/28 18:29:16 Call corrected: LA1BA -> LA1EBA at 3543.6 kHz (6 / 85%)

@@ -194,6 +194,12 @@ type PSKReporterConfig struct {
 	// AppendSpotterSSID, when true, appends "-#" to receiver callsigns that
 	// lack an SSID so deduplication treats each PSK skimmer uniquely.
 	AppendSpotterSSID bool `yaml:"append_spotter_ssid"`
+	// CTYCacheSize bounds the shared ingest CTY lookup cache (all sources).
+	CTYCacheSize int `yaml:"cty_cache_size"`
+	// CTYCacheTTLSeconds controls TTL expiration for ingest CTY cache entries.
+	CTYCacheTTLSeconds int `yaml:"cty_cache_ttl_seconds"`
+	// MaxPayloadBytes caps incoming MQTT payload sizes to guard against abuse.
+	MaxPayloadBytes int `yaml:"max_payload_bytes"`
 }
 
 const defaultPSKReporterTopic = "pskr/filter/v2/+/+/#"
@@ -213,6 +219,10 @@ type ArchiveConfig struct {
 	RetentionFTSeconds      int `yaml:"retention_ft_seconds"`      // FT8/FT4 retention
 	RetentionDefaultSeconds int `yaml:"retention_default_seconds"` // All other modes
 	BusyTimeoutMS           int `yaml:"busy_timeout_ms"`
+	// Synchronous controls SQLite durability (off, normal, full, extra).
+	Synchronous string `yaml:"synchronous"`
+	// AutoDeleteCorruptDB removes the archive DB on startup if integrity checks fail.
+	AutoDeleteCorruptDB bool `yaml:"auto_delete_corrupt_db"`
 }
 
 // PeeringConfig controls DXSpider node-to-node peering.
@@ -728,6 +738,15 @@ func Load(path string) (*Config, error) {
 	if cfg.PSKReporter.SpotChannelSize <= 0 {
 		cfg.PSKReporter.SpotChannelSize = 25000
 	}
+	if cfg.PSKReporter.CTYCacheSize <= 0 {
+		cfg.PSKReporter.CTYCacheSize = 50000
+	}
+	if cfg.PSKReporter.CTYCacheTTLSeconds <= 0 {
+		cfg.PSKReporter.CTYCacheTTLSeconds = 300
+	}
+	if cfg.PSKReporter.MaxPayloadBytes <= 0 {
+		cfg.PSKReporter.MaxPayloadBytes = 4096
+	}
 
 	// Archive defaults keep the writer lightweight and non-blocking.
 	if cfg.Archive.QueueSize <= 0 {
@@ -762,6 +781,16 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Archive.BusyTimeoutMS <= 0 {
 		cfg.Archive.BusyTimeoutMS = 1000
+	}
+	syncMode := strings.ToLower(strings.TrimSpace(cfg.Archive.Synchronous))
+	if syncMode == "" {
+		syncMode = "off"
+	}
+	switch syncMode {
+	case "off", "normal", "full", "extra":
+		cfg.Archive.Synchronous = syncMode
+	default:
+		return nil, fmt.Errorf("invalid archive.synchronous %q: must be off, normal, full, or extra", cfg.Archive.Synchronous)
 	}
 
 	if cfg.Stats.DisplayIntervalSeconds <= 0 {
@@ -1377,7 +1406,7 @@ func (c *Config) Print() {
 			c.HumanTelnet.KeepaliveSec)
 	}
 	if c.Archive.Enabled {
-		fmt.Printf("Archive: %s (queue=%d batch=%d/%dms cleanup=%ds cleanup_batch=%d yield=%dms retain_ft=%ds retain_other=%ds)\n",
+		fmt.Printf("Archive: %s (queue=%d batch=%d/%dms cleanup=%ds cleanup_batch=%d yield=%dms retain_ft=%ds retain_other=%ds sync=%s auto_delete_corrupt=%t)\n",
 			c.Archive.DBPath,
 			c.Archive.QueueSize,
 			c.Archive.BatchSize,
@@ -1386,7 +1415,9 @@ func (c *Config) Print() {
 			c.Archive.CleanupBatchSize,
 			c.Archive.CleanupBatchYieldMS,
 			c.Archive.RetentionFTSeconds,
-			c.Archive.RetentionDefaultSeconds)
+			c.Archive.RetentionDefaultSeconds,
+			c.Archive.Synchronous,
+			c.Archive.AutoDeleteCorruptDB)
 	}
 	if c.PSKReporter.Enabled {
 		workerDesc := "auto"

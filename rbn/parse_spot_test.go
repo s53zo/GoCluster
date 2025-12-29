@@ -8,7 +8,7 @@ import (
 )
 
 func TestACParserExtractsModeSNRAndGrid(t *testing.T) {
-	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, nil, false, 10)
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	line := "DX de DL1YAW: 144360.0 S51AT JO41DX<MS>JN75 MSK144 +5 dB 1800Z"
 	c.parseSpot(line)
 
@@ -37,7 +37,7 @@ func TestACParserExtractsModeSNRAndGrid(t *testing.T) {
 }
 
 func TestACParserLeavesModeBlankWithoutExplicitToken(t *testing.T) {
-	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, nil, false, 10)
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	line := "DX de K0DG: 28015.1 K7SS WA 1912Z"
 	c.parseSpot(line)
 
@@ -60,7 +60,7 @@ func TestACParserLeavesModeBlankWithoutExplicitToken(t *testing.T) {
 }
 
 func TestACParserLeavesModeBlankWithoutExplicitTokenVoiceBand(t *testing.T) {
-	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, nil, false, 10)
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	line := "DX de KC9IMA: 28319.0 KC9IMA ARRL 10-Meter Contest 1912Z"
 	c.parseSpot(line)
 
@@ -80,7 +80,7 @@ func TestACParserLeavesModeBlankWithoutExplicitTokenVoiceBand(t *testing.T) {
 }
 
 func TestACParserDigitalReport(t *testing.T) {
-	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, nil, false, 10)
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	line := "DX de PE2JMR: 50280.0 I2RNJ MSK144 +9 dB RX 1912Z"
 	c.parseSpot(line)
 
@@ -103,7 +103,7 @@ func TestACParserDigitalReport(t *testing.T) {
 }
 
 func TestACParserInlineSNRWithoutSpace(t *testing.T) {
-	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, nil, false, 10)
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	line := "DX de EA1AHP: 14074.0 CX3VB FT8 -13dB from GF27 2062Hz 1943Z"
 	c.parseSpot(line)
 
@@ -126,7 +126,7 @@ func TestACParserInlineSNRWithoutSpace(t *testing.T) {
 }
 
 func TestACParserPositiveSNRNoComment(t *testing.T) {
-	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, nil, false, 10)
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	line := "DX de UA3RF: 144360.0 R1BPV MSK144 +2 dB 1943Z"
 	c.parseSpot(line)
 
@@ -149,7 +149,7 @@ func TestACParserPositiveSNRNoComment(t *testing.T) {
 }
 
 func TestACParserParsesMSKSNRWithTrailingComment(t *testing.T) {
-	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, nil, false, 10)
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	line := "DX de IK8PV: 144360.0 DL1OBF MSK144 +7 dB HRD"
 	c.parseSpot(line)
 
@@ -172,7 +172,7 @@ func TestACParserParsesMSKSNRWithTrailingComment(t *testing.T) {
 }
 
 func TestACParserParsesMSKSNRWithSignificantComment(t *testing.T) {
-	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, nil, false, 10)
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	line := "DX de I3EPV: 144360.0 DJ9MG MSK144 +15 dB"
 	c.parseSpot(line)
 
@@ -195,7 +195,7 @@ func TestACParserParsesMSKSNRWithSignificantComment(t *testing.T) {
 }
 
 func TestACParserSetsHasReportFalseWhenNoSNR(t *testing.T) {
-	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, nil, false, 10)
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	line := "DX de PB0MD: 144360.0 S50TA MSK144 HRD"
 	c.parseSpot(line)
 

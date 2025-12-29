@@ -8,7 +8,7 @@ import (
 )
 
 func TestMinimalParserStripsFusedTimeAndKeepsRemainder(t *testing.T) {
-	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, nil, false, 10)
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	c.UseMinimalParser()
 
 	line := "DX de GM5G: 28421.9 GM5G USB ARRL 10m Contest 1708ZIO87 1708Z"
@@ -39,7 +39,7 @@ func TestMinimalParserStripsFusedTimeAndKeepsRemainder(t *testing.T) {
 }
 
 func TestMinimalParserExtractsLowercaseDBReport(t *testing.T) {
-	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, nil, false, 10)
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	c.UseMinimalParser()
 
 	line := "DX de EB3WH: 7074.0 PD5XMAS FT8 -12 db SES XMAS AWARD 1801Z"
