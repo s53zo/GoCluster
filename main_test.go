@@ -55,6 +55,37 @@ func TestCloneSpotForBroadcastPreservesMissingReport(t *testing.T) {
 	}
 }
 
+func TestCloneSpotForPeerPublishAddsModeWhenCommentEmpty(t *testing.T) {
+	src := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "")
+	src.Mode = "FT8"
+	src.Comment = ""
+
+	peerSpot := cloneSpotForPeerPublish(src)
+	if peerSpot == nil {
+		t.Fatalf("expected peer spot, got nil")
+	}
+	if peerSpot == src {
+		t.Fatalf("expected a cloned spot when adding inferred mode to comment")
+	}
+	if peerSpot.Comment != "FT8" {
+		t.Fatalf("expected comment to carry inferred mode, got %q", peerSpot.Comment)
+	}
+	if src.Comment != "" {
+		t.Fatalf("expected original comment to remain empty, got %q", src.Comment)
+	}
+}
+
+func TestCloneSpotForPeerPublishPassthroughWhenCommentPresent(t *testing.T) {
+	src := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "")
+	src.Mode = "FT8"
+	src.Comment = "cq test"
+
+	peerSpot := cloneSpotForPeerPublish(src)
+	if peerSpot != src {
+		t.Fatalf("expected passthrough when comment present")
+	}
+}
+
 // Purpose: Verify gridDBCheckOnMissEnabled defaults to true.
 // Key aspects: Clears env override before test.
 // Upstream: go test execution.

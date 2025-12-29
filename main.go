@@ -735,7 +735,7 @@ func main() {
 	}
 
 	// Create command processor (SHOW/DX reads from archive when available, otherwise ring buffer)
-	processor := commands.NewProcessor(spotBuffer, archiveWriter, ingestInput)
+	processor := commands.NewProcessor(spotBuffer, archiveWriter, ingestInput, ctyLookup)
 
 	// Create and start telnet server
 	telnetServer := telnet.NewServer(telnet.ServerOptions{
@@ -1483,7 +1483,8 @@ func processOutputSpots(
 				telnet.BroadcastSpot(toSend)
 			}
 			if peerManager != nil && s.SourceType != spot.SourceUpstream && s.SourceType != spot.SourcePeer {
-				peerManager.PublishDX(s)
+				peerSpot := cloneSpotForPeerPublish(s)
+				peerManager.PublishDX(peerSpot)
 			}
 		}()
 	}
@@ -1627,6 +1628,29 @@ func cloneSpotForBroadcast(src *spot.Spot) *spot.Spot {
 		DXGrid2:         src.DXGrid2,
 		DEGrid2:         src.DEGrid2,
 	}
+}
+
+// cloneSpotForPeerPublish ensures manual spots carry an inferred mode to peers
+// even when the user omitted a comment. Peers only see the comment field in
+// PC61/PC11 frames, so we fall back to the inferred mode when the comment is
+// blank. Other sources and spots with comments are passed through as-is.
+func cloneSpotForPeerPublish(src *spot.Spot) *spot.Spot {
+	if src == nil {
+		return nil
+	}
+	if src.SourceType != spot.SourceManual {
+		return src
+	}
+	if strings.TrimSpace(src.Comment) != "" {
+		return src
+	}
+	mode := strings.TrimSpace(src.Mode)
+	if mode == "" {
+		return src
+	}
+	clone := cloneSpotForBroadcast(src)
+	clone.Comment = mode
+	return clone
 }
 
 // applyLicenseGate runs the FCC license check after all corrections and returns true when the spot should be dropped.

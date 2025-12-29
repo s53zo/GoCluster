@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"dxcluster/buffer"
+	"dxcluster/cty"
 	"dxcluster/filter"
 	"dxcluster/spot"
 )
@@ -25,17 +26,19 @@ type Processor struct {
 	spotBuffer *buffer.RingBuffer
 	archive    archiveReader
 	spotInput  chan<- *spot.Spot
+	ctyLookup  func() *cty.CTYDatabase
 }
 
 // Purpose: Construct a command processor bound to shared spot state.
 // Key aspects: SHOW/DX prefers archive when present; DX commands can enqueue spots.
 // Upstream: Telnet server initialization.
 // Downstream: Processor methods (ProcessCommand, handleShowDX, handleDX).
-func NewProcessor(buf *buffer.RingBuffer, archive archiveReader, spotInput chan<- *spot.Spot) *Processor {
+func NewProcessor(buf *buffer.RingBuffer, archive archiveReader, spotInput chan<- *spot.Spot, ctyLookup func() *cty.CTYDatabase) *Processor {
 	return &Processor{
 		spotBuffer: buf,
 		archive:    archive,
 		spotInput:  spotInput,
+		ctyLookup:  ctyLookup,
 	}
 }
 
@@ -93,7 +96,7 @@ func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterI
 func (p *Processor) handleHelp() string {
 	return fmt.Sprintf(`Available commands:
 HELP                 - Show this help
-DX <freq> <call> <comment> - Post a spot (frequency in kHz)
+DX <freq> <call> [comment] - Post a spot (frequency in kHz)
 SHOW/DX [count]      - Show last N DX spots (default: 10)
 BYE                  - Disconnect
 
@@ -173,8 +176,8 @@ func (p *Processor) handleDX(fields []string, spotter string, spotterIP string) 
 	if !spot.IsValidNormalizedCallsign(spotterNorm) {
 		return "DX command requires a valid callsign.\n"
 	}
-	if len(fields) < 4 {
-		return "Usage: DX <frequency> <callsign> <comment>\n"
+	if len(fields) < 3 {
+		return "Usage: DX <frequency> <callsign> [comment]\n"
 	}
 	freq, err := strconv.ParseFloat(fields[1], 64)
 	if err != nil || freq <= 0 {
@@ -185,7 +188,17 @@ func (p *Processor) handleDX(fields []string, spotter string, spotterIP string) 
 	if !spot.IsValidNormalizedCallsign(dx) {
 		return "Invalid DX callsign.\n"
 	}
-	comment := strings.TrimSpace(strings.Join(fields[3:], " "))
+	if p.ctyLookup != nil {
+		if db := p.ctyLookup(); db != nil {
+			if _, ok := db.LookupCallsignPortable(dx); !ok {
+				return "Unknown DX callsign (not in CTY database).\n"
+			}
+		}
+	}
+	comment := ""
+	if len(fields) > 3 {
+		comment = strings.TrimSpace(strings.Join(fields[3:], " "))
+	}
 	parsed := spot.ParseSpotComment(comment, freq)
 	s := spot.NewSpotNormalized(dx, spotterNorm, freq, parsed.Mode)
 	s.Comment = parsed.Comment
