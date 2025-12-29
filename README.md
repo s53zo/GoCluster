@@ -303,7 +303,7 @@ fcc_uls:
 
 ## Grid Persistence and Caching
 
-- Grids and known-call flags are stored in SQLite at `grid_db` (default `data/grids/calls.db`). The DB uses WAL mode with `synchronous=NORMAL` for fast, durable batching.
+- Grids and known-call flags are stored in SQLite at `grid_db` (default `data/grids/calls.db`). The DB uses WAL mode with `synchronous=OFF` to favor throughput and low write latency; a crash can lose the most recent batch of grid updates, but the cache continues serving and fresh reports rebuild quickly.
 - Writes are batched by `grid_flush_seconds` (default `60s`); a final flush runs during shutdown.
 - The in-memory grid cache is a bounded LRU of size `grid_cache_size` (default `100000`). Cache misses fall back to SQLite, keeping startup O(1) even as the database grows.
 - The stats line `Grids: +X / Y since start / Z in DB` counts accepted grid changes (not repeated identical reports); `Z` is the current row count from SQLite.

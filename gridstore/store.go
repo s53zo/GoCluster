@@ -106,7 +106,7 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	if _, err := db.Exec(`PRAGMA busy_timeout = ` + fmt.Sprint(busyTimeoutMS) + `; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;`); err != nil {
+	if _, err := db.Exec(`PRAGMA busy_timeout = ` + fmt.Sprint(busyTimeoutMS) + `; PRAGMA journal_mode = WAL; PRAGMA synchronous = OFF;`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("gridstore: set pragmas: %w", err)
 	}
@@ -353,7 +353,7 @@ CREATE TABLE IF NOT EXISTS calls (
     expires_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_calls_updated_at ON calls(updated_at);
-CREATE INDEX IF NOT EXISTS idx_calls_grid ON calls(grid);
+DROP INDEX IF EXISTS idx_calls_grid;
 `
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("gridstore: init schema: %w", err)

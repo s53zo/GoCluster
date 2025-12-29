@@ -38,7 +38,7 @@ Commercial-grade from the first draft. Do not write simple code that needs harde
 
 **Data:** Prefer `[]byte` over `string` in parsing. Avoid repeated conversions. Parse by index, not `strings.Split`. Contiguous data over pointer chasing.
 
-**Measurement:** Optimizations (changes justified as "faster") need before/after data. Antipattern fixes don't.
+**Measurement:** Optimizations (changes justified as "faster") need before/after data. See `OPTIMIZATION.md` for profiling methodology.
 
 ## DOMAIN — Telnet/Packet Cluster
 
