@@ -5,7 +5,7 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
 ## Quickstart
 
 1. Install Go `1.25+` (see `go.mod`).
-2. Edit `data/config/` (at minimum: set your callsigns in `ingest.yaml` and `telnet.port` in `runtime.yaml`). You can override the path with `DXC_CONFIG_PATH` if you want to point at a different directory or a legacy single-file config.
+2. Edit `data/config/` (at minimum: set your callsigns in `ingest.yaml` and `telnet.port` in `runtime.yaml`). If you plan to peer with other DXSpider nodes, populate `peering.yaml` (local callsign, peers, ACL/passwords). You can override the path with `DXC_CONFIG_PATH` if you want to point at a different directory or a legacy single-file config.
 3. Run:
    ```pwsh
    go mod tidy
@@ -16,18 +16,18 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
 ## Architecture and Spot Sources
 
 1. **Telnet Server** (`telnet/server.go`) handles client connections, commands, and spot broadcasting using worker goroutines.
-2. **RBN Clients** (`rbn/client.go`) maintain connections to the CW/RTTY (port 7000) and Digital (port 7001) feeds. Each line is parsed, normalized, validated against the CTY database, and enriched before queuing.
+2. **RBN Clients** (`rbn/client.go`) maintain connections to the CW/RTTY (port 7000) and Digital (port 7001) feeds. Each line is parsed and normalized, then sent through the shared ingest CTY/ULS gate for validation and enrichment before queuing.
    - Parsing uses a single left-to-right token walk assisted by an Aho–Corasick (AC) keyword scanner so the line only needs to be scanned once.
    - The parser supports both `DX de CALL: 14074.0 ...` and the glued form `DX de CALL:14074.0 ...` by splitting the spotter token into `DECall` + optional attached frequency.
    - Frequency is the first token that parses as a plausible dial frequency (currently `100.0`-`3,000,000.0` kHz), rather than assuming a fixed column index.
-   - Mode is taken from the first explicit mode token (`CW`, `USB`, `FT8`, `MSK144`, etc.). If mode is absent, it is inferred from `data/config/mode_allocations.yaml` (with a simple fallback: `USB` >= 10 MHz else `CW`).
+   - Mode is taken from the first explicit mode token (`CW`, `USB`, `JS8`, `SSTV`, `FT8`, `MSK144`, etc.). If mode is absent, it is inferred from `data/config/mode_allocations.yaml` (with a simple fallback: `USB` >= 10 MHz else `CW`).
    - Report/SNR is recognized in both `+5 dB` and `-13dB` forms; `HasReport` is set whenever a report is present (including a valid `0 dB`).
    - Ingest burst protection is sized per source via `rbn.slot_buffer` / `rbn_digital.slot_buffer` in `data/config/ingest.yaml`; overflow logs are tagged by source for easier diagnosis.
-3. **PSKReporter MQTT** (`pskreporter/client.go`) subscribes to `pskr/filter/v2/+/+/#` (or one or more `pskr/filter/v2/+/<MODE>/#` topics when `pskreporter.modes` is configured), converts JSON payloads into canonical spots, and applies locator-based metadata. Set `pskreporter.append_spotter_ssid: true` if you want receiver callsigns that lack SSIDs to pick up a `-#` suffix for deduplication.
-4. **CTY Database** (`cty/parser.go` + `data/cty/cty.plist`) performs longest-prefix lookups so both spotters and spotted stations carry continent/country/CQ/ITU/grid metadata.
+3. **PSKReporter MQTT** (`pskreporter/client.go`) subscribes to `pskr/filter/v2/+/+/#` (or one or more `pskr/filter/v2/+/<MODE>/#` topics when `pskreporter.modes` is configured), converts JSON payloads into canonical spots, and preserves locator-based grids. Set `pskreporter.append_spotter_ssid: true` if you want receiver callsigns that lack SSIDs to pick up a `-#` suffix for deduplication. PSKReporter spots no longer carry a comment string; DX/DE grids stay in metadata and are shown in the fixed tail of telnet output. Configure `pskreporter.cty_cache_size`, `pskreporter.cty_cache_ttl_seconds`, and `pskreporter.max_payload_bytes` to bound ingest CTY cache memory usage and guard against oversized payloads.
+4. **CTY Database** (`cty/parser.go` + `data/cty/cty.plist`) performs longest-prefix lookups; when a callsign includes slashes, it prefers the shortest matching segment (portable/location prefix), so `N2WQ/VE3` and `VE3/N2WQ` both resolve to `VE3` (Canada) for metadata.
 5. **Dedup Engine** (`dedup/deduplicator.go`) filters duplicates before they reach the ring buffer. A zero-second window effectively disables dedup, but the pipeline stays unified. A secondary, broadcast-only dedupe (configurable window, default 60s) runs after call correction/harmonic/frequency adjustments to collapse same-DX/frequency reports from spotters that share the same DE ADIF (DXCC) and DE CQ zone; it hashes kHz + DE ADIF + DE zone + DX call (time window enforced separately), so one spot per window per spotter country/zone reaches clients while the ring/history remain intact. When `secondary_prefer_stronger_snr` is true, the stronger SNR duplicate replaces the cached entry and is broadcast. Spotter SSID display is controlled at broadcast time (see `rbn.keep_ssid_suffix`).
 6. **Frequency Averager** (`spot/frequency_averager.go`) merges CW/RTTY skimmer reports by averaging corroborating reports within a tolerance and rounding to 0.1 kHz once the minimum corroborators is met.
-7. **Call/Harmonic/License Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections, suppress harmonics, and finally run CTY/FCC license gating right before broadcast/buffering. Harmonic suppression supports a stepped minimum dB delta (configured via `harmonics.min_report_delta_step`) so higher-order harmonics must be progressively weaker. Call correction honours `call_correction.min_snr_cw` / `min_snr_rtty` so marginal decodes can be ignored when counting corroborators. Calls ending in `/B` (standard beacon IDs) are auto-tagged and bypass correction/harmonic/license drops (only user filters can hide them). The license gate re-evaluates CTY on license-normalized calls (e.g., `W6/UT5UF` looks up `UT5UF`) and drops only unlicensed US calls after all corrections; these drops appear in the "Unlicensed US Calls" pane.
+7. **Call/Harmonic/License Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections, suppress harmonics, and finally run FCC license gating for DX right before broadcast/buffering (CTY validation runs in the ingest gate; corrected calls are re-validated against CTY before acceptance). Harmonic suppression supports a stepped minimum dB delta (configured via `harmonics.min_report_delta_step`) so higher-order harmonics must be progressively weaker. Call correction honours `call_correction.min_snr_cw` / `min_snr_rtty` (and `min_snr_voice` if set) so marginal decodes can be ignored when counting corroborators; USB/LSB uses a wider frequency tolerance and candidate search window to reflect 3 kHz SSB bandwidth. Calls ending in `/B` (standard beacon IDs) are auto-tagged and bypass correction/harmonic/license drops (only user filters can hide them). The license gate uses a license-normalized base call (e.g., `W6/UT5UF` -> `UT5UF`) to decide if FCC checks apply and which call to query, while CTY metadata still reflects the portable/location prefix (so `N2WQ/VE3` reports Canada for DXCC but uses `N2WQ` for licensing); drops appear in the "Unlicensed US Calls" pane.
 8. **Skimmer Frequency Corrections** (`cmd/rbnskewfetch`, `skew/`, `rbn/client.go`, `pskreporter/client.go`) download SM7IUN's skew list, convert it to JSON, and apply per-spotter multiplicative factors before any callsign normalization for every CW/RTTY skimmer feed.
 
 ### Aho–Corasick Spot Parsing (Non-PSKReporter)
@@ -36,7 +36,7 @@ Non-PSKReporter sources (RBN CW/RTTY, RBN digital, and upstream/human telnet fee
 
 High-level flow:
 
-- **Keyword dictionary**: `DX`, `DE`, `DB`, `WPM`, plus all supported mode tokens (`CW`, `SSB`, `USB`, `LSB`, `RTTY`, `FT4`, `FT8`, `MSK144`, and common variants like `FT-8`).
+- **Keyword dictionary**: `DX`, `DE`, `DB`, `WPM`, plus all supported mode tokens (`CW`, `SSB` as an alias normalized to `USB`/`LSB`, `USB`, `LSB`, `JS8`, `SSTV`, `RTTY`, `FT4`, `FT8`, `MSK144`, and common variants like `FT-8`).
 - **Automaton build (once)**: patterns are compiled into a trie and failure links are built with a BFS. This runs once and is reused for every line.
 - **Per-line scan**:
   - Tokenize the raw line on whitespace while tracking token byte offsets.
@@ -58,6 +58,7 @@ High-level flow:
 - `ui.mode: ansi` (default) draws the lightweight ANSI console in the server's terminal when stdout is a TTY. Telnet clients do **not** see this UI.
 - `ui.mode: tview` enables the framed tview dashboard (requires an interactive console).
 - `ui.mode: headless` disables the local console; logs continue to stdout/stderr.
+- `ui.pane_lines` controls ANSI history depth and the visible heights of tview panes.
 - Config block (excerpt):
   ```yaml
   ui:
@@ -76,7 +77,7 @@ High-level flow:
 ## Data Flow and Spot Record Format
 
 ```
-[Source: RBN/PSKReporter] → Parser → CTY Lookup → Dedup (window-driven) → Ring Buffer → Telnet Broadcast
+[Source: RBN/PSKReporter] → Parser → Ingest CTY/ULS Gate → Dedup (window-driven) → Ring Buffer → Telnet Broadcast
 ```
 
 ```
@@ -95,7 +96,7 @@ High-level flow:
 		   ├─────────────────────────┴─────────────────────────┤
 		   ▼                                                   ▼
 	 ┌────────────────────────────────────────────────────────────────────┐
-	 │ Normalize callsigns → validate → CTY lookup → enrich metadata      │
+	 │ Normalize callsigns → ingest CTY/ULS checks → enrich metadata      │
 	 │ (shared logic in `spot` + `cty` packages)                           │
 	 └──────────────────────────────┬──────────────────────────────────────┘
 					│
@@ -125,6 +126,7 @@ The telnet server broadcasts spots as fixed-width DX-cluster lines:
 - Exactly **78 characters**, followed by **CRLF** (line endings are normalized in `telnet.Client.Send`).
 - Column numbering below is **1-based** (column 1 is the `D` in `DX de `).
 - The left side is padded so **mode always starts at column 40**.
+- The displayed DX callsign uses the canonical normalized call (portable suffixes stripped) and is truncated to 10 characters to preserve fixed columns (the full normalized callsign is still stored and hashed).
 - The right-side tail is fixed so clients can rely on it:
   - Grid: columns 67-70 (4 chars; blank if unknown)
   - Confidence: column 72 (1 char; blank if unknown)
@@ -144,13 +146,13 @@ DX de W3LPL:       7009.5  K1ABC       FT8 -5 dB                          FN20 S
 
 Each `spot.Spot` stores:
 - **ID** - monotonic identifier
-- **DXCall / DECall** - uppercased callsigns
+- **DXCall / DECall** - normalized callsigns (portable suffixes stripped, location prefixes like `/VE3` retained; validation accepts 3-15 characters; telnet display truncates DX to 10 as described above)
 - **Frequency** (kHz), **Band**, **Mode**, **Report** (dB/SNR), **HasReport** (distinguishes missing SNR from a real 0)
 - **Time** - UTC timestamp from the source
 - **Comment** - free-form message (human ingest strips mode/SNR/time tokens before storing)
 - **SourceType / SourceNode** - origin tags (`RBN`, `FT8`, `FT4`, `PSKREPORTER`, `UPSTREAM`, etc.)
 - **TTL** - hop count preventing loops
-- **IsHuman** - whether the spot was reported by a human operator (automated feeds set this to false)
+- **IsHuman** - whether the spot was reported by a human operator (RBN/PSKReporter spots are skimmers; peer/upstream/manual spots are human)
 - **IsBeacon** - true when the DX call ends with `/B` or the comment mentions `NCDXF`/`BEACON` (used to suppress beacon corrections/filtering)
 - **DXMetadata / DEMetadata** - structured `CallMetadata` each containing:
 	- `Continent`
@@ -160,14 +162,14 @@ Each `spot.Spot` stores:
 	- `ADIF` (DXCC/ADIF country code)
 	- `Grid`
 
-Both the RBN (standard and digital) and PSKReporter feeds run the same normalization + CTY lookup validation before putting a spot into the ring buffer. Callsigns containing `.` suffixes (e.g., `JA1CTC.P` or `W6.UT5UF`) now have their periods converted to `/` so the full call-plus-suffix reaches CTY lookup rather than being truncated to the base call, and validation now requires at least one digit to avoid non-amateur identifiers before malformed or unknown calls are filtered out prior to hashing or deduplication. Automated feeds mark the `IsHuman` flag as `false` so downstream processors can tell which spots originated from telescopic inputs versus human operator submissions. Final CTY/FCC checks run after call correction using a license-normalized base call (e.g., `W6/UT5UF` is evaluated as `UT5UF`); only unlicensed US calls are dropped, and beacons bypass this drop (user filters still apply).
+All ingest sources run through a shared CTY/ULS validation gate before deduplication. Callsigns are normalized once (uppercased, dots converted to `/`, trailing slashes removed, and portable suffixes like `/P`, `/M`, `/MM`, `/AM`, `/QRP` stripped) before CTY lookup, so W1AW and W1AW/P collapse to the same canonical call for hashing and filters. Location prefixes (for example `/VE3`) are retained; CTY lookup then chooses the shortest matching slash segment so `N2WQ/VE3` and `VE3/N2WQ` both resolve to `VE3` for metadata. Validation still requires at least one digit to avoid non-amateur identifiers before malformed or unknown calls are filtered out. Automated feeds mark the `IsHuman` flag as `false` so downstream processors can tell which spots originated from telescopic inputs versus human operator submissions. Call correction re-validates suggested DX calls against CTY before accepting them; FCC license gating runs after correction using a license-normalized base call (for example, `W6/UT5UF` is evaluated as `UT5UF`) and drops unlicensed US calls (beacons bypass this drop; user filters still apply).
 
 ## Commands
 
 Telnet clients can issue commands via the prompt once logged in. The processor, located in `commands/processor.go`, supports the following general commands:
 
 - `HELP` / `H` – display the help text that includes short summaries and valid bands/modes at the bottom of the message.
-- `SHOW DX [N]` / `SHOW/DX [N]` - stream the most recent `N` spots directly from the shared ring buffer (`N` ranges from 1-100, default 10). The command accepts the alias `SH DX` as well.
+- `SHOW DX [N]` / `SHOW/DX [N]` - stream the most recent `N` spots (`N` ranges from 1-100, default 10). When the SQLite archive is enabled, results come from the archive (newest-first); otherwise they fall back to the in-memory ring buffer. The command accepts the alias `SH DX` as well.
 - `BYE`, `QUIT`, `EXIT` - request a graceful logout; the server replies with `73!` and closes the connection.
 
 Filter management commands are implemented directly in `telnet/server.go` and operate on each client's `filter.Filter`. They can be used at any time and fall into `PASS`, `REJECT`, and `SHOW FILTER` groups:
@@ -203,14 +205,14 @@ Filter management commands are implemented directly in `telnet/server.go` and op
 - `SHOW FILTER BEACON` - display the current beacon-filter state.
 - `SHOW FILTER CONFIDENCE` - lists each glyph alongside whether it is currently enabled.
 
-Confidence glyphs are only emitted for modes that run consensus-based correction (CW/RTTY/SSB). FT8/FT4 spots carry no confidence glyphs, so confidence filters do not affect them.
+Confidence glyphs are only emitted for modes that run consensus-based correction (CW/RTTY/USB/LSB voice modes). FT8/FT4 spots carry no confidence glyphs, so confidence filters do not affect them. After correction assigns `P`/`V`/`C`/`?`, any remaining `?` is upgraded to `S` when the DX call is present in `MASTER.SCP`.
 
 Band, mode, confidence, and DXGRID2/DEGRID2 commands share identical semantics: they accept comma- or space-separated lists, ignore duplicates/case, and treat the literal `ALL` as a shorthand to reset that filter back to "allow every band/mode/confidence glyph/2-character grid." DXGRID2 applies only to the DX grid when it is exactly two characters long; DEGRID2 applies only to the DE grid when it is exactly two characters long. 4/6-character or empty grids are unaffected, and longer tokens provided by the user are truncated to their first two characters before validation.
 
 Confidence indicator legend in telnet output:
 
 - `?` - Unknown/low support
-- `S` - Single-reporter spot that matches `MASTER.SCP`
+- `S` - DX call is present in `MASTER.SCP` and the post-correction confidence would otherwise be `?`
 - `P` - 25-50% consensus for the subject call (no correction applied)
 - `V` - More than 50% consensus for the subject call (no correction applied)
 - `B` - Correction was suggested but CTY validation failed (call left unchanged)
@@ -278,7 +280,8 @@ cty:
 ```
 
 2. On startup the server downloads `cty.plist` if it is missing and a URL is configured, then loads it into the CTY trie/cache used by lookups. If the file already exists it is loaded directly.
-3. When `cty.enabled` is true, the scheduler downloads the plist daily at `cty.refresh_utc`, writes it via an atomic temp-file swap, and reloads the in-memory CTY database so new prefixes are used without a restart. Failures log a warning and retry at the next window.
+3. When `cty.enabled` is true, the scheduler downloads the plist daily at `cty.refresh_utc`, writes it via an atomic temp-file swap, and reloads the in-memory CTY database so new prefixes are used without a restart. Failures log a warning and retry with backoff; the last-good CTY DB remains active.
+4. The stats pane includes a `CTY: age ...` line that shows how long it has been since the last successful refresh (and a failure count when retries are failing), so staleness is visible at a glance.
 
 ## FCC ULS Downloads
 
@@ -300,7 +303,7 @@ fcc_uls:
 
 ## Grid Persistence and Caching
 
-- Grids and known-call flags are stored in SQLite at `grid_db` (default `data/grids/calls.db`). The DB uses WAL mode with `synchronous=NORMAL` for fast, durable batching.
+- Grids and known-call flags are stored in SQLite at `grid_db` (default `data/grids/calls.db`). The DB uses WAL mode with `synchronous=OFF` to favor throughput and low write latency; a crash can lose the most recent batch of grid updates, but the cache continues serving and fresh reports rebuild quickly.
 - Writes are batched by `grid_flush_seconds` (default `60s`); a final flush runs during shutdown.
 - The in-memory grid cache is a bounded LRU of size `grid_cache_size` (default `100000`). Cache misses fall back to SQLite, keeping startup O(1) even as the database grows.
 - The stats line `Grids: +X / Y since start / Z in DB` counts accepted grid changes (not repeated identical reports); `Z` is the current row count from SQLite.
@@ -366,8 +369,18 @@ The telnet server fans every post-dedup spot to every connected client. When PSK
 - `broadcast_batch_interval_ms` micro-batches outbound broadcasts to reduce mutex/IO churn (default `250`; set to `0` for immediate sends). Each shard flushes on interval or when the batch reaches its max size, preserving order per shard.
 - `login_line_limit` caps how many bytes a user can enter at the login prompt (default `32`). Keep this tight to prevent hostile clients from allocating massive buffers before authentication.
 - `command_line_limit` caps how long any post-login command may be (default `128`). Raise this when operators expect comma-heavy filter commands or scripted clients that send longer payloads.
+- `keepalive_seconds` emits a CRLF to every connected client on a cadence (default `60`; `0` disables). Blank lines sent by clients are treated as keepalives and get an immediate CRLF reply so idle TCP sessions stay open.
 
 Increase the queue sizes if you see the broadcast-channel drop message frequently, or raise `broadcast_workers` when you have CPU headroom and thousands of concurrent clients.
+
+### Archive Durability (SQLite)
+
+The optional SQLite archive is built to stay out of the hot path: enqueue is non-blocking and drops when backpressure builds. With the archive enabled, you can tune durability vs throughput:
+
+- `archive.synchronous`: defaults to `off` for maximum throughput when the archive is disposable; set to `normal` or `full` if you need crash safety.
+- `archive.auto_delete_corrupt_db`: when true, the server runs `PRAGMA quick_check` at startup and deletes the archive DB + WAL/SHM if integrity fails, then recreates schema.
+
+Operational guidance: enable `auto_delete_corrupt_db` only if the archive is truly disposable. If you need to preserve data through crashes, leave auto-delete off and raise synchronous to `normal`/`full` (or disable the archive entirely).
 
 ## Project Structure
 
@@ -381,7 +394,6 @@ Increase the queue sizes if you see the broadcast-channel drop message frequentl
 │  ├─ runtime.yaml         # Telnet server settings, buffer/filter defaults
 │  └─ mode_allocations.yaml # Mode inference for RBN/human ingest
 ├─ config/                 # YAML loader + defaults (merges dir or single file)
-├─ config.yaml             # Legacy single-file config (use via DXC_CONFIG_PATH)
 ├─ cmd/                    # Helper binaries (CTY lookup, skew fetch, analysis)
 ├─ rbn/, pskreporter/, telnet/, dedup/, filter/, spot/, stats/, gridstore/  # Core packages
 ├─ data/cty/cty.plist      # CTY prefix database for metadata lookups
@@ -396,13 +408,14 @@ Increase the queue sizes if you see the broadcast-channel drop message frequentl
 - `config/` describes the YAML schema, default normalization, and `Print` diagnostics. The “Configuration Loader Defaults” section mirrors these behaviors.
 - `cty/` covers longest-prefix CTY lookups and cache metrics. `spot/` holds the canonical spot struct, formatting, hashing, validation, callsign utilities, harmonics/frequency averaging/correction helpers, and known-calls cache.
 - `dedup/`, `filter/`, `gridstore/`, `skew/`, and `uls/` each have package-level docs and function comments outlining how they feed or persist data without blocking ingest.
-- `rbn/` and `pskreporter/` detail how each source is parsed, normalized, CTY-enriched, skew-corrected, and routed into the unified dedup channel.
+- `rbn/` and `pskreporter/` detail how each source is parsed, normalized, skew-corrected, and routed into the ingest CTY/ULS gate before deduplication.
 - `commands/` and `cmd/*` binaries include focused comments explaining the helper CLIs for SHOW/DX, CTY lookup, and skew prefetching.
 
 ## Getting Started
 
 1. Update `data/config/ingest.yaml` with your preferred callsigns for the `rbn`, `rbn_digital`, optional `human_telnet`, and optional `pskreporter` sections. Optionally list `pskreporter.modes` (e.g., [`FT8`, `FT4`]) to subscribe to just those MQTT feeds simultaneously. If you enable `human_telnet`, review `data/config/mode_allocations.yaml` (used to infer CW vs LSB/USB when the incoming spot line does not include an explicit mode token).
-2. Optionally enable/tune `call_correction` (master `enabled` switch, minimum corroborating spotters, required advantage, confidence percent, recency window, max edit distance, per-mode distance models, and `invalid_action` failover). `distance_model_cw` switches CW between the baseline rune-based Levenshtein (`plain`) and a Morse-aware cost function (`morse`), `distance_model_rtty` toggles RTTY between `plain` and a Baudot/ITA2-aware scorer (`baudot`), while SSB/voice modes always stay on `plain` because those reports are typed by humans.
+2. If peering with DXSpider clusters, edit `data/config/peering.yaml`: set `local_callsign`, optional `listen_port`, hop/version fields, and add one or more peers (host/port/password/prefer_pc9x). ACLs are available for inbound (`allow_ips`/`allow_callsigns`). Topology persistence is optional (disabled by default); set `peering.topology.db_path` to enable SQLite caching (WAL mode) with the configured retention.
+2. Optionally enable/tune `call_correction` (master `enabled` switch, minimum corroborating spotters, required advantage, confidence percent, recency window, max edit distance, per-mode distance models, and `invalid_action` failover). `distance_model_cw` switches CW between the baseline rune-based Levenshtein (`plain`) and a Morse-aware cost function (`morse`), `distance_model_rtty` toggles RTTY between `plain` and a Baudot/ITA2-aware scorer (`baudot`), while USB/LSB voice modes always stay on `plain` because those reports are typed by humans.
 3. Optionally enable/tune `harmonics` to drop harmonic CW/USB/LSB/RTTY spots (master `enabled`, recency window, maximum harmonic multiple, frequency tolerance, and minimum report delta).
 4. Set `spot_policy.max_age_seconds` to drop stale spots before they're processed further. For CW/RTTY frequency smoothing, tune `spot_policy.frequency_averaging_seconds` (window), `spot_policy.frequency_averaging_tolerance_hz` (allowed deviation), and `spot_policy.frequency_averaging_min_reports` (minimum corroborating reports).
 5. (Optional) Enable `skew.enabled` after generating `skew.file` via `go run ./cmd/rbnskewfetch` (or let the server fetch it at the next 00:30 UTC window). The server applies each skimmer's multiplicative correction before normalization so SSIDs stay unique.
@@ -421,9 +434,10 @@ Increase the queue sizes if you see the broadcast-channel drop message frequentl
 `config.Load` accepts a directory (merging all YAML files) or a single YAML file; the server defaults to `data/config`. It normalizes missing fields and refuses to start when time strings are invalid. Key fallbacks:
 
 - Stats tickers default to `30s` when unset. Telnet queues fall back to `broadcast_queue_size=2048`, `worker_queue_size=128`, `client_buffer_size=128`, and friendly greeting/duplicate-login messages are injected if blank.
-- Call correction uses conservative baselines unless overridden: `min_consensus_reports=4`, `min_advantage=1`, `min_confidence_percent=70`, `recency_seconds=45`, `max_edit_distance=2`, `frequency_tolerance_hz=0.5`, `invalid_action=broadcast`. Empty distance models inherit from `distance_model` or default to `plain`; negative SNR floors/extras are clamped to zero. Distance cache defaults to `size=5000` and `ttl=recency_seconds` (or `120s`).
+- Call correction uses conservative baselines unless overridden: `min_consensus_reports=4`, `min_advantage=1`, `min_confidence_percent=70`, `recency_seconds=45`, `max_edit_distance=2`, `frequency_tolerance_hz=0.5`, `voice_frequency_tolerance_hz=2000`, `voice_candidate_window_khz=2`, `min_snr_voice=0`, `invalid_action=broadcast`. Empty distance models inherit from `distance_model` or default to `plain`; negative SNR floors/extras are clamped to zero. Distance cache defaults to `size=5000` and `ttl=recency_seconds` (or `120s`).
 - Harmonic suppression clamps to sane minimums (`recency_seconds=120`, `max_harmonic_multiple=4`, `frequency_tolerance_hz=20`, `min_report_delta=6`, `min_report_delta_step>=0`).
 - Spot policy defaults prevent runaway averaging: `max_age_seconds=120`, `frequency_averaging_seconds=45`, `frequency_averaging_tolerance_hz=300`, `frequency_averaging_min_reports=4`.
+- Archive defaults keep writes lightweight: `queue_size=10000`, `batch_size=500`, `batch_interval_ms=200`, `cleanup_interval_seconds=3600`, `busy_timeout_ms=1000`, `synchronous=off`, `auto_delete_corrupt_db=false`.
 - Known calls default to `data/scp/MASTER.SCP` and refresh at `01:00` UTC if unspecified. CTY falls back to `data/cty/cty.plist`.
 - FCC ULS fetches use the official URL/paths (`archive_path=data/fcc/l_amat.zip`, `db_path=data/fcc/fcc_uls.db`, `temp_dir` inherits from `db_path`), and refresh times must parse as `HH:MM` or loading fails fast.
 - Grid store defaults: `grid_db=data/grids/calls.db`, `grid_flush_seconds=60`, `grid_cache_size=100000`, with TTL/retention floors of zero to avoid negative durations.
@@ -435,7 +449,7 @@ Increase the queue sizes if you see the broadcast-channel drop message frequentl
 
 - `go test ./...` validates packages (not all directories contain tests yet).
 - `gofmt -w ./...` keeps formatting consistent.
-- `go run cmd/ctylookup -data data/cty/cty.plist` lets you interactively inspect CTY entries used for validation.
+- `go run cmd/ctylookup -data data/cty/cty.plist` lets you interactively inspect CTY entries used for validation (portable calls resolve by location prefix).
 - `go run cmd/rbnskewfetch -out data/skm_correction/rbnskew.json` forces an immediate skew-table refresh (the server still performs automatic downloads at 00:30 UTC daily).
 
 Let me know if you want diagrams, sample logs, or scripted deployment steps added next.

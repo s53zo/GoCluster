@@ -18,6 +18,14 @@ func TestNormalizeCallsignTrimsTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestNormalizeCallsignStripsPortableSuffix(t *testing.T) {
+	input := "K1ABC/P"
+	want := "K1ABC"
+	if got := NormalizeCallsign(input); got != want {
+		t.Fatalf("NormalizeCallsign(%q) = %q, want %q", input, got, want)
+	}
+}
+
 func TestIsValidCallsignRejectsNonDigitWithSlash(t *testing.T) {
 	if IsValidCallsign("KWS/NM") {
 		t.Fatalf("IsValidCallsign should reject KWS/NM because it lacks digits")
@@ -33,5 +41,16 @@ func TestIsValidCallsignAcceptsDotSuffix(t *testing.T) {
 func TestIsValidCallsignRequiresDigitAfterSlash(t *testing.T) {
 	if IsValidCallsign("ABC/DEF") {
 		t.Fatalf("IsValidCallsign should reject ABC/DEF because it lacks digits")
+	}
+}
+
+func TestIsValidCallsignLengthBounds(t *testing.T) {
+	valid := "K1ABCDEF/GHIJKL" // 15 chars, contains a digit.
+	if !IsValidCallsign(valid) {
+		t.Fatalf("IsValidCallsign should accept max-length callsign %q", valid)
+	}
+	invalid := "K1ABCDEF/GHIJKLM" // 16 chars.
+	if IsValidCallsign(invalid) {
+		t.Fatalf("IsValidCallsign should reject overlong callsign %q", invalid)
 	}
 }

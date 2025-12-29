@@ -1,0 +1,43 @@
+# Consolidate CPU pprof profiles and build gocluster with PGO.
+# - Scans logs/ for cpu-*.pprof
+# - Merges them into logs/pgo-merged.pprof
+# - Builds gocluster_pgo.exe with -pgo=logs/pgo-merged.pprof
+# Usage: run from repo root or let the script set the working directory.
+
+$repoRoot = "C:\src\gocluster"
+$logsDir = Join-Path $repoRoot "logs"
+$mergedProfile = Join-Path $logsDir "pgo-merged.pprof"
+$outputExe = Join-Path $repoRoot "gocluster_pgo.exe"
+
+Set-Location $repoRoot
+
+if (-not (Test-Path $logsDir)) {
+    Write-Error "Logs directory not found: $logsDir"
+    exit 1
+}
+
+$profiles = Get-ChildItem -Path $logsDir -Filter "cpu-*.pprof" | Sort-Object LastWriteTime
+if ($profiles.Count -eq 0) {
+    Write-Error "No cpu-*.pprof files found in $logsDir"
+    exit 1
+}
+
+# Merge profiles into a single proto pprof
+Write-Host "Merging $($profiles.Count) profiles into $mergedProfile ..."
+$profilePaths = $profiles | ForEach-Object { $_.FullName }
+& go tool pprof -proto "-output=$mergedProfile" $exePath @profilePaths
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "pprof merge failed"
+    exit $LASTEXITCODE
+}
+
+# Build with PGO
+Write-Host "Building PGO binary -> $outputExe ..."
+& go build "-pgo=$mergedProfile" "-o=$outputExe" .
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "go build failed"
+    exit $LASTEXITCODE
+}
+
+Write-Host "Done. PGO profile: $mergedProfile"
+Write-Host "Binary: $outputExe"

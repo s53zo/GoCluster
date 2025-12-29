@@ -1,6 +1,6 @@
 // Package rbn maintains TCP connections to the Reverse Beacon Network (CW/RTTY
 // and FT4/FT8 feeds), parsing telnet lines into canonical *spot.Spot entries
-// with CTY enrichment and optional skew corrections.
+// with optional skew corrections.
 package rbn
 
 import (
@@ -8,22 +8,15 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"path/filepath"
-	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"os"
-
-	"dxcluster/cty"
 	"dxcluster/skew"
 	"dxcluster/spot"
-	"dxcluster/uls"
-
-	"gopkg.in/yaml.v3"
+	ztelnet "github.com/ziutek/telnet"
 )
 
 const (
@@ -35,19 +28,7 @@ var (
 	rbnCallCacheSize  = 4096
 	rbnCallCacheTTL   = 10 * time.Minute
 	rbnNormalizeCache = spot.NewCallCache(rbnCallCacheSize, rbnCallCacheTTL)
-	snrPattern        = regexp.MustCompile(`(?i)([-+]?\d{1,3})\s*dB`)
 )
-
-// UnlicensedReporter receives drop notifications for US calls failing FCC license checks.
-type UnlicensedReporter func(source, role, call, mode string, freqKHz float64)
-
-type unlicensedEvent struct {
-	source string
-	role   string
-	call   string
-	mode   string
-	freq   float64
-}
 
 // Client represents an RBN telnet client
 type Client struct {
@@ -61,214 +42,21 @@ type Client struct {
 	connected bool
 	shutdown  chan struct{}
 	spotChan  chan *spot.Spot
-	lookup    func() *cty.CTYDatabase
 	skewStore *skew.Store
 	reconnect chan struct{}
 	stopOnce  sync.Once
+	writeMu   sync.Mutex
 	keepSSID  bool
 
 	bufferSize int
 
-	unlicensedReporter UnlicensedReporter
-	unlicensedQueue    chan unlicensedEvent
-
 	minimalParse bool
-}
 
-type modeAllocation struct {
-	Band      string  `yaml:"band"`
-	LowerKHz  float64 `yaml:"lower_khz"`
-	CWEndKHz  float64 `yaml:"cw_end_khz"`
-	UpperKHz  float64 `yaml:"upper_khz"`
-	VoiceMode string  `yaml:"voice_mode"`
-}
+	telnetTransport   string
+	keepaliveInterval time.Duration
+	keepaliveDone     chan struct{}
 
-type modeAllocTable struct {
-	Bands []modeAllocation `yaml:"bands"`
-}
-
-var (
-	modeAllocOnce sync.Once
-	modeAlloc     []modeAllocation
-)
-
-const modeAllocPath = "data/config/mode_allocations.yaml"
-
-type acTokenKind int
-
-const (
-	acTokenUnknown acTokenKind = iota
-	acTokenDX
-	acTokenDE
-	acTokenMode
-	acTokenDB
-	acTokenWPM
-)
-
-type acPattern struct {
-	word string
-	kind acTokenKind
-	mode string
-}
-
-type acMatch struct {
-	start   int
-	end     int
-	pattern acPattern
-}
-
-type acNode struct {
-	fail    int
-	next    map[byte]int
-	outputs []int
-}
-
-type acScanner struct {
-	patterns []acPattern
-	nodes    []acNode
-}
-
-func newACScanner(patterns []acPattern) *acScanner {
-	sc := &acScanner{
-		patterns: patterns,
-		nodes:    []acNode{{next: make(map[byte]int)}},
-	}
-	for idx, p := range patterns {
-		state := 0
-		for i := 0; i < len(p.word); i++ {
-			ch := p.word[i]
-			next, ok := sc.nodes[state].next[ch]
-			if !ok {
-				next = len(sc.nodes)
-				sc.nodes = append(sc.nodes, acNode{next: make(map[byte]int)})
-				sc.nodes[state].next[ch] = next
-			}
-			state = next
-		}
-		sc.nodes[state].outputs = append(sc.nodes[state].outputs, idx)
-	}
-
-	// Build failure links (BFS).
-	queue := make([]int, 0, len(sc.nodes))
-	for _, next := range sc.nodes[0].next {
-		queue = append(queue, next)
-	}
-	for len(queue) > 0 {
-		state := queue[0]
-		queue = queue[1:]
-		for ch, next := range sc.nodes[state].next {
-			fail := sc.nodes[state].fail
-			for fail > 0 {
-				if target, ok := sc.nodes[fail].next[ch]; ok {
-					fail = target
-					break
-				}
-				fail = sc.nodes[fail].fail
-			}
-			sc.nodes[next].fail = fail
-			sc.nodes[next].outputs = append(sc.nodes[next].outputs, sc.nodes[fail].outputs...)
-			queue = append(queue, next)
-		}
-	}
-	return sc
-}
-
-func (sc *acScanner) FindAll(text string) []acMatch {
-	if sc == nil {
-		return nil
-	}
-	state := 0
-	matches := make([]acMatch, 0, 8)
-	for i := 0; i < len(text); i++ {
-		ch := text[i]
-		next, ok := sc.nodes[state].next[ch]
-		for !ok && state > 0 {
-			state = sc.nodes[state].fail
-			next, ok = sc.nodes[state].next[ch]
-		}
-		if ok {
-			state = next
-		}
-		if len(sc.nodes[state].outputs) == 0 {
-			continue
-		}
-		end := i + 1
-		for _, pid := range sc.nodes[state].outputs {
-			p := sc.patterns[pid]
-			start := end - len(p.word)
-			if start >= 0 {
-				matches = append(matches, acMatch{start: start, end: end, pattern: p})
-			}
-		}
-	}
-	return matches
-}
-
-func buildMatchIndex(matches []acMatch) map[int][]acMatch {
-	if len(matches) == 0 {
-		return nil
-	}
-	index := make(map[int][]acMatch, len(matches))
-	for _, m := range matches {
-		index[m.start] = append(index[m.start], m)
-	}
-	return index
-}
-
-func classifyToken(matchIndex map[int][]acMatch, trimStart, trimEnd int) (acPattern, bool) {
-	if len(matchIndex) == 0 {
-		return acPattern{}, false
-	}
-	for _, m := range matchIndex[trimStart] {
-		if m.end == trimEnd {
-			return m.pattern, true
-		}
-	}
-	return acPattern{}, false
-}
-
-func classifyTokenWithFallback(matchIndex map[int][]acMatch, tok spotToken) (acPattern, bool) {
-	if pat, ok := classifyToken(matchIndex, tok.trimStart, tok.trimEnd); ok {
-		return pat, true
-	}
-	// Fallback: scan the token itself to tolerate any positional drift from the
-	// global match index (e.g., doubled spaces or trimmed punctuation).
-	for _, m := range getKeywordScanner().FindAll(tok.upper) {
-		if m.start == 0 && m.end == len(tok.upper) {
-			return m.pattern, true
-		}
-	}
-	return acPattern{}, false
-}
-
-var keywordPatterns = []acPattern{
-	{word: "DX", kind: acTokenDX},
-	{word: "DE", kind: acTokenDE},
-	{word: "DB", kind: acTokenDB},
-	{word: "WPM", kind: acTokenWPM},
-	{word: "CW", kind: acTokenMode, mode: "CW"},
-	{word: "CWT", kind: acTokenMode, mode: "CW"},
-	{word: "RTTY", kind: acTokenMode, mode: "RTTY"},
-	{word: "FT8", kind: acTokenMode, mode: "FT8"},
-	{word: "FT-8", kind: acTokenMode, mode: "FT8"},
-	{word: "FT4", kind: acTokenMode, mode: "FT4"},
-	{word: "FT-4", kind: acTokenMode, mode: "FT4"},
-	{word: "MSK", kind: acTokenMode, mode: "MSK144"},
-	{word: "MSK144", kind: acTokenMode, mode: "MSK144"},
-	{word: "MSK-144", kind: acTokenMode, mode: "MSK144"},
-	{word: "USB", kind: acTokenMode, mode: "USB"},
-	{word: "LSB", kind: acTokenMode, mode: "LSB"},
-	{word: "SSB", kind: acTokenMode, mode: "SSB"},
-}
-
-var keywordScannerOnce sync.Once
-var keywordScanner *acScanner
-
-func getKeywordScanner() *acScanner {
-	keywordScannerOnce.Do(func() {
-		keywordScanner = newACScanner(keywordPatterns)
-	})
-	return keywordScanner
+	rawChan chan<- string // optional passthrough for non-DX lines (minimal parser only)
 }
 
 type spotToken struct {
@@ -281,6 +69,10 @@ type spotToken struct {
 	trimEnd   int
 }
 
+// Purpose: Tokenize an RBN spot line into position-aware tokens.
+// Key aspects: Records raw/clean/uppercase slices and punctuation-trim indices.
+// Upstream: parseSpot for minimal parsing.
+// Downstream: None.
 func tokenizeSpotLine(line string) []spotToken {
 	tokens := make([]spotToken, 0, 16)
 	i := 0
@@ -327,19 +119,10 @@ func tokenizeSpotLine(line string) []spotToken {
 	return tokens
 }
 
-func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// ConfigureCallCache allows callers to tune the normalization cache used for RBN spotters.
+// Purpose: Configure the callsign normalization cache for RBN spotters.
+// Key aspects: Applies defaults and rebuilds the shared cache.
+// Upstream: Config load or tests.
+// Downstream: spot.NewCallCache.
 func ConfigureCallCache(size int, ttl time.Duration) {
 	if size <= 0 {
 		size = 4096
@@ -352,10 +135,11 @@ func ConfigureCallCache(size int, ttl time.Duration) {
 	rbnNormalizeCache = spot.NewCallCache(rbnCallCacheSize, rbnCallCacheTTL)
 }
 
-// NewClient creates a new RBN client. bufferSize controls how many parsed spots
-// can queue between the telnet reader and the downstream pipeline; it should be
-// sized to absorb RBN burstiness (especially FT8/FT4 decode cycles).
-func NewClient(host string, port int, callsign string, name string, lookup func() *cty.CTYDatabase, skewStore *skew.Store, keepSSID bool, bufferSize int) *Client {
+// Purpose: Construct an RBN telnet client.
+// Key aspects: Initializes channels and caches; bufferSize absorbs bursty ingest.
+// Upstream: main.go startup.
+// Downstream: Client.Connect.
+func NewClient(host string, port int, callsign string, name string, skewStore *skew.Store, keepSSID bool, bufferSize int) *Client {
 	if bufferSize <= 0 {
 		bufferSize = 100 // legacy default; callers should override via config
 	}
@@ -366,7 +150,6 @@ func NewClient(host string, port int, callsign string, name string, lookup func(
 		name:       name,
 		shutdown:   make(chan struct{}),
 		spotChan:   make(chan *spot.Spot, bufferSize),
-		lookup:     lookup,
 		skewStore:  skewStore,
 		reconnect:  make(chan struct{}, 1),
 		keepSSID:   keepSSID,
@@ -374,66 +157,63 @@ func NewClient(host string, port int, callsign string, name string, lookup func(
 	}
 }
 
-// UseMinimalParser switches this client into a permissive parser intended for
-// human/upstream telnet feeds (not strict RBN formats).
-//
-// The minimal parser requires DE, DX, and a numeric frequency (kHz). It then
-// optionally extracts a mode token, an SNR/report token in the form "<num> dB"
-// (or "<num>dB"), and a trailing HHMMZ timestamp. Any remaining tokens are
-// treated as a free-form comment after removing structural/mode/report/time
-// tokens so the spot can still render cleanly in DX-cluster output.
+// Purpose: Enable the permissive parser for non-RBN telnet feeds.
+// Key aspects: Extracts DE/DX/freq with optional mode/report/time tokens.
+// Upstream: main.go for human/relay telnet clients.
+// Downstream: parseSpot minimal parsing path.
 func (c *Client) UseMinimalParser() {
 	if c != nil {
 		c.minimalParse = true
 	}
 }
 
-func loadModeAllocations() {
-	modeAllocOnce.Do(func() {
-		paths := []string{modeAllocPath, filepath.Join("..", modeAllocPath)}
-		for _, path := range paths {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				continue
-			}
-			var table modeAllocTable
-			if err := yaml.Unmarshal(data, &table); err != nil {
-				log.Printf("Warning: unable to parse mode allocations (%s): %v", path, err)
-				return
-			}
-			modeAlloc = table.Bands
-			return
-		}
-		log.Printf("Warning: unable to load mode allocations from %s (or parent): file not found", modeAllocPath)
-	})
-}
-
-func guessModeFromAlloc(freqKHz float64) string {
-	loadModeAllocations()
-	for _, b := range modeAlloc {
-		if freqKHz >= b.LowerKHz && freqKHz <= b.UpperKHz {
-			if b.CWEndKHz > 0 && freqKHz <= b.CWEndKHz {
-				return "CW"
-			}
-			if strings.TrimSpace(b.VoiceMode) != "" {
-				return strings.ToUpper(strings.TrimSpace(b.VoiceMode))
-			}
-		}
+// Purpose: Select the telnet transport backend.
+// Key aspects: Normalizes values; unrecognized values fall back to native.
+// Upstream: Config load or caller setup.
+// Downstream: useZiutekTelnet.
+func (c *Client) SetTelnetTransport(transport string) {
+	if c == nil {
+		return
 	}
-	return ""
+	c.telnetTransport = strings.ToLower(strings.TrimSpace(transport))
 }
 
-func normalizeVoiceMode(mode string, freqKHz float64) string {
-	upper := strings.ToUpper(strings.TrimSpace(mode))
-	if upper == "SSB" {
-		if freqKHz >= 10000 {
-			return "USB"
-		}
-		return "LSB"
+// Purpose: Install a raw line passthrough channel for minimal parsing.
+// Key aspects: Non-blocking delivery to avoid ingest stalls.
+// Upstream: main.go wiring for peer/raw feeds.
+// Downstream: parseSpot raw line forwarding.
+func (c *Client) SetRawPassthrough(ch chan<- string) {
+	if c != nil {
+		c.rawChan = ch
 	}
-	return upper
 }
 
+// Purpose: Enable periodic CRLF keepalives for upstream telnet feeds.
+// Key aspects: Stores interval for a later keepaliveLoop.
+// Upstream: Config load or caller setup.
+// Downstream: keepaliveLoop goroutine.
+func (c *Client) EnableKeepalive(interval time.Duration) {
+	if c == nil {
+		return
+	}
+	if interval <= 0 {
+		return
+	}
+	c.keepaliveInterval = interval
+}
+
+// Purpose: Report whether the ziutek telnet backend is selected.
+// Key aspects: Case-insensitive check.
+// Upstream: Connection setup.
+// Downstream: None.
+func (c *Client) useZiutekTelnet() bool {
+	return strings.EqualFold(c.telnetTransport, "ziutek")
+}
+
+// Purpose: Parse a numeric frequency token (kHz).
+// Key aspects: Validates against reasonable dial range.
+// Upstream: extractCallAndFreq.
+// Downstream: strconv.ParseFloat.
 func parseFrequencyCandidate(tok string) (float64, bool) {
 	if tok == "" {
 		return 0, false
@@ -448,62 +228,10 @@ func parseFrequencyCandidate(tok string) (float64, bool) {
 	return f, true
 }
 
-func parseSignedInt(tok string) (int, bool) {
-	if tok == "" {
-		return 0, false
-	}
-	if strings.Contains(tok, ".") {
-		return 0, false
-	}
-	v, err := strconv.Atoi(tok)
-	if err != nil {
-		return 0, false
-	}
-	if v < -200 || v > 200 {
-		return 0, false
-	}
-	return v, true
-}
-
-func parseInlineSNR(tok string) (int, bool) {
-	lower := strings.ToLower(strings.TrimSpace(tok))
-	if !strings.HasSuffix(lower, "db") {
-		return 0, false
-	}
-	numStr := strings.TrimSuffix(lower, "db")
-	if strings.Contains(numStr, ".") || numStr == "" {
-		return 0, false
-	}
-	v, err := strconv.Atoi(numStr)
-	if err != nil || v < -200 || v > 200 {
-		return 0, false
-	}
-	return v, true
-}
-
-func peelTimePrefix(tok string) (string, string) {
-	if len(tok) < 5 {
-		return "", tok
-	}
-	prefix := tok[:5]
-	if isTimeToken(prefix) {
-		return prefix, strings.TrimSpace(tok[5:])
-	}
-	return "", tok
-}
-
-func isTimeToken(tok string) bool {
-	if len(tok) != 5 || tok[4] != 'Z' {
-		return false
-	}
-	for i := 0; i < 4; i++ {
-		if tok[i] < '0' || tok[i] > '9' {
-			return false
-		}
-	}
-	return true
-}
-
+// Purpose: Extract a callsign and frequency from a token like "CALL:freq".
+// Key aspects: Uses the raw token to preserve punctuation positions.
+// Upstream: Minimal parser in parseSpot.
+// Downstream: parseFrequencyCandidate.
 func extractCallAndFreq(tok spotToken) (string, float64, bool) {
 	if tok.clean == "" {
 		return "", 0, false
@@ -519,92 +247,71 @@ func extractCallAndFreq(tok spotToken) (string, float64, bool) {
 	return callPart, freq, ok
 }
 
-// SetUnlicensedReporter installs a best-effort reporter for unlicensed US drops.
-// Reporting is fire-and-forget; when the queue is full we fallback to an async call.
-func (c *Client) SetUnlicensedReporter(rep UnlicensedReporter) {
-	c.unlicensedReporter = rep
-	if rep != nil && c.unlicensedQueue == nil {
-		c.unlicensedQueue = make(chan unlicensedEvent, 256)
-		go c.unlicensedLoop()
-	}
-}
-
-func (c *Client) unlicensedLoop() {
-	for {
-		select {
-		case evt := <-c.unlicensedQueue:
-			if evt.call == "" {
-				continue
-			}
-			if rep := c.unlicensedReporter; rep != nil {
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("rbn: unlicensed reporter panic: %v", r)
-						}
-					}()
-					rep(evt.source, evt.role, evt.call, evt.mode, evt.freq)
-				}()
-			}
-		case <-c.shutdown:
-			return
-		}
-	}
-}
-
-// Connect establishes the initial RBN connection and starts the supervision loop.
-// The first dial runs synchronously so failures are reported to the caller; any
-// subsequent disconnects are handled via the background reconnect loop.
+// Purpose: Establish initial RBN connection and start supervision.
+// Key aspects: First dial is synchronous; reconnects happen in background.
+// Upstream: main.go startup.
+// Downstream: establishConnection, connectionSupervisor goroutine.
 func (c *Client) Connect() error {
 	if err := c.establishConnection(); err != nil {
 		return err
 	}
+	// Goroutine: monitor reconnect signals and re-establish connections.
 	go c.connectionSupervisor()
 	return nil
 }
 
-func (c *Client) dispatchUnlicensed(role, call, mode string, freq float64) {
-	rep := c.unlicensedReporter
-	if rep == nil {
-		return
-	}
-	if c.unlicensedQueue != nil {
-		select {
-		case c.unlicensedQueue <- unlicensedEvent{source: c.sourceKey(), role: role, call: call, mode: mode, freq: freq}:
-			return
-		default:
-			// fall through to async direct call
-		}
-	}
-	go rep(c.sourceKey(), role, call, mode, freq)
-}
-
-// establishConnection dials the remote RBN feed and spins up the login and read
-// goroutines. It is used for the initial connection and each subsequent reconnect.
+// Purpose: Dial the RBN feed and start login/read loops.
+// Key aspects: Wraps in telnet transport as configured and spawns goroutines.
+// Upstream: Connect and reconnect loop.
+// Downstream: handleLogin, keepaliveLoop, readLoop goroutines.
 func (c *Client) establishConnection() error {
 	addr := net.JoinHostPort(c.host, fmt.Sprintf("%d", c.port))
 	log.Printf("%s: connecting to %s...", c.displayName(), addr)
 
-	conn, err := net.DialTimeout("tcp", addr, 30*time.Second)
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 2 * time.Minute, // OS-level keepalive to detect silent mid-path drops
+	}
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to connect to %s: %w", c.displayName(), err)
 	}
 
+	readerConn := conn
+	writerConn := conn
+	if c.useZiutekTelnet() {
+		tconn, err := ztelnet.NewConn(conn)
+		if err != nil {
+			conn.Close()
+			return fmt.Errorf("failed to wrap telnet connection for %s: %w", c.displayName(), err)
+		}
+		readerConn = tconn
+		writerConn = tconn
+	}
+
 	c.conn = conn
-	c.reader = bufio.NewReader(conn)
-	c.writer = bufio.NewWriter(conn)
+	c.reader = bufio.NewReader(readerConn)
+	c.writer = bufio.NewWriter(writerConn)
 	c.connected = true
+	c.keepaliveDone = make(chan struct{})
 
 	log.Printf("%s: connection established", c.displayName())
 
 	// Start login sequence and stream reader for this connection.
 	go c.handleLogin()
+	if c.keepaliveInterval > 0 {
+		// Goroutine: emit periodic keepalives for upstream connection.
+		go c.keepaliveLoop()
+	}
+	// Goroutine: read and parse incoming lines from the server.
 	go c.readLoop()
 	return nil
 }
 
-// connectionSupervisor waits for disconnect notifications and orchestrates the
-// exponential backoff / reconnect attempts while honoring shutdown signals.
+// Purpose: Supervise connection lifecycle and handle reconnects.
+// Key aspects: Uses backoff and honors shutdown signals.
+// Upstream: Connect goroutine.
+// Downstream: establishConnection, requestReconnect.
 func (c *Client) connectionSupervisor() {
 	const (
 		initialDelay = 5 * time.Second
@@ -647,7 +354,10 @@ func (c *Client) connectionSupervisor() {
 	}
 }
 
-// handleLogin performs the RBN login sequence
+// Purpose: Perform the RBN login sequence after connecting.
+// Key aspects: Waits briefly for prompt; sends callsign with CRLF.
+// Upstream: establishConnection goroutine.
+// Downstream: writer.WriteString/Flush.
 func (c *Client) handleLogin() {
 	// Wait for login prompt and respond with callsign
 	time.Sleep(2 * time.Second)
@@ -662,7 +372,10 @@ func (c *Client) handleLogin() {
 	c.writer.Flush()
 }
 
-// readLoop reads lines from RBN
+// Purpose: Read and parse incoming lines from the RBN connection.
+// Key aspects: Uses read deadlines; triggers reconnect on errors.
+// Upstream: establishConnection goroutine.
+// Downstream: parseSpot, requestReconnect, raw passthrough.
 func (c *Client) readLoop() {
 	// Guard the ingest goroutine so malformed input cannot crash the process.
 	defer func() {
@@ -673,6 +386,9 @@ func (c *Client) readLoop() {
 	}()
 	defer func() {
 		c.connected = false
+		if c.keepaliveDone != nil {
+			close(c.keepaliveDone)
+		}
 		if c.conn != nil {
 			c.conn.Close()
 		}
@@ -707,13 +423,24 @@ func (c *Client) readLoop() {
 			// Log and parse DX spots
 			if strings.HasPrefix(line, "DX de") {
 				c.parseSpot(line)
+				continue
+			}
+
+			// In minimal mode, forward any non-DX lines (e.g., WCY/WWV) to the raw passthrough.
+			if c.minimalParse && c.rawChan != nil {
+				select {
+				case c.rawChan <- line:
+				default:
+				}
 			}
 		}
 	}
 }
 
-// normalizeRBNCallsign removes the SSID portion from RBN skimmer callsigns. Example:
-// "W3LPL-1-#" becomes "W3LPL-#".
+// Purpose: Normalize RBN skimmer callsigns while preserving the -# suffix.
+// Key aspects: Strips SSIDs from skimmer calls like "W3LPL-1-#".
+// Upstream: parseSpot spotter normalization.
+// Downstream: rbnNormalizeCache, spot.NormalizeCallsign.
 func normalizeRBNCallsign(call string) string {
 	if cached, ok := rbnNormalizeCache.Get(call); ok {
 		return cached
@@ -746,16 +473,18 @@ func normalizeRBNCallsign(call string) string {
 	return call
 }
 
-// normalizeSpotter normalizes the spotter (DE) callsign for processing. SSID
-// suffixes are preserved so dedup/history can keep per-skimmer identity; any
-// broadcast-time collapsing is handled downstream.
+// Purpose: Normalize the spotter callsign while preserving SSIDs.
+// Key aspects: Leaves SSID in place so dedup/history keep per-skimmer identity.
+// Upstream: parseSpot.
+// Downstream: spot.NormalizeCallsign.
 func (c *Client) normalizeSpotter(raw string) string {
 	return spot.NormalizeCallsign(raw)
 }
 
-// parseTimeFromRBN parses the HHMMZ format from RBN and creates a proper timestamp
-// RBN only provides HH:MM in UTC, so we need to combine it with today's date
-// This ensures spots with the same RBN timestamp generate the same hash for deduplication
+// Purpose: Parse RBN HHMMZ timestamps into full UTC times.
+// Key aspects: Uses today's date and corrects around midnight boundaries.
+// Upstream: parseSpot.
+// Downstream: time.Date, time.Now.
 func parseTimeFromRBN(timeStr string) time.Time {
 	// timeStr format is "HHMMZ" e.g. "0531Z"
 	if len(timeStr) != 5 || !strings.HasSuffix(timeStr, "Z") {
@@ -799,21 +528,10 @@ func parseTimeFromRBN(timeStr string) time.Time {
 	return spotTime
 }
 
-func finalizeMode(mode string, freq float64) string {
-	mode = normalizeVoiceMode(mode, freq)
-	if mode != "" {
-		return mode
-	}
-	alloc := guessModeFromAlloc(freq)
-	if alloc != "" {
-		return normalizeVoiceMode(alloc, freq)
-	}
-	if freq >= 10000 {
-		return "USB"
-	}
-	return "CW"
-}
-
+// Purpose: Build a comment string from unconsumed tokens.
+// Key aspects: Preserves token order and trims empty parts.
+// Upstream: parseSpot minimal parsing.
+// Downstream: None.
 func buildComment(tokens []spotToken, consumed []bool) string {
 	parts := make([]string, 0, len(tokens))
 	for i, tok := range tokens {
@@ -824,13 +542,6 @@ func buildComment(tokens []spotToken, consumed []bool) string {
 		if clean == "" {
 			continue
 		}
-		upper := strings.ToUpper(clean)
-		if upper == "DX" || upper == "DE" {
-			continue
-		}
-		if len(upper) == 5 && upper[4] == 'Z' && isAllDigits(upper[:4]) {
-			continue
-		}
 		parts = append(parts, clean)
 	}
 	if len(parts) == 0 {
@@ -839,10 +550,14 @@ func buildComment(tokens []spotToken, consumed []bool) string {
 	return strings.Join(parts, " ")
 }
 
-// parseSpot converts a DX cluster-style telnet line into a canonical Spot using
-// a single left-to-right pass paired with an Aho-Corasick keyword scan.
-// The AC automaton tags structural tokens (DX/DE, modes, dB, WPM) so we can
-// peel fields without multiple rescans or regex passes.
+// Purpose: Parse a DX line into a canonical Spot.
+// Key aspects: Extracts DE/DX/freq/time locally and delegates comment parsing.
+// Upstream: readLoop for RBN/minimal feeds.
+// Downstream: spot.ParseSpotComment, skew.ApplyCorrection.
+// parseSpot converts a DX cluster-style telnet line into a canonical Spot.
+// Structural fields (DE/DX/freq/time) are parsed locally; comment parsing
+// (explicit mode/report/time token handling) is delegated to spot.ParseSpotComment
+// so RBN/human/peer inputs stay consistent. Mode inference happens downstream.
 func (c *Client) parseSpot(line string) {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -855,7 +570,6 @@ func (c *Client) parseSpot(line string) {
 	if strings.ToUpper(tokens[0].clean) != "DX" || strings.ToUpper(tokens[1].clean) != "DE" {
 		return
 	}
-	matchIndex := buildMatchIndex(getKeywordScanner().FindAll(strings.ToUpper(line)))
 	consumed := make([]bool, len(tokens))
 	consumed[0], consumed[1] = true, true
 
@@ -870,41 +584,13 @@ func (c *Client) parseSpot(line string) {
 	freq := freqFromCall
 	hasFreq := freqOK
 
-	var (
-		dxCall          string
-		mode            string
-		timeToken       string
-		wpmStr          string
-		report          int
-		hasReport       bool
-		pendingNumIdx   = -1
-		pendingNumValue int
-	)
+	var dxCall string
 
 	for idx := 3; idx < len(tokens); idx++ {
 		tok := tokens[idx]
-		originalClean := tok.clean
-		clean := originalClean
-		if timeToken == "" {
-			if ts, remainder := peelTimePrefix(clean); ts != "" {
-				timeToken = ts
-				shift := len(originalClean) - len(remainder)
-				clean = remainder
-				tokens[idx].clean = remainder
-				tokens[idx].upper = strings.ToUpper(remainder)
-				tokens[idx].trimStart = tok.trimStart + shift
-				tokens[idx].trimEnd = tokens[idx].trimStart + len(remainder)
-				tok = tokens[idx]
-			}
-		}
+		clean := tok.clean
 		if clean == "" {
 			consumed[idx] = true
-			continue
-		}
-		if timeToken == "" && isTimeToken(clean) {
-			timeToken = clean
-			consumed[idx] = true
-			pendingNumIdx = -1
 			continue
 		}
 		if !hasFreq {
@@ -916,60 +602,10 @@ func (c *Client) parseSpot(line string) {
 			}
 		}
 
-		if pat, ok := classifyTokenWithFallback(matchIndex, tok); ok {
-			switch pat.kind {
-			case acTokenMode:
-				if mode == "" {
-					mode = normalizeVoiceMode(pat.mode, freq)
-					consumed[idx] = true
-					continue
-				}
-			case acTokenDB:
-				if !hasReport && pendingNumIdx >= 0 {
-					report = pendingNumValue
-					hasReport = true
-					consumed[idx] = true
-					consumed[pendingNumIdx] = true
-					pendingNumIdx = -1
-					continue
-				}
-				consumed[idx] = true
-				continue
-			case acTokenWPM:
-				if wpmStr == "" && pendingNumIdx >= 0 {
-					wpmStr = tokens[pendingNumIdx].clean
-					consumed[idx] = true
-					consumed[pendingNumIdx] = true
-					pendingNumIdx = -1
-					continue
-				}
-			case acTokenDX, acTokenDE:
-				consumed[idx] = true
-				continue
-			}
-		}
-
-		if !hasReport {
-			if v, ok := parseInlineSNR(clean); ok {
-				report = v
-				hasReport = true
-				consumed[idx] = true
-				continue
-			}
-		}
-
 		if hasFreq && dxCall == "" && spot.IsValidCallsign(clean) {
 			dxCall = normalizeRBNCallsign(clean)
 			consumed[idx] = true
 			continue
-		}
-
-		if pendingNumIdx == -1 {
-			if v, ok := parseSignedInt(clean); ok {
-				pendingNumIdx = idx
-				pendingNumValue = v
-				continue
-			}
 		}
 	}
 
@@ -978,74 +614,26 @@ func (c *Client) parseSpot(line string) {
 		return
 	}
 	if dxCall == "" {
-		log.Printf("RBN spot missing DX callsign: %s", line)
 		return
 	}
 
-	mode = finalizeMode(mode, freq)
-	if !spot.IsValidCallsign(dxCall) || !spot.IsValidCallsign(deCall) {
+	parsed := spot.ParseSpotComment(buildComment(tokens, consumed), freq)
+	mode := parsed.Mode
+	if !spot.IsValidNormalizedCallsign(dxCall) || !spot.IsValidNormalizedCallsign(deCall) {
 		return
 	}
 
-	var dxMeta, deMeta spot.CallMetadata
-	if c.minimalParse {
-		if info, ok := c.fetchCallsignInfo(dxCall); ok {
-			dxMeta = metadataFromPrefix(info)
-		}
-		if info, ok := c.fetchCallsignInfo(deCall); ok {
-			deMeta = metadataFromPrefix(info)
-		}
-	} else {
-		dxInfo, ok := c.fetchCallsignInfo(dxCall)
-		if !ok {
-			return
-		}
-		deInfo, ok := c.fetchCallsignInfo(deCall)
-		if !ok {
-			return
-		}
-		if deInfo != nil && deInfo.ADIF == 291 && !uls.IsLicensedUS(deCall) {
-			c.dispatchUnlicensed("DE", deCall, mode, freq)
-			return
-		}
-		dxMeta = metadataFromPrefix(dxInfo)
-		deMeta = metadataFromPrefix(deInfo)
-	}
-
-	comment := buildComment(tokens, consumed)
-	if !hasReport && comment != "" {
-		if m := snrPattern.FindStringSubmatch(comment); len(m) == 2 {
-			if v, err := strconv.Atoi(m[1]); err == nil {
-				report = v
-				hasReport = true
-			}
-		}
-	}
-	if !hasReport {
-		if m := snrPattern.FindStringSubmatch(line); len(m) == 2 {
-			if v, err := strconv.Atoi(m[1]); err == nil {
-				report = v
-				hasReport = true
-			}
-		}
-	}
-	if wpmStr != "" {
-		if comment != "" {
-			comment = fmt.Sprintf("%s WPM %s", wpmStr, comment)
-		} else {
-			comment = fmt.Sprintf("%s WPM", wpmStr)
-		}
-	}
+	comment := parsed.Comment
+	report := parsed.Report
+	hasReport := parsed.HasReport
 
 	if !c.minimalParse {
 		freq = skew.ApplyCorrection(c.skewStore, deCallRaw, freq)
 	}
 
-	s := spot.NewSpot(dxCall, deCall, freq, mode)
-	s.DXMetadata = dxMeta
-	s.DEMetadata = deMeta
-	if timeToken != "" {
-		s.Time = parseTimeFromRBN(timeToken)
+	s := spot.NewSpotNormalized(dxCall, deCall, freq, mode)
+	if parsed.TimeToken != "" {
+		s.Time = parseTimeFromRBN(parsed.TimeToken)
 	}
 	if hasReport {
 		s.Report = report
@@ -1086,45 +674,26 @@ func (c *Client) parseSpot(line string) {
 	}
 }
 
-func (c *Client) fetchCallsignInfo(call string) (*cty.PrefixInfo, bool) {
-	if c.lookup == nil {
-		return nil, true
-	}
-	db := c.lookup()
-	if db == nil {
-		return nil, true
-	}
-	info, ok := db.LookupCallsign(call)
-	// if !ok {
-	// 	log.Printf("RBN: unknown call %s", call)
-	// }
-	return info, ok
-}
-
-func metadataFromPrefix(info *cty.PrefixInfo) spot.CallMetadata {
-	if info == nil {
-		return spot.CallMetadata{}
-	}
-	return spot.CallMetadata{
-		Continent: info.Continent,
-		Country:   info.Country,
-		CQZone:    info.CQZone,
-		ITUZone:   info.ITUZone,
-		ADIF:      info.ADIF,
-	}
-}
-
-// GetSpotChannel returns the channel for receiving spots
+// Purpose: Expose the output spot channel.
+// Key aspects: Read-only channel for downstream consumers.
+// Upstream: main.go pipeline wiring.
+// Downstream: None.
 func (c *Client) GetSpotChannel() <-chan *spot.Spot {
 	return c.spotChan
 }
 
-// IsConnected returns whether the client is connected
+// Purpose: Report whether the client is connected.
+// Key aspects: Tracks connection state via a boolean flag.
+// Upstream: Diagnostics/health checks.
+// Downstream: None.
 func (c *Client) IsConnected() bool {
 	return c.connected
 }
 
-// Stop closes the RBN connection
+// Purpose: Stop the RBN client and close connections.
+// Key aspects: Signals shutdown once and closes the underlying conn.
+// Upstream: main.go shutdown.
+// Downstream: conn.Close, shutdown channel.
 func (c *Client) Stop() {
 	log.Printf("Stopping %s client...", c.displayName())
 	c.stopOnce.Do(func() {
@@ -1135,6 +704,10 @@ func (c *Client) Stop() {
 	}
 }
 
+// Purpose: Report whether shutdown has been signaled.
+// Key aspects: Non-blocking channel check.
+// Upstream: readLoop, connectionSupervisor, requestReconnect.
+// Downstream: None.
 func (c *Client) isShutdown() bool {
 	select {
 	case <-c.shutdown:
@@ -1144,6 +717,10 @@ func (c *Client) isShutdown() bool {
 	}
 }
 
+// Purpose: Signal the reconnect supervisor to re-dial.
+// Key aspects: Non-blocking send; logs reason once.
+// Upstream: readLoop error paths.
+// Downstream: connectionSupervisor.
 func (c *Client) requestReconnect(reason error) {
 	if c.isShutdown() {
 		return
@@ -1157,6 +734,10 @@ func (c *Client) requestReconnect(reason error) {
 	}
 }
 
+// Purpose: Return a human-friendly name for logging.
+// Key aspects: Uses configured name or port-based defaults.
+// Upstream: Logging in multiple client methods.
+// Downstream: None.
 func (c *Client) displayName() string {
 	if c.name != "" {
 		return c.name
@@ -1167,9 +748,37 @@ func (c *Client) displayName() string {
 	return "RBN"
 }
 
+// Purpose: Return the source identifier used in logs/metadata.
+// Key aspects: Distinguishes RBN vs RBN-DIGITAL by port.
+// Upstream: dispatchUnlicensed and logging.
+// Downstream: None.
 func (c *Client) sourceKey() string {
 	if c.port == 7001 {
 		return "RBN-DIGITAL"
 	}
 	return "RBN"
+}
+
+// Purpose: Send periodic CRLF keepalives to upstream telnet feed.
+// Key aspects: Stops on shutdown or connection teardown.
+// Upstream: establishConnection goroutine when keepalive enabled.
+// Downstream: writer.WriteString/Flush.
+func (c *Client) keepaliveLoop() {
+	ticker := time.NewTicker(c.keepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.shutdown:
+			return
+		case <-c.keepaliveDone:
+			return
+		case <-ticker.C:
+			c.writeMu.Lock()
+			if c.writer != nil {
+				_, _ = c.writer.WriteString("\r\n")
+				_ = c.writer.Flush()
+			}
+			c.writeMu.Unlock()
+		}
+	}
 }

@@ -13,10 +13,57 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// TelnetTransportNative uses the built-in telnet/IAC handling.
+	TelnetTransportNative = "native"
+	// TelnetTransportZiutek uses the external ziutek/telnet transport for IAC handling.
+	TelnetTransportZiutek = "ziutek"
+	// TelnetEchoServer enables server-side echo (telnet clients disable local echo).
+	TelnetEchoServer = "server"
+	// TelnetEchoLocal requests local echo on the client (server does not echo).
+	TelnetEchoLocal = "local"
+	// TelnetEchoOff disables server echo and requests client echo off (best-effort).
+	TelnetEchoOff = "off"
+)
+
+// Purpose: Normalize and validate the telnet transport setting.
+// Key aspects: Defaults to "native"; returns ok=false on invalid values.
+// Upstream: Load config normalization.
+// Downstream: TelnetTransport constants.
+func normalizeTelnetTransport(value string) (string, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "" {
+		return TelnetTransportNative, true
+	}
+	switch trimmed {
+	case TelnetTransportNative, TelnetTransportZiutek:
+		return trimmed, true
+	default:
+		return "", false
+	}
+}
+
+// Purpose: Normalize and validate the telnet echo mode setting.
+// Key aspects: Defaults to "server"; returns ok=false on invalid values.
+// Upstream: Load config normalization.
+// Downstream: TelnetEcho* constants.
+func normalizeTelnetEchoMode(value string) (string, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "" {
+		return TelnetEchoServer, true
+	}
+	switch trimmed {
+	case TelnetEchoServer, TelnetEchoLocal, TelnetEchoOff:
+		return trimmed, true
+	default:
+		return "", false
+	}
+}
+
 // Config represents the complete cluster configuration. The struct maps
-// directly to the YAML files on disk (either a single file or a merged set
-// from a directory) and is enriched with defaults during Load so downstream
-// packages can assume sane, non-zero values.
+// directly to the YAML files on disk (merged from a config directory) and is
+// enriched with defaults during Load so downstream packages can assume sane,
+// non-zero values.
 type Config struct {
 	Server          ServerConfig         `yaml:"server"`
 	Telnet          TelnetConfig         `yaml:"telnet"`
@@ -25,6 +72,7 @@ type Config struct {
 	RBNDigital      RBNConfig            `yaml:"rbn_digital"`
 	HumanTelnet     RBNConfig            `yaml:"human_telnet"`
 	PSKReporter     PSKReporterConfig    `yaml:"pskreporter"`
+	Archive         ArchiveConfig        `yaml:"archive"`
 	Dedup           DedupConfig          `yaml:"dedup"`
 	Filter          FilterConfig         `yaml:"filter"`
 	Stats           StatsConfig          `yaml:"stats"`
@@ -32,11 +80,13 @@ type Config struct {
 	CallCache       CallCacheConfig      `yaml:"call_cache"`
 	Harmonics       HarmonicConfig       `yaml:"harmonics"`
 	SpotPolicy      SpotPolicy           `yaml:"spot_policy"`
+	ModeInference   ModeInferenceConfig  `yaml:"mode_inference"`
 	CTY             CTYConfig            `yaml:"cty"`
 	Buffer          BufferConfig         `yaml:"buffer"`
 	Skew            SkewConfig           `yaml:"skew"`
 	FCCULS          FCCULSConfig         `yaml:"fcc_uls"`
 	KnownCalls      KnownCallsConfig     `yaml:"known_calls"`
+	Peering         PeeringConfig        `yaml:"peering"`
 	GridDBPath      string               `yaml:"grid_db"`
 	GridFlushSec    int                  `yaml:"grid_flush_seconds"`
 	GridCacheSize   int                  `yaml:"grid_cache_size"`
@@ -65,13 +115,21 @@ type TelnetConfig struct {
 	WelcomeMessage    string `yaml:"welcome_message"`
 	DuplicateLoginMsg string `yaml:"duplicate_login_message"`
 	LoginGreeting     string `yaml:"login_greeting"` // Supports <CALL> and <CLUSTER> substitution
-	BroadcastWorkers  int    `yaml:"broadcast_workers"`
-	BroadcastQueue    int    `yaml:"broadcast_queue_size"`
-	WorkerQueue       int    `yaml:"worker_queue_size"`
-	ClientBuffer      int    `yaml:"client_buffer_size"`
-	SkipHandshake     bool   `yaml:"skip_handshake"`
+	// Transport selects the telnet parser/negotiation backend ("native" or "ziutek").
+	Transport string `yaml:"transport"`
+	// EchoMode controls whether the server echoes input or requests local echo.
+	// Supported values: "server" (default), "local", "off".
+	EchoMode         string `yaml:"echo_mode"`
+	BroadcastWorkers int    `yaml:"broadcast_workers"`
+	BroadcastQueue   int    `yaml:"broadcast_queue_size"`
+	WorkerQueue      int    `yaml:"worker_queue_size"`
+	ClientBuffer     int    `yaml:"client_buffer_size"`
+	SkipHandshake    bool   `yaml:"skip_handshake"`
 	// BroadcastBatchIntervalMS controls telnet broadcast micro-batching. 0 disables batching.
 	BroadcastBatchIntervalMS int `yaml:"broadcast_batch_interval_ms"`
+	// KeepaliveSeconds, when >0, emits a periodic CRLF to all connected clients to keep idle
+	// network devices from timing out otherwise quiet sessions.
+	KeepaliveSeconds int `yaml:"keepalive_seconds"`
 	// LoginLineLimit bounds how many bytes are accepted for the initial callsign
 	// prompt. Keep this tight to prevent DoS via huge login banners.
 	LoginLineLimit int `yaml:"login_line_limit"`
@@ -95,11 +153,11 @@ type UIConfig struct {
 	// ClearScreen toggles whether the ANSI renderer clears the screen each
 	// frame. When false, frames are appended (useful for terminals that scroll).
 	ClearScreen bool `yaml:"clear_screen"`
-	// PaneLines bounds the retained history per pane for the ANSI renderer.
+	// PaneLines bounds the retained history per pane for ANSI and sets tview pane heights.
 	PaneLines UIPaneLines `yaml:"pane_lines"`
 }
 
-// UIPaneLines bounds history depth for the ANSI renderer.
+// UIPaneLines bounds history depth for ANSI and visible pane heights for tview.
 type UIPaneLines struct {
 	Stats      int `yaml:"stats"`
 	Calls      int `yaml:"calls"`
@@ -110,13 +168,16 @@ type UIPaneLines struct {
 
 // RBNConfig contains Reverse Beacon Network settings
 type RBNConfig struct {
-	Enabled        bool   `yaml:"enabled"`
-	Host           string `yaml:"host"`
-	Port           int    `yaml:"port"`
-	Callsign       string `yaml:"callsign"`
-	Name           string `yaml:"name"`
-	KeepSSIDSuffix bool   `yaml:"keep_ssid_suffix"` // when true, retain -# SSIDs for dedup/call-correction
-	SlotBuffer     int    `yaml:"slot_buffer"`      // size of ingest slot buffer between telnet reader and pipeline
+	Enabled  bool   `yaml:"enabled"`
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Callsign string `yaml:"callsign"`
+	Name     string `yaml:"name"`
+	// TelnetTransport selects the telnet parser/negotiation backend ("native" or "ziutek").
+	TelnetTransport string `yaml:"telnet_transport"`
+	KeepSSIDSuffix  bool   `yaml:"keep_ssid_suffix"`  // when true, retain -# SSIDs for dedup/call-correction
+	SlotBuffer      int    `yaml:"slot_buffer"`       // size of ingest slot buffer between telnet reader and pipeline
+	KeepaliveSec    int    `yaml:"keepalive_seconds"` // optional periodic CRLF to keep idle sessions alive (0 disables)
 }
 
 // PSKReporterConfig contains PSKReporter MQTT settings
@@ -133,12 +194,107 @@ type PSKReporterConfig struct {
 	// AppendSpotterSSID, when true, appends "-#" to receiver callsigns that
 	// lack an SSID so deduplication treats each PSK skimmer uniquely.
 	AppendSpotterSSID bool `yaml:"append_spotter_ssid"`
+	// CTYCacheSize bounds the shared ingest CTY lookup cache (all sources).
+	CTYCacheSize int `yaml:"cty_cache_size"`
+	// CTYCacheTTLSeconds controls TTL expiration for ingest CTY cache entries.
+	CTYCacheTTLSeconds int `yaml:"cty_cache_ttl_seconds"`
+	// MaxPayloadBytes caps incoming MQTT payload sizes to guard against abuse.
+	MaxPayloadBytes int `yaml:"max_payload_bytes"`
 }
 
 const defaultPSKReporterTopic = "pskr/filter/v2/+/+/#"
 
-// SubscriptionTopics returns the MQTT topics to subscribe to based on the configured modes.
-// If no modes are specified, it falls back to `Topic` or the default `pskr/filter/v2/+/+/#`.
+// ArchiveConfig controls optional SQLite archival of broadcasted spots.
+type ArchiveConfig struct {
+	Enabled                bool   `yaml:"enabled"`
+	DBPath                 string `yaml:"db_path"`
+	QueueSize              int    `yaml:"queue_size"`
+	BatchSize              int    `yaml:"batch_size"`
+	BatchIntervalMS        int    `yaml:"batch_interval_ms"`
+	CleanupIntervalSeconds int    `yaml:"cleanup_interval_seconds"`
+	// CleanupBatchSize limits how many rows are deleted per cleanup batch to keep locks short.
+	CleanupBatchSize int `yaml:"cleanup_batch_size"`
+	// CleanupBatchYieldMS sleeps between cleanup batches to reduce contention. 0 disables the yield.
+	CleanupBatchYieldMS     int `yaml:"cleanup_batch_yield_ms"`
+	RetentionFTSeconds      int `yaml:"retention_ft_seconds"`      // FT8/FT4 retention
+	RetentionDefaultSeconds int `yaml:"retention_default_seconds"` // All other modes
+	BusyTimeoutMS           int `yaml:"busy_timeout_ms"`
+	// Synchronous controls SQLite durability (off, normal, full, extra).
+	Synchronous string `yaml:"synchronous"`
+	// AutoDeleteCorruptDB removes the archive DB on startup if integrity checks fail.
+	AutoDeleteCorruptDB bool `yaml:"auto_delete_corrupt_db"`
+}
+
+// PeeringConfig controls DXSpider node-to-node peering.
+type PeeringConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	LocalCallsign string `yaml:"local_callsign"`
+	ListenPort    int    `yaml:"listen_port"`
+	HopCount      int    `yaml:"hop_count"`
+	NodeVersion   string `yaml:"node_version"`
+	NodeBuild     string `yaml:"node_build"`
+	LegacyVersion string `yaml:"legacy_version"`
+	PC92Bitmap    int    `yaml:"pc92_bitmap"`
+	NodeCount     int    `yaml:"node_count"`
+	UserCount     int    `yaml:"user_count"`
+	// LogKeepalive controls whether keepalive/PC51 chatter is emitted to logs.
+	LogKeepalive bool `yaml:"log_keepalive"`
+	// LogLineTooLong controls whether oversized peer lines are logged.
+	LogLineTooLong bool `yaml:"log_line_too_long"`
+	// TelnetTransport selects the telnet parser/negotiation backend ("native" or "ziutek").
+	TelnetTransport  string `yaml:"telnet_transport"`
+	KeepaliveSeconds int    `yaml:"keepalive_seconds"`
+	// ConfigSeconds drives periodic PC92 C refresh frames; peers drop topology if
+	// they miss several config periods. 0 disables.
+	ConfigSeconds  int `yaml:"config_seconds"`
+	WriteQueueSize int `yaml:"write_queue_size"`
+	MaxLineLength  int `yaml:"max_line_length"`
+	// PC92MaxBytes caps how much of a PC92 topology frame we will buffer/parse.
+	// Set to 0 to use a safe default derived from max_line_length.
+	PC92MaxBytes int             `yaml:"pc92_max_bytes"`
+	Peers        []PeeringPeer   `yaml:"peers"`
+	Timeouts     PeeringTimeouts `yaml:"timeouts"`
+	Backoff      PeeringBackoff  `yaml:"backoff"`
+	Topology     PeeringTopology `yaml:"topology"`
+	ACL          PeeringACL      `yaml:"acl"`
+}
+
+type PeeringPeer struct {
+	Enabled        bool   `yaml:"enabled"`
+	Host           string `yaml:"host"`
+	Port           int    `yaml:"port"`
+	Password       string `yaml:"password"`
+	PreferPC9x     bool   `yaml:"prefer_pc9x"`
+	LoginCallsign  string `yaml:"login_callsign"`
+	RemoteCallsign string `yaml:"remote_callsign"`
+}
+
+type PeeringTimeouts struct {
+	LoginSeconds int `yaml:"login_seconds"`
+	InitSeconds  int `yaml:"init_seconds"`
+	IdleSeconds  int `yaml:"idle_seconds"`
+}
+
+type PeeringBackoff struct {
+	BaseMS int `yaml:"base_ms"`
+	MaxMS  int `yaml:"max_ms"`
+}
+
+type PeeringTopology struct {
+	DBPath                 string `yaml:"db_path"`
+	RetentionHours         int    `yaml:"retention_hours"`
+	PersistIntervalSeconds int    `yaml:"persist_interval_seconds"`
+}
+
+type PeeringACL struct {
+	AllowIPs       []string `yaml:"allow_ips"`
+	AllowCallsigns []string `yaml:"allow_callsigns"`
+}
+
+// Purpose: Build MQTT subscription topics based on configured modes.
+// Key aspects: Falls back to configured Topic or default when modes are empty.
+// Upstream: PSKReporter client setup.
+// Downstream: None.
 func (c *PSKReporterConfig) SubscriptionTopics() []string {
 	topics := make([]string, 0, len(c.Modes))
 	for _, mode := range c.Modes {
@@ -218,6 +374,9 @@ type CallCorrectionConfig struct {
 	// FrequencyToleranceHz defines how close two frequencies must be to be considered
 	// the same signal when running consensus.
 	FrequencyToleranceHz float64 `yaml:"frequency_tolerance_hz"`
+	// VoiceFrequencyToleranceHz defines the frequency window for USB/LSB consensus
+	// (voice signals are wider than CW/RTTY).
+	VoiceFrequencyToleranceHz float64 `yaml:"voice_frequency_tolerance_hz"`
 	// DebugLog, when true, records call-correction decisions to an asynchronous SQLite log.
 	DebugLog bool `yaml:"debug_log"`
 	// DebugLogFile optionally overrides the decision log location/prefix; when blank a daily
@@ -235,6 +394,8 @@ type CallCorrectionConfig struct {
 	// MinSNRCW/RTTY allow discarding marginal decodes from the corroborator set.
 	MinSNRCW   int `yaml:"min_snr_cw"`
 	MinSNRRTTY int `yaml:"min_snr_rtty"`
+	// MinSNRVoice allows discarding low-SNR USB/LSB reports (set 0 to ignore SNR).
+	MinSNRVoice int `yaml:"min_snr_voice"`
 	// DistanceModel controls how string distance is measured. Supported values:
 	//   - Deprecated: "distance_model" applies to both CW/RTTY when per-mode toggles unset
 	//   - "distance_model_cw"/"distance_model_rtty" override per mode:
@@ -264,6 +425,8 @@ type CallCorrectionConfig struct {
 	FreqGuardMinSeparationKHz float64 `yaml:"freq_guard_min_separation_khz"`
 	// Ratio (0-1): runner-up supporters must be at least this fraction of winner supporters to trigger the guard.
 	FreqGuardRunnerUpRatio float64 `yaml:"freq_guard_runnerup_ratio"`
+	// VoiceCandidateWindowKHz controls the correction-index search radius for USB/LSB.
+	VoiceCandidateWindowKHz float64 `yaml:"voice_candidate_window_khz"`
 	// MorseWeights tunes the dot/dash edit weights for CW distance calculations.
 	MorseWeights MorseWeightConfig `yaml:"morse_weights"`
 	// BaudotWeights tunes the ITA2 edit weights for RTTY distance calculations.
@@ -381,6 +544,31 @@ type SpotPolicy struct {
 	FrequencyAveragingMinReports int `yaml:"frequency_averaging_min_reports"`
 }
 
+// ModeInferenceConfig controls how the cluster assigns modes when the
+// comment does not provide an explicit mode token.
+type ModeInferenceConfig struct {
+	// DXFreqCacheTTLSeconds bounds how long a DX+frequency mode stays in memory.
+	DXFreqCacheTTLSeconds int `yaml:"dx_freq_cache_ttl_seconds"`
+	// DXFreqCacheSize bounds the DX+frequency mode cache size.
+	DXFreqCacheSize int `yaml:"dx_freq_cache_size"`
+	// DigitalWindowSeconds is the recency window for counting distinct corroborators.
+	DigitalWindowSeconds int `yaml:"digital_window_seconds"`
+	// DigitalMinCorroborators is the minimum distinct spotters needed to trust a mode.
+	DigitalMinCorroborators int `yaml:"digital_min_corroborators"`
+	// DigitalSeedTTLSeconds controls how long seeded frequencies remain valid without refresh.
+	DigitalSeedTTLSeconds int `yaml:"digital_seed_ttl_seconds"`
+	// DigitalCacheSize bounds the number of frequency buckets tracked in the digital map.
+	DigitalCacheSize int `yaml:"digital_cache_size"`
+	// DigitalSeeds pre-populates the digital map with known FT4/FT8/JS8 dial frequencies.
+	DigitalSeeds []ModeSeed `yaml:"digital_seeds"`
+}
+
+// ModeSeed defines a single seeded digital frequency entry.
+type ModeSeed struct {
+	FrequencyKHz int    `yaml:"frequency_khz"`
+	Mode         string `yaml:"mode"`
+}
+
 // BufferConfig controls the ring buffer that holds recent spots.
 type BufferConfig struct {
 	Capacity int `yaml:"capacity"`
@@ -421,9 +609,13 @@ type CTYConfig struct {
 	RefreshUTC string `yaml:"refresh_utc"`
 }
 
-// Load reads configuration from a YAML file or a directory containing YAML
-// files, applies defaults, and validates key fields so the rest of the cluster
-// can rely on a consistent baseline.
+// Load reads configuration from a YAML directory (or a single YAML file if a file
+// path is explicitly supplied), applies defaults, and validates key fields so the
+// rest of the cluster can rely on a consistent baseline.
+// Purpose: Load and normalize the cluster configuration from a directory.
+// Key aspects: Supports directory merge; applies defaults and validates values.
+// Upstream: main.go startup.
+// Downstream: loadConfigDir, mergeYAMLMaps, normalize* helpers.
 func Load(path string) (*Config, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -466,6 +658,7 @@ func Load(path string) (*Config, error) {
 	ctyEnabledSet := yamlKeyPresent(raw, "cty", "enabled")
 	hasSecondaryPrefer := yamlKeyPresent(raw, "dedup", "secondary_prefer_stronger_snr")
 	hasAdaptiveMinReportsEnabled := yamlKeyPresent(raw, "call_correction", "adaptive_min_reports", "enabled")
+	hasArchiveCleanupYield := yamlKeyPresent(raw, "archive", "cleanup_batch_yield_ms")
 
 	// UI defaults favor the lightweight ANSI renderer unless overridden. Mode
 	// is normalized to a small, explicit set to keep startup behavior
@@ -520,12 +713,84 @@ func Load(path string) (*Config, error) {
 	if cfg.HumanTelnet.SlotBuffer <= 0 {
 		cfg.HumanTelnet.SlotBuffer = 1000
 	}
+	if cfg.RBN.KeepaliveSec < 0 {
+		cfg.RBN.KeepaliveSec = 0
+	}
+	if cfg.RBNDigital.KeepaliveSec < 0 {
+		cfg.RBNDigital.KeepaliveSec = 0
+	}
+	if cfg.HumanTelnet.KeepaliveSec < 0 {
+		cfg.HumanTelnet.KeepaliveSec = 0
+	}
+	if cfg.RBN.KeepaliveSec == 0 {
+		cfg.RBN.KeepaliveSec = 240
+	}
+	if cfg.RBNDigital.KeepaliveSec == 0 {
+		cfg.RBNDigital.KeepaliveSec = cfg.RBN.KeepaliveSec
+	}
+	if cfg.HumanTelnet.KeepaliveSec == 0 {
+		cfg.HumanTelnet.KeepaliveSec = 240
+	}
 
 	if cfg.PSKReporter.Workers < 0 {
 		cfg.PSKReporter.Workers = 0
 	}
 	if cfg.PSKReporter.SpotChannelSize <= 0 {
 		cfg.PSKReporter.SpotChannelSize = 25000
+	}
+	if cfg.PSKReporter.CTYCacheSize <= 0 {
+		cfg.PSKReporter.CTYCacheSize = 50000
+	}
+	if cfg.PSKReporter.CTYCacheTTLSeconds <= 0 {
+		cfg.PSKReporter.CTYCacheTTLSeconds = 300
+	}
+	if cfg.PSKReporter.MaxPayloadBytes <= 0 {
+		cfg.PSKReporter.MaxPayloadBytes = 4096
+	}
+
+	// Archive defaults keep the writer lightweight and non-blocking.
+	if cfg.Archive.QueueSize <= 0 {
+		cfg.Archive.QueueSize = 10000
+	}
+	if cfg.Archive.BatchSize <= 0 {
+		cfg.Archive.BatchSize = 500
+	}
+	if cfg.Archive.BatchIntervalMS <= 0 {
+		cfg.Archive.BatchIntervalMS = 200
+	}
+	if cfg.Archive.CleanupIntervalSeconds <= 0 {
+		cfg.Archive.CleanupIntervalSeconds = 3600 // hourly
+	}
+	if cfg.Archive.CleanupBatchSize <= 0 {
+		cfg.Archive.CleanupBatchSize = 2000
+	}
+	if cfg.Archive.CleanupBatchYieldMS < 0 {
+		cfg.Archive.CleanupBatchYieldMS = 0
+	}
+	if cfg.Archive.CleanupBatchYieldMS == 0 && !hasArchiveCleanupYield {
+		cfg.Archive.CleanupBatchYieldMS = 5
+	}
+	if cfg.Archive.RetentionFTSeconds <= 0 {
+		cfg.Archive.RetentionFTSeconds = 3600 // 1 hour by default for FT modes
+	}
+	if cfg.Archive.RetentionDefaultSeconds <= 0 {
+		cfg.Archive.RetentionDefaultSeconds = 86400 // 1 day for other modes
+	}
+	if strings.TrimSpace(cfg.Archive.DBPath) == "" {
+		cfg.Archive.DBPath = "data/archive/spots.db"
+	}
+	if cfg.Archive.BusyTimeoutMS <= 0 {
+		cfg.Archive.BusyTimeoutMS = 1000
+	}
+	syncMode := strings.ToLower(strings.TrimSpace(cfg.Archive.Synchronous))
+	if syncMode == "" {
+		syncMode = "off"
+	}
+	switch syncMode {
+	case "off", "normal", "full", "extra":
+		cfg.Archive.Synchronous = syncMode
+	default:
+		return nil, fmt.Errorf("invalid archive.synchronous %q: must be off, normal, full, or extra", cfg.Archive.Synchronous)
 	}
 
 	if cfg.Stats.DisplayIntervalSeconds <= 0 {
@@ -557,11 +822,17 @@ func Load(path string) (*Config, error) {
 	if cfg.CallCorrection.FrequencyToleranceHz <= 0 {
 		cfg.CallCorrection.FrequencyToleranceHz = 0.5
 	}
+	if cfg.CallCorrection.VoiceFrequencyToleranceHz <= 0 {
+		cfg.CallCorrection.VoiceFrequencyToleranceHz = 2000
+	}
 	if cfg.CallCorrection.FreqGuardMinSeparationKHz <= 0 {
 		cfg.CallCorrection.FreqGuardMinSeparationKHz = 0.1
 	}
 	if cfg.CallCorrection.FreqGuardRunnerUpRatio <= 0 {
 		cfg.CallCorrection.FreqGuardRunnerUpRatio = 0.5
+	}
+	if cfg.CallCorrection.VoiceCandidateWindowKHz <= 0 {
+		cfg.CallCorrection.VoiceCandidateWindowKHz = 2
 	}
 	if cfg.CallCorrection.QualityBinHz <= 0 {
 		cfg.CallCorrection.QualityBinHz = 1000
@@ -612,6 +883,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.CallCorrection.MinSNRRTTY < 0 {
 		cfg.CallCorrection.MinSNRRTTY = 0
+	}
+	if cfg.CallCorrection.MinSNRVoice < 0 {
+		cfg.CallCorrection.MinSNRVoice = 0
 	}
 	if cfg.CallCorrection.Distance3ExtraReports < 0 {
 		cfg.CallCorrection.Distance3ExtraReports = 0
@@ -738,11 +1012,24 @@ func Load(path string) (*Config, error) {
 	if cfg.Telnet.BroadcastBatchIntervalMS <= 0 {
 		cfg.Telnet.BroadcastBatchIntervalMS = 250
 	}
+	if cfg.Telnet.KeepaliveSeconds < 0 {
+		cfg.Telnet.KeepaliveSeconds = 0
+	}
 	if cfg.Telnet.LoginLineLimit <= 0 {
 		cfg.Telnet.LoginLineLimit = 32
 	}
 	if cfg.Telnet.CommandLineLimit <= 0 {
 		cfg.Telnet.CommandLineLimit = 128
+	}
+	if transport, ok := normalizeTelnetTransport(cfg.Telnet.Transport); ok {
+		cfg.Telnet.Transport = transport
+	} else {
+		return nil, fmt.Errorf("invalid telnet.transport %q (expected %q or %q)", cfg.Telnet.Transport, TelnetTransportNative, TelnetTransportZiutek)
+	}
+	if echoMode, ok := normalizeTelnetEchoMode(cfg.Telnet.EchoMode); ok {
+		cfg.Telnet.EchoMode = echoMode
+	} else {
+		return nil, fmt.Errorf("invalid telnet.echo_mode %q (expected %q, %q, or %q)", cfg.Telnet.EchoMode, TelnetEchoServer, TelnetEchoLocal, TelnetEchoOff)
 	}
 	// Provide operator-facing telnet prompts even when omitted from YAML.
 	if strings.TrimSpace(cfg.Telnet.DuplicateLoginMsg) == "" {
@@ -750,6 +1037,101 @@ func Load(path string) (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.Telnet.LoginGreeting) == "" {
 		cfg.Telnet.LoginGreeting = "Hello <CALL>, you are now connected to <CLUSTER>."
+	}
+	if transport, ok := normalizeTelnetTransport(cfg.RBN.TelnetTransport); ok {
+		cfg.RBN.TelnetTransport = transport
+	} else {
+		return nil, fmt.Errorf("invalid rbn.telnet_transport %q (expected %q or %q)", cfg.RBN.TelnetTransport, TelnetTransportNative, TelnetTransportZiutek)
+	}
+	if transport, ok := normalizeTelnetTransport(cfg.RBNDigital.TelnetTransport); ok {
+		cfg.RBNDigital.TelnetTransport = transport
+	} else {
+		return nil, fmt.Errorf("invalid rbn_digital.telnet_transport %q (expected %q or %q)", cfg.RBNDigital.TelnetTransport, TelnetTransportNative, TelnetTransportZiutek)
+	}
+	if transport, ok := normalizeTelnetTransport(cfg.HumanTelnet.TelnetTransport); ok {
+		cfg.HumanTelnet.TelnetTransport = transport
+	} else {
+		return nil, fmt.Errorf("invalid human_telnet.telnet_transport %q (expected %q or %q)", cfg.HumanTelnet.TelnetTransport, TelnetTransportNative, TelnetTransportZiutek)
+	}
+	if strings.TrimSpace(cfg.Peering.LocalCallsign) == "" {
+		cfg.Peering.LocalCallsign = cfg.Server.NodeID
+	}
+	if cfg.Peering.ListenPort <= 0 {
+		cfg.Peering.ListenPort = 7300
+	}
+	if cfg.Peering.HopCount <= 0 {
+		cfg.Peering.HopCount = 99
+	}
+	if strings.TrimSpace(cfg.Peering.NodeVersion) == "" {
+		cfg.Peering.NodeVersion = "5457"
+	}
+	if strings.TrimSpace(cfg.Peering.LegacyVersion) == "" {
+		cfg.Peering.LegacyVersion = "5401"
+	}
+	if cfg.Peering.PC92Bitmap <= 0 {
+		cfg.Peering.PC92Bitmap = 5
+	}
+	if cfg.Peering.NodeCount <= 0 {
+		cfg.Peering.NodeCount = 1
+	}
+	if cfg.Peering.UserCount < 0 {
+		cfg.Peering.UserCount = 0
+	}
+	if transport, ok := normalizeTelnetTransport(cfg.Peering.TelnetTransport); ok {
+		cfg.Peering.TelnetTransport = transport
+	} else {
+		return nil, fmt.Errorf("invalid peering.telnet_transport %q (expected %q or %q)", cfg.Peering.TelnetTransport, TelnetTransportNative, TelnetTransportZiutek)
+	}
+	if cfg.Peering.KeepaliveSeconds <= 0 {
+		// Default to a short heartbeat to keep remote DXSpider peers from idling us out.
+		// Applies to both PC92 (pc9x) and PC51 (legacy) keepalives.
+		cfg.Peering.KeepaliveSeconds = 30
+	}
+	if cfg.Peering.ConfigSeconds <= 0 {
+		// Periodic PC92 C "config" refresh; DXSpider peers purge config after missing several periods.
+		cfg.Peering.ConfigSeconds = 180
+	}
+	if cfg.Peering.WriteQueueSize <= 0 {
+		cfg.Peering.WriteQueueSize = 256
+	}
+	if cfg.Peering.MaxLineLength <= 0 {
+		cfg.Peering.MaxLineLength = 4096
+	}
+	if cfg.Peering.PC92MaxBytes <= 0 {
+		cfg.Peering.PC92MaxBytes = cfg.Peering.MaxLineLength
+		if cfg.Peering.PC92MaxBytes > 16384 {
+			cfg.Peering.PC92MaxBytes = 16384
+		}
+	}
+	if cfg.Peering.MaxLineLength > 0 && cfg.Peering.PC92MaxBytes > cfg.Peering.MaxLineLength {
+		cfg.Peering.PC92MaxBytes = cfg.Peering.MaxLineLength
+	}
+	if cfg.Peering.Timeouts.LoginSeconds <= 0 {
+		cfg.Peering.Timeouts.LoginSeconds = 15
+	}
+	if cfg.Peering.Timeouts.InitSeconds <= 0 {
+		cfg.Peering.Timeouts.InitSeconds = 60
+	}
+	if cfg.Peering.Timeouts.IdleSeconds <= 0 {
+		cfg.Peering.Timeouts.IdleSeconds = 600
+	}
+	if cfg.Peering.Backoff.BaseMS <= 0 {
+		cfg.Peering.Backoff.BaseMS = 2000
+	}
+	if cfg.Peering.Backoff.MaxMS <= 0 {
+		cfg.Peering.Backoff.MaxMS = 300000
+	}
+	cfg.Peering.Topology.DBPath = strings.TrimSpace(cfg.Peering.Topology.DBPath)
+	if cfg.Peering.Topology.RetentionHours <= 0 {
+		cfg.Peering.Topology.RetentionHours = 24
+	}
+	if cfg.Peering.Topology.PersistIntervalSeconds <= 0 {
+		cfg.Peering.Topology.PersistIntervalSeconds = 300
+	}
+	for i := range cfg.Peering.Peers {
+		if cfg.Peering.Peers[i].Host != "" && cfg.Peering.Peers[i].Port > 0 && !cfg.Peering.Peers[i].Enabled {
+			cfg.Peering.Peers[i].Enabled = true
+		}
 	}
 
 	// Harmonic guardrails ensure suppression logic runs with bounded windows and tolerances.
@@ -781,6 +1163,26 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.SpotPolicy.FrequencyAveragingMinReports <= 0 {
 		cfg.SpotPolicy.FrequencyAveragingMinReports = 4
+	}
+
+	// Mode inference defaults keep caches bounded and predictable.
+	if cfg.ModeInference.DXFreqCacheTTLSeconds <= 0 {
+		cfg.ModeInference.DXFreqCacheTTLSeconds = 300
+	}
+	if cfg.ModeInference.DXFreqCacheSize <= 0 {
+		cfg.ModeInference.DXFreqCacheSize = 50000
+	}
+	if cfg.ModeInference.DigitalWindowSeconds <= 0 {
+		cfg.ModeInference.DigitalWindowSeconds = 300
+	}
+	if cfg.ModeInference.DigitalMinCorroborators <= 0 {
+		cfg.ModeInference.DigitalMinCorroborators = 10
+	}
+	if cfg.ModeInference.DigitalSeedTTLSeconds <= 0 {
+		cfg.ModeInference.DigitalSeedTTLSeconds = 21600
+	}
+	if cfg.ModeInference.DigitalCacheSize <= 0 {
+		cfg.ModeInference.DigitalCacheSize = 5000
 	}
 
 	if strings.TrimSpace(cfg.CTY.File) == "" {
@@ -884,6 +1286,10 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// Purpose: Load and merge all YAML files from a config directory.
+// Key aspects: Sorted file order provides deterministic overrides.
+// Upstream: Load.
+// Downstream: yaml.Unmarshal, mergeYAMLMaps.
 func loadConfigDir(path string) (map[string]any, []string, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
@@ -921,6 +1327,10 @@ func loadConfigDir(path string) (map[string]any, []string, error) {
 	return merged, files, nil
 }
 
+// Purpose: Deep-merge nested YAML maps.
+// Key aspects: Recurses into sub-maps; src overwrites non-map values.
+// Upstream: loadConfigDir.
+// Downstream: None.
 func mergeYAMLMaps(dst, src map[string]any) map[string]any {
 	if dst == nil {
 		dst = make(map[string]any)
@@ -939,16 +1349,20 @@ func mergeYAMLMaps(dst, src map[string]any) map[string]any {
 	return dst
 }
 
-// Print displays a concise, human-readable summary of the loaded configuration,
-// primarily for startup logs and diagnostics.
+// Purpose: Print a human-readable configuration summary.
+// Key aspects: Focuses on operationally relevant fields.
+// Upstream: main.go startup logging.
+// Downstream: fmt.Printf.
 func (c *Config) Print() {
 	fmt.Printf("Server: %s (%s)\n", c.Server.Name, c.Server.NodeID)
 	workerDesc := "auto"
 	if c.Telnet.BroadcastWorkers > 0 {
 		workerDesc = fmt.Sprintf("%d", c.Telnet.BroadcastWorkers)
 	}
-	fmt.Printf("Telnet: port %d (broadcast workers=%s queue=%d worker_queue=%d client_buffer=%d skip_handshake=%t)\n",
+	fmt.Printf("Telnet: port %d (transport=%s echo_mode=%s broadcast workers=%s queue=%d worker_queue=%d client_buffer=%d skip_handshake=%t)\n",
 		c.Telnet.Port,
+		c.Telnet.Transport,
+		c.Telnet.EchoMode,
 		workerDesc,
 		c.Telnet.BroadcastQueue,
 		c.Telnet.WorkerQueue,
@@ -965,13 +1379,45 @@ func (c *Config) Print() {
 		c.UI.PaneLines.Harmonics,
 		c.UI.PaneLines.System)
 	if c.RBN.Enabled {
-		fmt.Printf("RBN CW/RTTY: %s:%d (as %s, slot_buffer=%d)\n", c.RBN.Host, c.RBN.Port, c.RBN.Callsign, c.RBN.SlotBuffer)
+		fmt.Printf("RBN CW/RTTY: %s:%d (as %s, transport=%s slot_buffer=%d keepalive=%ds)\n",
+			c.RBN.Host,
+			c.RBN.Port,
+			c.RBN.Callsign,
+			c.RBN.TelnetTransport,
+			c.RBN.SlotBuffer,
+			c.RBN.KeepaliveSec)
 	}
 	if c.RBNDigital.Enabled {
-		fmt.Printf("RBN Digital (FT4/FT8): %s:%d (as %s, slot_buffer=%d)\n", c.RBNDigital.Host, c.RBNDigital.Port, c.RBNDigital.Callsign, c.RBNDigital.SlotBuffer)
+		fmt.Printf("RBN Digital (FT4/FT8): %s:%d (as %s, transport=%s slot_buffer=%d keepalive=%ds)\n",
+			c.RBNDigital.Host,
+			c.RBNDigital.Port,
+			c.RBNDigital.Callsign,
+			c.RBNDigital.TelnetTransport,
+			c.RBNDigital.SlotBuffer,
+			c.RBNDigital.KeepaliveSec)
 	}
 	if c.HumanTelnet.Enabled {
-		fmt.Printf("Human/relay telnet: %s:%d (as %s, slot_buffer=%d)\n", c.HumanTelnet.Host, c.HumanTelnet.Port, c.HumanTelnet.Callsign, c.HumanTelnet.SlotBuffer)
+		fmt.Printf("Human/relay telnet: %s:%d (as %s, transport=%s slot_buffer=%d keepalive=%ds)\n",
+			c.HumanTelnet.Host,
+			c.HumanTelnet.Port,
+			c.HumanTelnet.Callsign,
+			c.HumanTelnet.TelnetTransport,
+			c.HumanTelnet.SlotBuffer,
+			c.HumanTelnet.KeepaliveSec)
+	}
+	if c.Archive.Enabled {
+		fmt.Printf("Archive: %s (queue=%d batch=%d/%dms cleanup=%ds cleanup_batch=%d yield=%dms retain_ft=%ds retain_other=%ds sync=%s auto_delete_corrupt=%t)\n",
+			c.Archive.DBPath,
+			c.Archive.QueueSize,
+			c.Archive.BatchSize,
+			c.Archive.BatchIntervalMS,
+			c.Archive.CleanupIntervalSeconds,
+			c.Archive.CleanupBatchSize,
+			c.Archive.CleanupBatchYieldMS,
+			c.Archive.RetentionFTSeconds,
+			c.Archive.RetentionDefaultSeconds,
+			c.Archive.Synchronous,
+			c.Archive.AutoDeleteCorruptDB)
 	}
 	if c.PSKReporter.Enabled {
 		workerDesc := "auto"
@@ -1000,6 +1446,17 @@ func (c *Config) Print() {
 	if len(c.Filter.DefaultSources) > 0 {
 		fmt.Printf("Default sources: %s\n", strings.Join(c.Filter.DefaultSources, ", "))
 	}
+	if c.Peering.Enabled {
+		fmt.Printf("Peering: listen_port=%d peers=%d hop=%d transport=%s keepalive=%ds config=%ds topology=%s retention=%dh\n",
+			c.Peering.ListenPort,
+			len(c.Peering.Peers),
+			c.Peering.HopCount,
+			c.Peering.TelnetTransport,
+			c.Peering.KeepaliveSeconds,
+			c.Peering.ConfigSeconds,
+			c.Peering.Topology.DBPath,
+			c.Peering.Topology.RetentionHours)
+	}
 	fmt.Printf("Stats interval: %ds\n", c.Stats.DisplayIntervalSeconds)
 	status := "disabled"
 	if c.CallCorrection.Enabled {
@@ -1019,6 +1476,10 @@ func (c *Config) Print() {
 		c.CallCorrection.Distance3ExtraReports,
 		c.CallCorrection.Distance3ExtraAdvantage,
 		c.CallCorrection.Distance3ExtraConfidence)
+	fmt.Printf("Call correction voice: tol=%.0fHz search=%.1fkHz min_snr=%d\n",
+		c.CallCorrection.VoiceFrequencyToleranceHz,
+		c.CallCorrection.VoiceCandidateWindowKHz,
+		c.CallCorrection.MinSNRVoice)
 	fmt.Printf("Call correction cache: size=%d ttl=%ds\n",
 		c.CallCorrection.DistanceCacheSize,
 		c.CallCorrection.DistanceCacheTTLSeconds)
@@ -1066,8 +1527,10 @@ func (c *Config) Print() {
 	fmt.Printf("Ring buffer capacity: %d spots\n", c.Buffer.Capacity)
 }
 
-// normalizeBandStateOverrides applies guardrails and falls back to global defaults when
-// per-state values are missing or non-positive.
+// Purpose: Normalize per-band-state overrides for correction settings.
+// Key aspects: Applies default bins/tolerances when overrides are missing.
+// Upstream: Load config normalization.
+// Downstream: None.
 func normalizeBandStateOverrides(overrides []BandStateOverride, defaultBin int, defaultTol float64) []BandStateOverride {
 	if len(overrides) == 0 {
 		return overrides
@@ -1098,9 +1561,10 @@ func normalizeBandStateOverrides(overrides []BandStateOverride, defaultBin int, 
 	return out
 }
 
-// yamlKeyPresent walks a nested map decoded from YAML and reports whether the
-// provided path exists. Keys must match the YAML field names (e.g., "dedup",
-// "secondary_prefer_stronger_snr").
+// Purpose: Check whether a nested YAML key path exists.
+// Key aspects: Walks decoded maps using YAML field names.
+// Upstream: Load config normalization (detecting explicit settings).
+// Downstream: None.
 func yamlKeyPresent(raw map[string]any, path ...string) bool {
 	if len(path) == 0 || raw == nil {
 		return false

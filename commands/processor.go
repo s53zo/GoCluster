@@ -5,6 +5,8 @@ package commands
 
 import (
 	"fmt"
+	"log"
+	"strconv"
 	"strings"
 
 	"dxcluster/buffer"
@@ -12,29 +14,57 @@ import (
 	"dxcluster/spot"
 )
 
+// archiveReader is the minimal interface the archive layer exposes for read paths.
+type archiveReader interface {
+	Recent(limit int) ([]*spot.Spot, error)
+}
+
 // Processor handles telnet command parsing and replies that rely on shared state
 // (recent spots in the ring buffer).
 type Processor struct {
 	spotBuffer *buffer.RingBuffer
+	archive    archiveReader
+	spotInput  chan<- *spot.Spot
 }
 
-// NewProcessor wraps the shared ring buffer so SHOW/DX commands can read from
-// the central spot store.
-func NewProcessor(buf *buffer.RingBuffer) *Processor {
+// Purpose: Construct a command processor bound to shared spot state.
+// Key aspects: SHOW/DX prefers archive when present; DX commands can enqueue spots.
+// Upstream: Telnet server initialization.
+// Downstream: Processor methods (ProcessCommand, handleShowDX, handleDX).
+func NewProcessor(buf *buffer.RingBuffer, archive archiveReader, spotInput chan<- *spot.Spot) *Processor {
 	return &Processor{
 		spotBuffer: buf,
+		archive:    archive,
+		spotInput:  spotInput,
 	}
 }
 
-// ProcessCommand parses a single telnet command and returns the response text
-// to write back to the client. A response of "BYE" signals the caller to close
-// the session.
+// Purpose: Parse a command and return the response text.
+// Key aspects: "BYE" signals the caller to close the session.
+// Upstream: Telnet client command loop.
+// Downstream: ProcessCommandForClient.
 func (p *Processor) ProcessCommand(cmd string) string {
+	return p.ProcessCommandForClient(cmd, "", "")
+}
+
+// Purpose: Parse a command with client context for DX posting.
+// Key aspects: Routes DX commands and normalizes command tokens.
+// Upstream: Telnet client command loop with callsign context.
+// Downstream: handleDX, handleHelp, handleShow.
+func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterIP string) string {
 	cmd = strings.TrimSpace(cmd)
 
 	// Empty command
 	if cmd == "" {
 		return ""
+	}
+
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return ""
+	}
+	if strings.EqualFold(fields[0], "DX") {
+		return p.handleDX(fields, spotter, spotterIP)
 	}
 
 	// Split into parts
@@ -56,10 +86,14 @@ func (p *Processor) ProcessCommand(cmd string) string {
 	}
 }
 
-// handleHelp returns help text for builtin commands and filter controls.
+// Purpose: Render the HELP text for users.
+// Key aspects: Includes filter command guidance and supported bands/modes.
+// Upstream: ProcessCommandForClient (HELP/H).
+// Downstream: filter.SupportedModes, spot.SupportedBandNames.
 func (p *Processor) handleHelp() string {
 	return fmt.Sprintf(`Available commands:
 HELP                 - Show this help
+DX <freq> <call> <comment> - Post a spot (frequency in kHz)
 SHOW/DX [count]      - Show last N DX spots (default: 10)
 BYE                  - Disconnect
 
@@ -79,6 +113,9 @@ Filter commands (allow + block, deny wins):
 	PASS DECALL <pattern> - Allow DE/spotter calls matching the pattern (supports prefix/suffix * wildcard).
 	PASS CONFIDENCE <symbol>[,<symbol>...] - Allow confidence glyphs (?,S,C,P,V,B or ALL). FT8/FT4 ignore confidence filtering.
 	PASS BEACON - Deliver DX beacons (/B)
+	PASS WWV - Deliver WWV bulletins
+	PASS WCY - Deliver WCY bulletins
+	PASS ANNOUNCE - Deliver PC93 announcements
 	REJECT BAND <band>[,<band>...]      - Block listed bands; ALL blocks all bands.
 	REJECT MODE <mode>[,<mode>...]      - Block listed modes; ALL blocks all modes.
 	REJECT SOURCE <HUMAN|SKIMMER>       - Block human or automated spots.
@@ -94,6 +131,9 @@ Filter commands (allow + block, deny wins):
 	REJECT DECALL - Remove all DE callsign patterns (allows any DE call, subject to other filters).
 	REJECT CONFIDENCE <symbol>[,<symbol>...] - Block glyphs; ALL blocks all glyphs (non-exempt modes).
 	REJECT BEACON - Suppress DX beacons
+	REJECT WWV - Suppress WWV bulletins
+	REJECT WCY - Suppress WCY bulletins
+	REJECT ANNOUNCE - Suppress PC93 announcements
 	SHOW FILTER BANDS             - List supported bands
 	SHOW FILTER MODES             - Show supported modes and enabled state
 	SHOW FILTER DXCONT            - Show supported DX continents and enabled state
@@ -106,6 +146,9 @@ Filter commands (allow + block, deny wins):
 	SHOW FILTER DEGRID2           - Show DE 2-character grid filter state
 	SHOW FILTER CONFIDENCE        - Show supported confidence glyphs and enabled state
 	SHOW FILTER BEACON            - Show whether beacon spots are enabled
+	SHOW FILTER WWV               - Show whether WWV bulletins are enabled
+	SHOW FILTER WCY               - Show whether WCY bulletins are enabled
+	SHOW FILTER ANNOUNCE          - Show whether PC93 announcements are enabled
 
 Supported modes: %s
 Supported bands: %s
@@ -117,7 +160,56 @@ Examples:
 `, strings.Join(filter.SupportedModes, ", "), strings.Join(spot.SupportedBandNames(), ", "))
 }
 
-// handleShow routes SHOW subcommands; only SHOW/DX is currently supported.
+// Purpose: Handle the DX command and enqueue a human spot.
+// Key aspects: Validates callsign/frequency; parses comment for mode/report.
+// Upstream: ProcessCommandForClient (DX).
+// Downstream: spot.ParseSpotComment, spot.NewSpot, spotInput channel.
+func (p *Processor) handleDX(fields []string, spotter string, spotterIP string) string {
+	spotterRaw := strings.TrimSpace(spotter)
+	if spotterRaw == "" {
+		return "DX command requires a logged-in callsign.\n"
+	}
+	spotterNorm := spot.NormalizeCallsign(spotterRaw)
+	if !spot.IsValidNormalizedCallsign(spotterNorm) {
+		return "DX command requires a valid callsign.\n"
+	}
+	if len(fields) < 4 {
+		return "Usage: DX <frequency> <callsign> <comment>\n"
+	}
+	freq, err := strconv.ParseFloat(fields[1], 64)
+	if err != nil || freq <= 0 {
+		return "Invalid frequency. Use a kHz value like 7001.0.\n"
+	}
+	dxRaw := strings.TrimSpace(fields[2])
+	dx := spot.NormalizeCallsign(dxRaw)
+	if !spot.IsValidNormalizedCallsign(dx) {
+		return "Invalid DX callsign.\n"
+	}
+	comment := strings.TrimSpace(strings.Join(fields[3:], " "))
+	parsed := spot.ParseSpotComment(comment, freq)
+	s := spot.NewSpotNormalized(dx, spotterNorm, freq, parsed.Mode)
+	s.Comment = parsed.Comment
+	s.Report = parsed.Report
+	s.HasReport = parsed.HasReport
+	s.SourceNode = spotterNorm
+	s.SpotterIP = strings.TrimSpace(spotterIP)
+
+	if p.spotInput == nil {
+		return "Spot input is not configured on this cluster.\n"
+	}
+	select {
+	case p.spotInput <- s:
+		return "Spot queued.\n"
+	default:
+		log.Printf("DX command: dedup input full, dropping spot from %s", spotter)
+		return "Spot queue full; try again.\n"
+	}
+}
+
+// Purpose: Route SHOW subcommands.
+// Key aspects: Currently only supports SHOW/DX.
+// Upstream: ProcessCommandForClient (SHOW/SH).
+// Downstream: handleShowDX.
 func (p *Processor) handleShow(args []string) string {
 	if len(args) == 0 {
 		return "Usage: SHOW/DX [count]\n"
@@ -133,7 +225,10 @@ func (p *Processor) handleShow(args []string) string {
 	}
 }
 
-// handleShowDX renders the most recent N spots from the shared ring buffer.
+// Purpose: Render the most recent N spots for SHOW/DX.
+// Key aspects: Prefers archive; falls back to ring buffer; outputs oldest-first.
+// Upstream: handleShow.
+// Downstream: archive.Recent, ring buffer, reverseSpotsInPlace.
 func (p *Processor) handleShowDX(args []string) string {
 	count := 10 // Default count
 
@@ -146,12 +241,25 @@ func (p *Processor) handleShowDX(args []string) string {
 		}
 	}
 
-	// Get recent spots
-	spots := p.spotBuffer.GetRecent(count)
+	// Prefer archive for history; fall back to ring buffer.
+	var spots []*spot.Spot
+	if p.archive != nil {
+		if rows, err := p.archive.Recent(count); err != nil {
+			log.Printf("SHOW DX: archive query failed, falling back to ring buffer: %v", err)
+		} else {
+			spots = rows
+		}
+	}
+	if len(spots) == 0 && p.spotBuffer != nil {
+		spots = p.spotBuffer.GetRecent(count)
+	}
 
 	if len(spots) == 0 {
 		return "No spots available.\n"
 	}
+
+	// Display oldest first so the most recent spot is last in the list.
+	reverseSpotsInPlace(spots)
 
 	// Build response
 	var result strings.Builder
@@ -161,4 +269,14 @@ func (p *Processor) handleShowDX(args []string) string {
 	}
 
 	return result.String()
+}
+
+// Purpose: Reverse a slice of spots in place.
+// Key aspects: Used to present chronological output.
+// Upstream: handleShowDX.
+// Downstream: None.
+func reverseSpotsInPlace(spots []*spot.Spot) {
+	for i, j := 0, len(spots)-1; i < j; i, j = i+1, j-1 {
+		spots[i], spots[j] = spots[j], spots[i]
+	}
 }

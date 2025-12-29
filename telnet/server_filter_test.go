@@ -162,6 +162,42 @@ func TestPassCommands(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "pass wwv enables",
+			cmd:  "PASS WWV",
+			setup: func(c *Client) {
+				c.filter.SetWWVEnabled(false)
+			},
+			check: func(t *testing.T, f *filter.Filter) {
+				if !f.WWVEnabled() {
+					t.Fatalf("expected WWV bulletins to be enabled")
+				}
+			},
+		},
+		{
+			name: "pass wcy enables",
+			cmd:  "PASS WCY",
+			setup: func(c *Client) {
+				c.filter.SetWCYEnabled(false)
+			},
+			check: func(t *testing.T, f *filter.Filter) {
+				if !f.WCYEnabled() {
+					t.Fatalf("expected WCY bulletins to be enabled")
+				}
+			},
+		},
+		{
+			name: "pass announce enables",
+			cmd:  "PASS ANNOUNCE",
+			setup: func(c *Client) {
+				c.filter.SetAnnounceEnabled(false)
+			},
+			check: func(t *testing.T, f *filter.Filter) {
+				if !f.AnnounceEnabled() {
+					t.Fatalf("expected announcements to be enabled")
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -250,6 +286,33 @@ func TestRejectCommands(t *testing.T) {
 			},
 		},
 		{
+			name: "reject wwv disables",
+			cmd:  "REJECT WWV",
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.WWVEnabled() {
+					t.Fatalf("expected WWV bulletins to be disabled")
+				}
+			},
+		},
+		{
+			name: "reject wcy disables",
+			cmd:  "REJECT WCY",
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.WCYEnabled() {
+					t.Fatalf("expected WCY bulletins to be disabled")
+				}
+			},
+		},
+		{
+			name: "reject announce disables",
+			cmd:  "REJECT ANNOUNCE",
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.AnnounceEnabled() {
+					t.Fatalf("expected announcements to be disabled")
+				}
+			},
+		},
+		{
 			name: "reject dxcall clears patterns",
 			cmd:  "REJECT DXCALL",
 			setup: func(c *Client) {
@@ -312,5 +375,73 @@ func TestInvalidFilterCommandShowsHelpHint(t *testing.T) {
 	resp := client.handleFilterCommand("PASS")
 	if !strings.Contains(strings.ToLower(resp), "help") {
 		t.Fatalf("expected help hint in response, got: %q", resp)
+	}
+}
+
+func TestBroadcastWWVRespectsFilter(t *testing.T) {
+	server := &Server{
+		clients: make(map[string]*Client),
+	}
+
+	allow := &Client{
+		callsign:     "ALLOW",
+		bulletinChan: make(chan bulletin, 1),
+		filter:       filter.NewFilter(),
+	}
+	block := &Client{
+		callsign:     "BLOCK",
+		bulletinChan: make(chan bulletin, 1),
+		filter:       filter.NewFilter(),
+	}
+	block.filter.SetWWVEnabled(false)
+
+	server.clients["ALLOW"] = allow
+	server.clients["BLOCK"] = block
+
+	server.BroadcastWWV("WWV", "WWV de TEST <00> : SFI=1 A=1 K=1")
+
+	select {
+	case <-allow.bulletinChan:
+	default:
+		t.Fatalf("expected bulletin delivered to allowed client")
+	}
+	select {
+	case <-block.bulletinChan:
+		t.Fatalf("did not expect bulletin delivered to blocked client")
+	default:
+	}
+}
+
+func TestBroadcastAnnouncementRespectsFilter(t *testing.T) {
+	server := &Server{
+		clients: make(map[string]*Client),
+	}
+
+	allow := &Client{
+		callsign:     "ALLOW",
+		bulletinChan: make(chan bulletin, 1),
+		filter:       filter.NewFilter(),
+	}
+	block := &Client{
+		callsign:     "BLOCK",
+		bulletinChan: make(chan bulletin, 1),
+		filter:       filter.NewFilter(),
+	}
+	block.filter.SetAnnounceEnabled(false)
+
+	server.clients["ALLOW"] = allow
+	server.clients["BLOCK"] = block
+
+	server.BroadcastAnnouncement("To ALL de TEST: hello")
+
+	select {
+	case <-allow.bulletinChan:
+	default:
+		t.Fatalf("expected announcement delivered to allowed client")
+	}
+	select {
+	case <-block.bulletinChan:
+		t.Fatalf("did not expect announcement delivered to blocked client")
+	default:
 	}
 }

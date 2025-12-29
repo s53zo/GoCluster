@@ -1,4 +1,24 @@
+# Build artifacts
+*.exe
+*.dll
+*.pdb
+*.so
+*.dylib
+*.a
+*.out
+
+# Generated data/logs
 data/
+logs/
+*.db
+*.sqlite
+*.zip
+*.log
+*.log.*
+
+# Local env/config
 .env
 cmd/daily_analysis/.env
-gocluster.exe
+.claude/
+.vscode/
+NUL

@@ -36,7 +36,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"runtime"
 	"sort"
 	"strconv"
@@ -49,6 +48,7 @@ import (
 	"dxcluster/commands"
 	"dxcluster/filter"
 	"dxcluster/spot"
+	ztelnet "github.com/ziutek/telnet"
 )
 
 // Server represents a multi-client telnet server for DX Cluster connections.
@@ -89,10 +89,14 @@ type Server struct {
 	batchInterval     time.Duration        // Broadcast batch interval; 0 means immediate
 	batchMax          int                  // Max jobs per batch before flush
 	metrics           broadcastMetrics     // Broadcast metrics counters
+	keepaliveInterval time.Duration        // Optional periodic CRLF to keep idle sessions alive
 	clientShards      [][]*Client          // Cached shard layout for broadcasts
 	shardsDirty       atomic.Bool          // Flag to rebuild shards on client add/remove
 	processor         *commands.Processor  // Command processor for user commands
 	skipHandshake     bool                 // When true, omit Telnet IAC negotiation
+	transport         string               // Telnet transport backend ("native" or "ziutek")
+	useZiutek         bool                 // True when the external telnet transport is enabled
+	echoMode          string               // Input echo policy ("server", "local", "off")
 	clientBufferSize  int                  // Per-client spot channel capacity
 	loginLineLimit    int                  // Maximum bytes accepted for login/callsign input
 	commandLineLimit  int                  // Maximum bytes accepted for post-login commands
@@ -108,13 +112,17 @@ type Server struct {
 //
 // The client remains active until they type BYE or their connection drops.
 type Client struct {
-	conn      net.Conn        // TCP connection to client
-	reader    *bufio.Reader   // Buffered reader for client input
-	writer    *bufio.Writer   // Buffered writer for client output
-	callsign  string          // Client's amateur radio callsign
-	connected time.Time       // Timestamp when client connected
-	address   string          // Client's IP address
-	spotChan  chan *spot.Spot // Buffered channel for spot delivery (configurable capacity)
+	conn         net.Conn        // TCP connection to client
+	reader       *bufio.Reader   // Buffered reader for client input
+	writer       *bufio.Writer   // Buffered writer for client output
+	callsign     string          // Client's amateur radio callsign
+	connected    time.Time       // Timestamp when client connected
+	address      string          // Client's IP address
+	recentIPs    []string        // Most-recent-first IP history for this callsign
+	spotChan     chan *spot.Spot // Buffered channel for spot delivery (configurable capacity)
+	bulletinChan chan bulletin   // Buffered channel for WWV/WCY bulletin delivery
+	handleIAC    bool            // True when we parse IAC sequences in ReadLine
+	echoInput    bool            // True when we should echo typed characters back to the client
 
 	// filterMu guards filter, which is read by telnet broadcast workers while the
 	// client session goroutine mutates it in response to PASS/REJECT commands.
@@ -158,11 +166,18 @@ func (c *Client) saveFilter() error {
 	// hold read locks while matching, so persistence does not stall spot delivery.
 	c.filterMu.RLock()
 	defer c.filterMu.RUnlock()
-	if err := filter.SaveUserFilter(callsign, c.filter); err != nil {
-		log.Printf("Warning: failed to save filter for %s: %v", callsign, err)
+	record := &filter.UserRecord{
+		Filter:    *c.filter,
+		RecentIPs: c.recentIPs,
+	}
+	if existing, err := filter.LoadUserRecord(callsign); err == nil {
+		record.RecentIPs = filter.MergeRecentIPs(record.RecentIPs, existing.RecentIPs)
+	}
+	if err := filter.SaveUserRecord(callsign, record); err != nil {
+		log.Printf("Warning: failed to save user record for %s: %v", callsign, err)
 		return err
 	}
-	log.Printf("Saved filter for %s", callsign)
+	log.Printf("Saved user record for %s", callsign)
 	return nil
 }
 
@@ -180,6 +195,11 @@ func (c *Client) updateFilter(fn func(f *filter.Filter)) {
 type broadcastJob struct {
 	spot    *spot.Spot
 	clients []*Client
+}
+
+type bulletin struct {
+	kind string
+	line string
 }
 
 type broadcastMetrics struct {
@@ -232,6 +252,12 @@ const (
 )
 
 const (
+	telnetEchoServer = "server"
+	telnetEchoLocal  = "local"
+	telnetEchoOff    = "off"
+)
+
+const (
 	defaultBroadcastQueueSize     = 2048
 	defaultBroadcastBatch         = 512
 	defaultBroadcastBatchInterval = 250 * time.Millisecond
@@ -244,8 +270,8 @@ const (
 )
 
 const (
-	passFilterUsageMsg    = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern> | PASS DECALL <pattern> | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all)\nType HELP for usage.\n"
-	rejectFilterUsageMsg  = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER> | REJECT DXCALL | REJECT DECALL | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults)\nType HELP for usage.\n"
+	passFilterUsageMsg    = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern> | PASS DECALL <pattern> | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK31.\nType HELP for usage.\n"
+	rejectFilterUsageMsg  = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER> | REJECT DXCALL | REJECT DECALL | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK31.\nType HELP for usage.\n"
 	legacyFilterSyntaxMsg = "Filter syntax changed: use PASS/REJECT/SHOW FILTER.\nType HELP for usage.\n"
 )
 
@@ -262,7 +288,10 @@ type ServerOptions struct {
 	WorkerQueue            int
 	ClientBuffer           int
 	BroadcastBatchInterval time.Duration
+	KeepaliveSeconds       int
 	SkipHandshake          bool
+	Transport              string
+	EchoMode               string
 	LoginLineLimit         int
 	CommandLineLimit       int
 }
@@ -270,6 +299,7 @@ type ServerOptions struct {
 // NewServer creates a new telnet server
 func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 	config := normalizeServerOptions(opts)
+	useZiutek := strings.EqualFold(config.Transport, "ziutek")
 	return &Server{
 		port:              config.Port,
 		welcomeMessage:    config.WelcomeMessage,
@@ -284,8 +314,12 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		workerQueueSize:   config.WorkerQueue,
 		batchInterval:     config.BroadcastBatchInterval,
 		batchMax:          defaultBroadcastBatch,
+		keepaliveInterval: time.Duration(config.KeepaliveSeconds) * time.Second,
 		clientBufferSize:  config.ClientBuffer,
 		skipHandshake:     config.SkipHandshake,
+		transport:         config.Transport,
+		useZiutek:         useZiutek,
+		echoMode:          config.EchoMode,
 		processor:         processor,
 		loginLineLimit:    config.LoginLineLimit,
 		commandLineLimit:  config.CommandLineLimit,
@@ -318,6 +352,14 @@ func normalizeServerOptions(opts ServerOptions) ServerOptions {
 	if strings.TrimSpace(config.ClusterCall) == "" {
 		config.ClusterCall = "DXC"
 	}
+	if strings.TrimSpace(config.Transport) == "" {
+		config.Transport = "native"
+	}
+	config.Transport = strings.ToLower(strings.TrimSpace(config.Transport))
+	if strings.TrimSpace(config.EchoMode) == "" {
+		config.EchoMode = "server"
+	}
+	config.EchoMode = strings.ToLower(strings.TrimSpace(config.EchoMode))
 	if config.LoginLineLimit <= 0 {
 		config.LoginLineLimit = defaultLoginLineLimit
 	}
@@ -343,6 +385,11 @@ func (s *Server) Start() error {
 
 	// Start broadcast handler
 	go s.handleBroadcasts()
+
+	// Optional keepalive emitter for idle sessions.
+	if s.keepaliveInterval > 0 {
+		go s.keepaliveLoop()
+	}
 
 	// Accept connections in a goroutine
 	go s.acceptConnections()
@@ -385,6 +432,25 @@ func (s *Server) handleBroadcasts() {
 	}
 }
 
+// keepaliveLoop emits periodic CRLF to all connected clients to prevent idle
+// disconnects by intermediate network devices when the spot stream is quiet.
+func (s *Server) keepaliveLoop() {
+	ticker := time.NewTicker(s.keepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.shutdown:
+			return
+		case <-ticker.C:
+			s.clientsMutex.RLock()
+			for _, client := range s.clients {
+				_ = client.Send("\r\n")
+			}
+			s.clientsMutex.RUnlock()
+		}
+	}
+}
+
 // BroadcastSpot sends a spot to all connected clients
 func (s *Server) BroadcastSpot(spot *spot.Spot) {
 	select {
@@ -394,6 +460,120 @@ func (s *Server) BroadcastSpot(spot *spot.Spot) {
 		if shouldLogQueueDrop(drops) {
 			log.Printf("Broadcast channel full (%d/%d buffered), dropping spot (total queue drops=%d)", len(s.broadcast), cap(s.broadcast), drops)
 		}
+	}
+}
+
+// BroadcastRaw sends a raw line to all connected clients without formatting.
+// Use this for non-spot PC frames (e.g., PC26) that should pass through unchanged.
+func (s *Server) BroadcastRaw(line string) {
+	if s == nil || strings.TrimSpace(line) == "" {
+		return
+	}
+	s.clientsMutex.RLock()
+	defer s.clientsMutex.RUnlock()
+	for _, client := range s.clients {
+		_ = client.Send(line)
+	}
+}
+
+// BroadcastWWV sends a WWV/WCY bulletin to all connected clients that allow it.
+// The kind must be WWV, WCY, PC23, or PC73; unknown kinds are ignored.
+func (s *Server) BroadcastWWV(kind string, line string) {
+	kind = normalizeWWVKind(kind)
+	if kind == "" {
+		return
+	}
+	s.broadcastBulletin(kind, line, true)
+}
+
+// BroadcastAnnouncement sends a PC93 announcement to all connected clients
+// that allow announcements.
+func (s *Server) BroadcastAnnouncement(line string) {
+	s.broadcastBulletin("ANNOUNCE", line, true)
+}
+
+// SendDirectMessage sends a PC93 talk message to a specific callsign when connected.
+func (s *Server) SendDirectMessage(callsign string, line string) {
+	if s == nil {
+		return
+	}
+	callsign = strings.ToUpper(strings.TrimSpace(callsign))
+	if callsign == "" {
+		return
+	}
+	message := prepareBulletinLine(line)
+	if message == "" {
+		return
+	}
+	s.clientsMutex.RLock()
+	client := s.clients[callsign]
+	s.clientsMutex.RUnlock()
+	if client == nil || client.bulletinChan == nil {
+		return
+	}
+	s.enqueueBulletin(client, "TALK", message)
+}
+
+func (s *Server) broadcastBulletin(kind string, line string, applyFilter bool) {
+	if s == nil {
+		return
+	}
+	message := prepareBulletinLine(line)
+	if message == "" {
+		return
+	}
+	s.clientsMutex.RLock()
+	defer s.clientsMutex.RUnlock()
+	for _, client := range s.clients {
+		if client.bulletinChan == nil {
+			continue
+		}
+		if applyFilter {
+			client.filterMu.RLock()
+			allowed := client.filter.AllowsBulletin(kind)
+			client.filterMu.RUnlock()
+			if !allowed {
+				continue
+			}
+		}
+		s.enqueueBulletin(client, kind, message)
+	}
+}
+
+func (s *Server) enqueueBulletin(client *Client, kind, message string) {
+	if client == nil || client.bulletinChan == nil {
+		return
+	}
+	select {
+	case client.bulletinChan <- bulletin{kind: kind, line: message}:
+	default:
+		drops := atomic.AddUint64(&s.metrics.clientDrops, 1)
+		clientDrops := atomic.AddUint64(&client.dropCount, 1)
+		if shouldLogQueueDrop(drops) {
+			log.Printf("Client %s bulletin channel full, dropping %s bulletin (client drops=%d total=%d)", client.callsign, kind, clientDrops, drops)
+		}
+	}
+}
+
+func prepareBulletinLine(line string) string {
+	trimmed := strings.TrimRight(line, "\r\n")
+	if strings.TrimSpace(trimmed) == "" {
+		return ""
+	}
+	return trimmed + "\n"
+}
+
+func normalizeWWVKind(kind string) string {
+	kind = strings.ToUpper(strings.TrimSpace(kind))
+	switch kind {
+	case "WWV", "WCY":
+		return kind
+	case "PC23":
+		return "WWV"
+	case "PC73":
+		return "WCY"
+	default:
+		return ""
 	}
 }
 
@@ -593,6 +773,10 @@ func (s *Server) acceptConnections() {
 				continue
 			}
 		}
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.SetKeepAlive(true)
+			_ = tcp.SetKeepAlivePeriod(2 * time.Minute)
+		}
 
 		// Handle this client in a new goroutine
 		go s.handleClient(conn)
@@ -611,24 +795,34 @@ func (s *Server) handleClient(conn net.Conn) {
 		spotQueueSize = defaultClientBufferSize
 	}
 
-	// Create client object
+	// Create client object and select the telnet transport backend.
+	readerConn := conn
+	writerConn := conn
+	if s.useZiutek {
+		tconn, err := ztelnet.NewConn(conn)
+		if err != nil {
+			log.Printf("telnet: failed to wrap connection from %s: %v", address, err)
+			return
+		}
+		readerConn = tconn
+		writerConn = tconn
+	}
 	client := &Client{
-		conn:      conn,
-		reader:    bufio.NewReader(conn),
-		writer:    bufio.NewWriter(conn),
-		connected: time.Now(),
-		address:   address,
-		spotChan:  make(chan *spot.Spot, spotQueueSize),
-		filter:    filter.NewFilter(), // Start with no filters (accept all)
+		conn:         conn,
+		reader:       bufio.NewReader(readerConn),
+		writer:       bufio.NewWriter(writerConn),
+		connected:    time.Now(),
+		address:      address,
+		spotChan:     make(chan *spot.Spot, spotQueueSize),
+		bulletinChan: make(chan bulletin, spotQueueSize),
+		filter:       filter.NewFilter(), // Start with no filters (accept all)
+		handleIAC:    !s.useZiutek,
+		// Echo policy is configured explicitly so we can support local echo even
+		// when clients toggle their own modes.
+		echoInput: s.echoMode == telnetEchoServer,
 	}
 
-	// Send telnet options to suppress advanced features unless disabled
-	if !s.skipHandshake {
-		client.SendRaw([]byte{IAC, DONT, 1}) // Don't echo
-		client.SendRaw([]byte{IAC, DONT, 3}) // Don't suppress go-ahead
-		client.SendRaw([]byte{IAC, WONT, 1}) // Won't echo
-		client.SendRaw([]byte{IAC, WILL, 3}) // Will suppress go-ahead
-	}
+	s.negotiateTelnet(client)
 
 	// Send welcome message
 	now := time.Now().UTC()
@@ -641,7 +835,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		// consume unbounded memory or smuggle control characters during login. The
 		// limit is configurable but defaults to 32 bytes which covers every valid
 		// callsign, including suffixes such as /QRP or /MM.
-		line, err := client.ReadLine(s.loginLineLimit, "login", false, false, false)
+		line, err := client.ReadLine(s.loginLineLimit, "login", false, false, false, false)
 		if err != nil {
 			var inputErr *InputValidationError
 			if errors.As(err, &inputErr) {
@@ -666,18 +860,23 @@ func (s *Server) handleClient(conn net.Conn) {
 	client.callsign = callsign
 	log.Printf("Client %s logged in as %s", address, client.callsign)
 
-	// Attempt to load saved filter for this callsign; fallback to new Filter
-	if f, err := filter.LoadUserFilter(client.callsign); err == nil {
-		client.filter = f
-		log.Printf("Loaded saved filter for %s", client.callsign)
-	} else {
-		client.filter = filter.NewFilter()
-		if errors.Is(err, os.ErrNotExist) {
-			client.saveFilter()
+	// Capture the client's IP immediately after login so it is persisted before
+	// any other session state mutates.
+	record, created, err := filter.TouchUserRecordIP(client.callsign, spotterIP(client.address))
+	if err == nil {
+		client.filter = &record.Filter
+		client.recentIPs = record.RecentIPs
+		if created {
 			log.Printf("Created default filter for %s", client.callsign)
 		} else {
-			// Non-critical load error; log it.
-			log.Printf("Warning: failed to load filter for %s: %v", client.callsign, err)
+			log.Printf("Loaded saved filter for %s", client.callsign)
+		}
+	} else {
+		client.filter = filter.NewFilter()
+		client.recentIPs = filter.UpdateRecentIPs(nil, spotterIP(client.address))
+		log.Printf("Warning: failed to load user record for %s: %v", client.callsign, err)
+		if err := client.saveFilter(); err != nil {
+			log.Printf("Warning: failed to save user record for %s: %v", client.callsign, err)
 		}
 	}
 
@@ -700,7 +899,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		// Commands use the more relaxed limit because filter manipulation can
 		// legitimately include several tokens. The limit is still kept small
 		// (default 128 bytes) to keep parsing cheap and predictable.
-		line, err := client.ReadLine(s.commandLineLimit, "command", true, true, true)
+		line, err := client.ReadLine(s.commandLineLimit, "command", true, true, true, true)
 		if err != nil {
 			var inputErr *InputValidationError
 			if errors.As(err, &inputErr) {
@@ -711,8 +910,9 @@ func (s *Server) handleClient(conn net.Conn) {
 			return
 		}
 
-		// Skip empty lines
+		// Treat blank lines as client keepalives: echo CRLF so idle clients see traffic.
 		if strings.TrimSpace(line) == "" {
+			_ = client.Send("\r\n")
 			continue
 		}
 
@@ -724,7 +924,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		}
 
 		// Process other commands
-		response := s.processor.ProcessCommand(line)
+		response := s.processor.ProcessCommandForClient(line, client.callsign, spotterIP(client.address))
 
 		// Check for disconnect signal
 		if response == "BYE" {
@@ -738,6 +938,48 @@ func (s *Server) handleClient(conn net.Conn) {
 			client.Send(response)
 		}
 	}
+}
+
+// negotiateTelnet performs minimal option negotiation to keep echo behavior
+// predictable across telnet clients. It writes directly to the raw connection
+// to avoid IAC escaping by higher-level telnet transports.
+func (s *Server) negotiateTelnet(client *Client) {
+	if s.skipHandshake || client == nil || client.conn == nil {
+		return
+	}
+	conn := client.conn
+	// Prefer full-duplex sessions by suppressing go-ahead.
+	sendTelnetOption(conn, WILL, 3)
+	sendTelnetOption(conn, DO, 3)
+
+	switch s.echoMode {
+	case telnetEchoServer:
+		// Server will echo input; ask the client to disable local echo.
+		sendTelnetOption(conn, WILL, 1)
+		sendTelnetOption(conn, DONT, 1)
+	case telnetEchoLocal:
+		// Server will not echo; most clients enable local echo in response.
+		sendTelnetOption(conn, WONT, 1)
+	case telnetEchoOff:
+		// Best-effort: request no echo from either side.
+		sendTelnetOption(conn, WONT, 1)
+		sendTelnetOption(conn, DONT, 1)
+	default:
+		// Fall back to server echo if the mode is unknown.
+		sendTelnetOption(conn, WILL, 1)
+		sendTelnetOption(conn, DONT, 1)
+	}
+}
+
+func sendTelnetOption(conn net.Conn, command, option byte) {
+	if conn == nil {
+		return
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(defaultSendDeadline)); err != nil {
+		return
+	}
+	_, _ = conn.Write([]byte{IAC, command, option})
+	_ = conn.SetWriteDeadline(time.Time{})
 }
 
 // handleFilterCommand processes filter-related commands
@@ -798,6 +1040,24 @@ func (c *Client) handleFilterCommand(cmd string) string {
 					status = "DISABLED"
 				}
 				return fmt.Sprintf("Beacon spots: %s\n", status)
+			case "wwv":
+				status := "ENABLED"
+				if !c.filter.WWVEnabled() {
+					status = "DISABLED"
+				}
+				return fmt.Sprintf("WWV bulletins: %s\n", status)
+			case "wcy":
+				status := "ENABLED"
+				if !c.filter.WCYEnabled() {
+					status = "DISABLED"
+				}
+				return fmt.Sprintf("WCY bulletins: %s\n", status)
+			case "announce", "pc93":
+				status := "ENABLED"
+				if !c.filter.AnnounceEnabled() {
+					status = "DISABLED"
+				}
+				return fmt.Sprintf("Announcements: %s\n", status)
 			case "dxcont":
 				return fmt.Sprintf("DX continents: %s\n", formatAllowBlockStrings(c.filter.AllDXContinents, c.filter.BlockAllDXContinents, c.filter.DXContinents, c.filter.BlockDXContinents))
 			case "decont":
@@ -825,7 +1085,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 		}
 
 		filterType := strings.ToUpper(parts[1])
-		if filterType != "BEACON" && len(parts) < 3 {
+		if filterType != "BEACON" && filterType != "WWV" && filterType != "WCY" && filterType != "ANNOUNCE" && filterType != "PC93" && len(parts) < 3 {
 			return passFilterUsageMsg
 		}
 		switch filterType {
@@ -966,6 +1226,24 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			})
 			c.saveFilter()
 			return "Beacon spots enabled\n"
+		case "WWV":
+			c.updateFilter(func(f *filter.Filter) {
+				f.SetWWVEnabled(true)
+			})
+			c.saveFilter()
+			return "WWV bulletins enabled\n"
+		case "WCY":
+			c.updateFilter(func(f *filter.Filter) {
+				f.SetWCYEnabled(true)
+			})
+			c.saveFilter()
+			return "WCY bulletins enabled\n"
+		case "ANNOUNCE", "PC93":
+			c.updateFilter(func(f *filter.Filter) {
+				f.SetAnnounceEnabled(true)
+			})
+			c.saveFilter()
+			return "Announcements enabled\n"
 		case "DXCONT":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
@@ -1175,7 +1453,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			c.saveFilter()
 			return fmt.Sprintf("Filter set: DE 2-character grids %s\n", strings.Join(gridList, ", "))
 		default:
-			return "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
+			return "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 		}
 
 	case "reject":
@@ -1326,6 +1604,24 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			})
 			c.saveFilter()
 			return "Beacon spots disabled\n"
+		case "WWV":
+			c.updateFilter(func(f *filter.Filter) {
+				f.SetWWVEnabled(false)
+			})
+			c.saveFilter()
+			return "WWV bulletins disabled\n"
+		case "WCY":
+			c.updateFilter(func(f *filter.Filter) {
+				f.SetWCYEnabled(false)
+			})
+			c.saveFilter()
+			return "WCY bulletins disabled\n"
+		case "ANNOUNCE", "PC93":
+			c.updateFilter(func(f *filter.Filter) {
+				f.SetAnnounceEnabled(false)
+			})
+			c.saveFilter()
+			return "Announcements disabled\n"
 		case "DXCONT":
 			value := strings.TrimSpace(strings.Join(parts[2:], " "))
 			if value == "" {
@@ -1551,7 +1847,7 @@ func (c *Client) handleFilterCommand(cmd string) string {
 			c.saveFilter()
 			return fmt.Sprintf("DE 2-character grid filters disabled: %s\n", strings.Join(gridList, ", "))
 		default:
-			return "Unknown filter type. Use: ALL, BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
+			return "Unknown filter type. Use: ALL, BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 		}
 
 	default:
@@ -1933,14 +2229,31 @@ func applyWelcomeTokens(msg string, now time.Time) string {
 	return msg
 }
 
-// spotSender sends spots to the client from the spot channel
+// spotSender sends spots and bulletins to the client from their buffered channels.
 func (c *Client) spotSender() {
-	for spot := range c.spotChan {
-		formatted := spot.FormatDXCluster() + "\n"
-		err := c.Send(formatted)
-		if err != nil {
-			log.Printf("Error sending spot to %s: %v", c.callsign, err)
-			return
+	spotCh := c.spotChan
+	bulletinCh := c.bulletinChan
+	for spotCh != nil || bulletinCh != nil {
+		select {
+		case spot, ok := <-spotCh:
+			if !ok {
+				spotCh = nil
+				continue
+			}
+			formatted := spot.FormatDXCluster() + "\n"
+			if err := c.Send(formatted); err != nil {
+				log.Printf("Error sending spot to %s: %v", c.callsign, err)
+				return
+			}
+		case bulletin, ok := <-bulletinCh:
+			if !ok {
+				bulletinCh = nil
+				continue
+			}
+			if err := c.Send(bulletin.line); err != nil {
+				log.Printf("Error sending bulletin to %s: %v", c.callsign, err)
+				return
+			}
 		}
 	}
 }
@@ -1986,6 +2299,7 @@ func (s *Server) unregisterClient(client *Client) {
 
 	client.saveFilter()
 	close(client.spotChan)
+	close(client.bulletinChan)
 	log.Printf("Unregistered client: %s (total: %d)", client.callsign, total)
 }
 
@@ -2058,7 +2372,7 @@ func (c *Client) Send(message string) error {
 //
 // The CRLF terminator is always allowed: '\r' is skipped and '\n' ends the
 // input. maxLen is measured in bytes because telnet input is ASCII-oriented.
-func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard, allowConfidence bool) (string, error) {
+func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard, allowConfidence, allowDot bool) (string, error) {
 	if maxLen <= 0 {
 		maxLen = defaultCommandLineLimit
 	}
@@ -2074,8 +2388,8 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 			return "", err
 		}
 
-		// Handle telnet IAC (Interpret As Command) sequences.
-		if b == IAC {
+		// Handle telnet IAC (Interpret As Command) sequences when using the native backend.
+		if c.handleIAC && b == IAC {
 			cmd, err := c.reader.ReadByte()
 			if err != nil {
 				return "", err
@@ -2090,6 +2404,10 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 
 		// End of line once LF is observed (CR was already skipped).
 		if b == '\n' {
+			if c.echoInput {
+				_, _ = c.writer.WriteString("\r\n")
+				_ = c.writer.Flush()
+			}
 			break
 		}
 		if b == '\r' {
@@ -2103,14 +2421,22 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 				fmt.Sprintf("%s input is too long (maximum %d characters).", friendlyContextLabel(context), maxLen),
 			)
 		}
-		if !isAllowedInputByte(b, allowComma, allowWildcard, allowConfidence) {
+		if !isAllowedInputByte(b, allowComma, allowWildcard, allowConfidence, allowDot) {
 			c.logRejectedInput(context, fmt.Sprintf("forbidden byte 0x%02X", b))
 			return "", newInputValidationError(
 				fmt.Sprintf("%s input contains forbidden byte 0x%02X", context, b),
-				fmt.Sprintf("%s input may only contain %s.", friendlyContextLabel(context), allowedCharacterList(allowComma, allowWildcard, allowConfidence)),
+				fmt.Sprintf("%s input may only contain %s.", friendlyContextLabel(context), allowedCharacterList(allowComma, allowWildcard, allowConfidence, allowDot)),
 			)
 		}
 
+		if c.echoInput {
+			if err := c.writer.WriteByte(b); err != nil {
+				return "", err
+			}
+			if err := c.writer.Flush(); err != nil {
+				return "", err
+			}
+		}
 		line = append(line, b)
 	}
 
@@ -2118,9 +2444,10 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 }
 
 // isAllowedInputByte reports whether the byte is part of the strict ingress
-// safe list (letters, digits, space, '/', '#', '@'). When allowComma is true,
-// comma is also accepted to preserve legacy comma-delimited filter syntax.
-// CRLF is handled separately by ReadLine.
+// safe list (letters, digits, space, '/', '#', '@', '-'). When allowComma is
+// true, comma is also accepted to preserve legacy comma-delimited filter syntax.
+// allowDot permits '.' for numeric inputs and spot comments. CRLF is handled
+// separately by ReadLine.
 func newInputValidationError(reason, userMessage string) error {
 	return &InputValidationError{
 		reason:      reason,
@@ -2128,7 +2455,7 @@ func newInputValidationError(reason, userMessage string) error {
 	}
 }
 
-func isAllowedInputByte(b byte, allowComma, allowWildcard, allowConfidence bool) bool {
+func isAllowedInputByte(b byte, allowComma, allowWildcard, allowConfidence, allowDot bool) bool {
 	switch {
 	case b >= 'A' && b <= 'Z':
 		return true
@@ -2146,6 +2473,8 @@ func isAllowedInputByte(b byte, allowComma, allowWildcard, allowConfidence bool)
 		return true
 	case b == '-':
 		return true
+	case allowDot && b == '.':
+		return true
 	case allowComma && b == ',':
 		return true
 	case allowWildcard && b == '*':
@@ -2157,7 +2486,7 @@ func isAllowedInputByte(b byte, allowComma, allowWildcard, allowConfidence bool)
 	}
 }
 
-func allowedCharacterList(allowComma, allowWildcard, allowConfidence bool) string {
+func allowedCharacterList(allowComma, allowWildcard, allowConfidence, allowDot bool) string {
 	base := "letters, numbers, space, '/', '#', '@', '-'"
 	if allowComma {
 		base += ", ','"
@@ -2168,7 +2497,21 @@ func allowedCharacterList(allowComma, allowWildcard, allowConfidence bool) strin
 	if allowConfidence {
 		base += ", '?'"
 	}
+	if allowDot {
+		base += ", '.'"
+	}
 	return base
+}
+
+func spotterIP(address string) string {
+	if address == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return strings.TrimSpace(address)
+	}
+	return host
 }
 
 func friendlyContextLabel(context string) string {

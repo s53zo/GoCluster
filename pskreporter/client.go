@@ -8,12 +8,11 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"dxcluster/cty"
 	"dxcluster/skew"
 	"dxcluster/spot"
-	"dxcluster/uls"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	jsoniter "github.com/json-iterator/go"
@@ -40,22 +39,24 @@ type Client struct {
 	spotChan     chan *spot.Spot
 	shutdown     chan struct{}
 	workers      int
-	lookup       func() *cty.CTYDatabase
 	processing   chan []byte
 	workerWg     sync.WaitGroup
 	skewStore    *skew.Store
 	appendSSID   bool
 	spotterCache *spot.CallCache
 
-	infoCache    map[string]infoCacheEntry
-	infoCacheMu  sync.Mutex
-	infoCacheTTL time.Duration
+	maxPayloadBytes int
 
-	unlicensedReporter UnlicensedReporter
-	unlicensedQueue    chan unlicensedEvent
+	payloadDropCounter     rateCounter
+	payloadTooLargeCounter rateCounter
+	spotDropCounter        rateCounter
+	parseErrorCounter      rateCounter
 }
 
-var json = jsoniter.ConfigCompatibleWithStandardLibrary
+var (
+	jsonFast   = jsoniter.ConfigFastest
+	jsonCompat = jsoniter.ConfigCompatibleWithStandardLibrary
+)
 
 // PSKRMessage represents a PSKReporter MQTT message
 type PSKRMessage struct {
@@ -76,26 +77,19 @@ type PSKRMessage struct {
 const (
 	pskReporterQueuePerWorker = 256
 	defaultSpotBuffer         = 25000
+	defaultMaxPayloadBytes    = 4096
+	defaultDropLogInterval    = 10 * time.Second
 )
 
 var (
 	callCacheSize = 4096
 	callCacheTTL  = 10 * time.Minute
-	infoCacheTTL  = 5 * time.Minute
 )
 
-// UnlicensedReporter receives drop notifications for US calls failing FCC license checks.
-type UnlicensedReporter func(source, role, call, mode string, freqKHz float64)
-
-type unlicensedEvent struct {
-	source string
-	role   string
-	call   string
-	mode   string
-	freq   float64
-}
-
-// ConfigureCallCache tunes the normalization cache used for PSKReporter spotters.
+// Purpose: Configure the callsign normalization cache for PSKReporter.
+// Key aspects: Applies sane defaults when size/ttl are zero.
+// Upstream: Config load or tests.
+// Downstream: callCacheSize/callCacheTTL globals.
 func ConfigureCallCache(size int, ttl time.Duration) {
 	if size <= 0 {
 		size = 4096
@@ -107,78 +101,42 @@ func ConfigureCallCache(size int, ttl time.Duration) {
 	callCacheTTL = ttl
 }
 
-// SetUnlicensedReporter installs a best-effort reporter for unlicensed US drops.
-// Reporting is fire-and-forget; when the queue is full we fallback to an async call.
-func (c *Client) SetUnlicensedReporter(rep UnlicensedReporter) {
-	c.unlicensedReporter = rep
-	if rep != nil && c.unlicensedQueue == nil {
-		c.unlicensedQueue = make(chan unlicensedEvent, 256)
-		go c.unlicensedLoop()
-	}
-}
-
-func (c *Client) unlicensedLoop() {
-	for {
-		select {
-		case evt := <-c.unlicensedQueue:
-			if evt.call == "" {
-				continue
-			}
-			if rep := c.unlicensedReporter; rep != nil {
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("pskreporter: unlicensed reporter panic: %v", r)
-						}
-					}()
-					rep(evt.source, evt.role, evt.call, evt.mode, evt.freq)
-				}()
-			}
-		case <-c.shutdown:
-			return
-		}
-	}
-}
-
-func (c *Client) dispatchUnlicensed(role, call, mode string, freq float64) {
-	rep := c.unlicensedReporter
-	if rep == nil {
-		return
-	}
-	if c.unlicensedQueue != nil {
-		select {
-		case c.unlicensedQueue <- unlicensedEvent{source: "PSKREPORTER", role: role, call: call, mode: mode, freq: freq}:
-			return
-		default:
-			// fall through to async direct call
-		}
-	}
-	go rep("PSKREPORTER", role, call, mode, freq)
-}
-
-// NewClient creates a new PSKReporter MQTT client
-func NewClient(broker string, port int, topics []string, name string, workers int, lookup func() *cty.CTYDatabase, skewStore *skew.Store, appendSSID bool, spotBuffer int) *Client {
+// Purpose: Construct a PSKReporter MQTT client.
+// Key aspects: Initializes channels, caches, and worker settings.
+// Upstream: main.go startup.
+// Downstream: Client.Connect, worker pool.
+func NewClient(broker string, port int, topics []string, name string, workers int, skewStore *skew.Store, appendSSID bool, spotBuffer int, maxPayloadBytes int) *Client {
 	if spotBuffer <= 0 {
 		spotBuffer = defaultSpotBuffer
 	}
+	if maxPayloadBytes <= 0 {
+		maxPayloadBytes = defaultMaxPayloadBytes
+	}
+	logInterval := defaultDropLogInterval
 	return &Client{
-		broker:       broker,
-		port:         port,
-		topics:       append([]string{}, topics...),
-		name:         name,
-		spotChan:     make(chan *spot.Spot, spotBuffer), // Buffered ingest to absorb bursts
-		shutdown:     make(chan struct{}),
-		workers:      workers,
-		lookup:       lookup,
-		skewStore:    skewStore,
-		appendSSID:   appendSSID,
-		spotterCache: spot.NewCallCache(callCacheSize, callCacheTTL),
-		infoCache:    make(map[string]infoCacheEntry),
-		infoCacheTTL: infoCacheTTL,
+		broker:          broker,
+		port:            port,
+		topics:          append([]string{}, topics...),
+		name:            name,
+		spotChan:        make(chan *spot.Spot, spotBuffer), // Buffered ingest to absorb bursts
+		shutdown:        make(chan struct{}),
+		workers:         workers,
+		skewStore:       skewStore,
+		appendSSID:      appendSSID,
+		spotterCache:    spot.NewCallCache(callCacheSize, callCacheTTL),
+		maxPayloadBytes: maxPayloadBytes,
+
+		payloadDropCounter:     newRateCounter(logInterval),
+		payloadTooLargeCounter: newRateCounter(logInterval),
+		spotDropCounter:        newRateCounter(logInterval),
+		parseErrorCounter:      newRateCounter(logInterval),
 	}
 }
 
-// Connect establishes connection to PSKReporter MQTT broker
+// Purpose: Connect to the PSKReporter MQTT broker and start workers.
+// Key aspects: Configures reconnect/keepalive and sets handlers.
+// Upstream: main.go startup or reconnect flows.
+// Downstream: startWorkerPool, mqtt.Client.Connect.
 func (c *Client) Connect() error {
 	c.startWorkerPool()
 	// Create MQTT client options
@@ -228,7 +186,10 @@ func (c *Client) Connect() error {
 	return nil
 }
 
-// onConnect is called when connection is established
+// Purpose: Subscribe to configured topics on connect.
+// Key aspects: Logs subscription results and aborts on failure.
+// Upstream: MQTT on-connect callback.
+// Downstream: client.Subscribe, messageHandler.
 func (c *Client) onConnect(client mqtt.Client) {
 	log.Printf("PSKReporter: Connected, subscribing to %d topic(s)", len(c.topics))
 	for _, topic := range c.topics {
@@ -243,31 +204,55 @@ func (c *Client) onConnect(client mqtt.Client) {
 	log.Println("PSKReporter: Successfully subscribed, receiving spots...")
 }
 
-// onConnectionLost is called when connection is lost
+// Purpose: Log connection loss events.
+// Key aspects: Relies on MQTT auto-reconnect for recovery.
+// Upstream: MQTT connection-lost callback.
+// Downstream: None.
 func (c *Client) onConnectionLost(client mqtt.Client, err error) {
 	log.Printf("PSKReporter: Connection lost: %v", err)
 	log.Println("PSKReporter: Will attempt to reconnect...")
 }
 
-// messageHandler processes incoming MQTT messages
+// Purpose: Enqueue incoming MQTT payloads for worker processing.
+// Key aspects: Copies payload to avoid reuse; drops on full queue.
+// Upstream: MQTT subscription callback.
+// Downstream: processing channel.
 func (c *Client) messageHandler(client mqtt.Client, msg mqtt.Message) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("PSKReporter: panic in messageHandler: %v", r)
 		}
 	}()
-	payload := make([]byte, len(msg.Payload()))
-	copy(payload, msg.Payload())
+	select {
+	case <-c.shutdown:
+		return
+	default:
+	}
+	raw := msg.Payload()
+	if c.maxPayloadBytes > 0 && len(raw) > c.maxPayloadBytes {
+		if count, ok := c.payloadTooLargeCounter.Inc(); ok {
+			log.Printf("PSKReporter: payload %d bytes exceeds limit %d, dropped (total=%d)", len(raw), c.maxPayloadBytes, count)
+		}
+		return
+	}
+	payload := make([]byte, len(raw))
+	copy(payload, raw)
 	select {
 	case <-c.shutdown:
 		return
 	case c.processing <- payload:
 		// payload enqueued for workers
 	default:
-		log.Printf("PSKReporter: Processing queue full, dropping payload")
+		if count, ok := c.payloadDropCounter.Inc(); ok {
+			log.Printf("PSKReporter: Processing queue full, dropped %d payload(s) total", count)
+		}
 	}
 }
 
+// Purpose: Start the PSKReporter worker pool and processing queue.
+// Key aspects: Sizes queue based on worker count; idempotent on repeat calls.
+// Upstream: Connect.
+// Downstream: workerLoop goroutines.
 func (c *Client) startWorkerPool() {
 	if c.workers <= 0 {
 		c.workers = defaultPSKReporterWorkers()
@@ -282,10 +267,15 @@ func (c *Client) startWorkerPool() {
 	c.processing = make(chan []byte, capacity)
 	c.workerWg.Add(c.workers)
 	for i := 0; i < c.workers; i++ {
+		// Goroutine: worker loop parses payloads into spots.
 		go c.workerLoop(i)
 	}
 }
 
+// Purpose: Process payloads from the processing queue.
+// Key aspects: Stops on shutdown; recovers from panics to avoid worker loss.
+// Upstream: startWorkerPool goroutine.
+// Downstream: handlePayload.
 func (c *Client) workerLoop(id int) {
 	log.Printf("PSKReporter worker %d started", id)
 	defer c.workerWg.Done()
@@ -304,6 +294,10 @@ func (c *Client) workerLoop(id int) {
 	}
 }
 
+// Purpose: Parse a payload and emit a spot to the output channel.
+// Key aspects: Validates JSON and drops malformed inputs.
+// Upstream: workerLoop.
+// Downstream: convertToSpot, spotChan.
 func (c *Client) handlePayload(payload []byte) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -311,9 +305,13 @@ func (c *Client) handlePayload(payload []byte) {
 		}
 	}()
 	var pskrMsg PSKRMessage
-	if err := json.Unmarshal(payload, &pskrMsg); err != nil {
-		log.Printf("PSKReporter: Failed to parse message: %v", err)
-		return
+	if err := jsonFast.Unmarshal(payload, &pskrMsg); err != nil {
+		if errCompat := jsonCompat.Unmarshal(payload, &pskrMsg); errCompat != nil {
+			if count, ok := c.parseErrorCounter.Inc(); ok {
+				log.Printf("PSKReporter: Failed to parse message (total=%d): %v", count, errCompat)
+			}
+			return
+		}
 	}
 	s := c.convertToSpot(&pskrMsg)
 	if s == nil {
@@ -322,10 +320,16 @@ func (c *Client) handlePayload(payload []byte) {
 	select {
 	case c.spotChan <- s:
 	default:
-		log.Println("PSKReporter: Spot channel full, dropping spot")
+		if count, ok := c.spotDropCounter.Inc(); ok {
+			log.Printf("PSKReporter: Spot channel full, dropped %d spot(s) total", count)
+		}
 	}
 }
 
+// Purpose: Convert a PSKReporter message into a canonical Spot.
+// Key aspects: Preserves observation timestamp; applies skew correction and attaches grids.
+// Upstream: handlePayload.
+// Downstream: normalizeMessage, skew.ApplyCorrection.
 // convertToSpot converts PSKReporter message to our Spot format
 // IMPORTANT: This function sets the spot's Time field to the actual observation time
 // from the PSKReporter message, NOT the current system time. This is critical for
@@ -346,11 +350,11 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 
 	dxCall := norm.dxCall
 	deCall := norm.deCall
-	if !spot.IsValidCallsign(dxCall) {
+	if !spot.IsValidNormalizedCallsign(dxCall) {
 		// log.Printf("PSKReporter: invalid DX call %s", msg.SenderCall) // noisy: caller requested silence
 		return nil
 	}
-	if !spot.IsValidCallsign(deCall) {
+	if !spot.IsValidNormalizedCallsign(deCall) {
 		// log.Printf("PSKReporter: invalid DE call %s", msg.ReceiverCall) // noisy: caller requested silence
 		return nil
 	}
@@ -380,23 +384,10 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 		freqKHz = skew.ApplyCorrection(c.skewStore, norm.deCall, freqKHz)
 	}
 
-	dxInfo, ok := c.fetchCallsignInfo(dxCall)
-	if !ok {
-		return nil
-	}
-	deInfo, ok := c.fetchCallsignInfo(deCall)
-	if !ok {
-		return nil
-	}
-	// Prune US spotters lacking an active FCC license early to keep ingest lightweight.
-	if deInfo != nil && deInfo.ADIF == 291 && !uls.IsLicensedUS(deCall) {
-		c.dispatchUnlicensed("DE", deCall, norm.modeUpper, freqKHz)
-		return nil
-	}
 	// Create spot
 	// In PSKReporter: sender = DX station, receiver = spotter
 	// In our model: DXCall = sender, DECall = receiver
-	s := spot.NewSpot(dxCall, deCall, freqKHz, norm.modeUpper)
+	s := spot.NewSpotNormalized(dxCall, deCall, freqKHz, norm.modeUpper)
 	s.IsHuman = false
 
 	// CRITICAL: Set the actual observation timestamp from PSKReporter
@@ -410,15 +401,13 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 	s.Report = msg.Report
 	s.HasReport = true
 
-	// Build comment with locators
-	s.Comment = fmt.Sprintf("%s>%s", norm.dxGrid, norm.deGrid)
+	// Comment intentionally left empty for PSKReporter; grids are stored in metadata
+	// and rendered in the DX cluster tail to avoid duplicating payload.
 
 	// Set source type and node
 	s.SourceType = spot.SourcePSKReporter
 	s.SourceNode = "PSKREPORTER"
 
-	s.DXMetadata = metadataFromPrefix(dxInfo)
-	s.DEMetadata = metadataFromPrefix(deInfo)
 	s.DXMetadata.Grid = norm.dxGrid
 	s.DEMetadata.Grid = norm.deGrid
 
@@ -426,24 +415,20 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 
 	return s
 }
-func metadataFromPrefix(info *cty.PrefixInfo) spot.CallMetadata {
-	if info == nil {
-		return spot.CallMetadata{}
-	}
-	return spot.CallMetadata{
-		Continent: info.Continent,
-		Country:   info.Country,
-		CQZone:    info.CQZone,
-		ITUZone:   info.ITUZone,
-		ADIF:      info.ADIF,
-	}
-}
 
+// Purpose: Report whether a mode is CW or RTTY.
+// Key aspects: Expects normalized/uppercased mode input.
+// Upstream: convertToSpot.
+// Downstream: None.
 func isCWorRTTY(mode string) bool {
 	// mode is expected to be uppercased/trimmed by normalizeMessage.
 	return mode == "CW" || mode == "RTTY"
 }
 
+// Purpose: Normalize and validate a PSKReporter message.
+// Key aspects: Uppercases fields, validates frequency, and normalizes callsigns.
+// Upstream: convertToSpot.
+// Downstream: spot.NormalizeCallsign, decorateSpotterCall.
 func (c *Client) normalizeMessage(msg *PSKRMessage) *normalizedPSK {
 	if msg == nil {
 		return nil
@@ -470,6 +455,10 @@ func (c *Client) normalizeMessage(msg *PSKRMessage) *normalizedPSK {
 	}
 }
 
+// Purpose: Normalize spotter callsign and optionally append an SSID suffix.
+// Key aspects: Uses a cache; appends "-#" only when enabled and safe.
+// Upstream: normalizeMessage.
+// Downstream: spot.NormalizeCallsign, spot.CallCache.
 func (c *Client) decorateSpotterCall(raw string) string {
 	cacheKey := raw
 	if c.appendSSID {
@@ -494,7 +483,7 @@ func (c *Client) decorateSpotterCall(raw string) string {
 		return normalized
 	}
 	// Appending "-#" increases length by 2. Skip if it would violate validation limits.
-	if len(normalized)+2 > 10 {
+	if len(normalized)+2 > spot.MaxCallsignLength() {
 		c.spotterCache.Add(cacheKey, normalized)
 		return normalized
 	}
@@ -503,61 +492,52 @@ func (c *Client) decorateSpotterCall(raw string) string {
 	return normalized
 }
 
-func (c *Client) fetchCallsignInfo(call string) (*cty.PrefixInfo, bool) {
-	if c.lookup == nil {
-		return nil, true
-	}
-	now := time.Now()
-	if call == "" {
-		return nil, false
-	}
-	if info, ok := c.getInfoFromCache(call, now); ok {
-		return info, info != nil
-	}
-
-	db := c.lookup()
-	if db == nil {
-		return nil, true
-	}
-	info, ok := db.LookupCallsign(call)
-	c.setInfoCache(call, info, ok, now)
-	if !ok {
-		// log.Printf("PSKReporter: unknown call %s", call) // suppressed per user request
-	}
-	return info, ok
+type rateCounter struct {
+	interval time.Duration
+	lastLog  atomic.Int64
+	count    atomic.Uint64
 }
 
-type infoCacheEntry struct {
-	info *cty.PrefixInfo
-	ok   bool
-	at   time.Time
+func newRateCounter(interval time.Duration) rateCounter {
+	return rateCounter{interval: interval}
 }
 
-func (c *Client) getInfoFromCache(call string, now time.Time) (*cty.PrefixInfo, bool) {
-	c.infoCacheMu.Lock()
-	defer c.infoCacheMu.Unlock()
-	entry, ok := c.infoCache[call]
-	if !ok {
-		return nil, false
+// Purpose: Increment a counter and decide if it's time to log.
+// Key aspects: Uses atomics to avoid contention on hot paths.
+// Upstream: Drop/error logging sites.
+// Downstream: log.Printf when true is returned.
+func (c *rateCounter) Inc() (uint64, bool) {
+	if c == nil {
+		return 0, false
 	}
-	if c.infoCacheTTL > 0 && now.Sub(entry.at) > c.infoCacheTTL {
-		delete(c.infoCache, call)
-		return nil, false
+	total := c.count.Add(1)
+	if c.interval <= 0 {
+		return total, true
 	}
-	return entry.info, entry.ok
+	now := time.Now().UnixNano()
+	last := c.lastLog.Load()
+	if now-last < c.interval.Nanoseconds() {
+		return total, false
+	}
+	if c.lastLog.CompareAndSwap(last, now) {
+		return total, true
+	}
+	return total, false
 }
 
-func (c *Client) setInfoCache(call string, info *cty.PrefixInfo, ok bool, now time.Time) {
-	c.infoCacheMu.Lock()
-	c.infoCache[call] = infoCacheEntry{info: info, ok: ok, at: now}
-	c.infoCacheMu.Unlock()
-}
-
+// Purpose: Wait for workers to exit and release the processing queue.
+// Key aspects: Blocks until workerWg completes.
+// Upstream: Stop.
+// Downstream: workerWg.Wait.
 func (c *Client) stopWorkerPool() {
 	c.workerWg.Wait()
 	c.processing = nil
 }
 
+// Purpose: Choose a default worker count for PSKReporter ingest.
+// Key aspects: Uses NumCPU with a minimum of 4.
+// Upstream: startWorkerPool.
+// Downstream: runtime.NumCPU.
 func defaultPSKReporterWorkers() int {
 	workers := runtime.NumCPU()
 	// PSKReporter bursts are high volume; keep a minimum of 4 workers even on small CPUs.
@@ -567,17 +547,26 @@ func defaultPSKReporterWorkers() int {
 	return workers
 }
 
-// GetSpotChannel returns the channel for receiving spots
+// Purpose: Expose the output spot channel.
+// Key aspects: Read-only channel for downstream consumers.
+// Upstream: main.go pipeline wiring.
+// Downstream: None.
 func (c *Client) GetSpotChannel() <-chan *spot.Spot {
 	return c.spotChan
 }
 
-// IsConnected returns whether the client is connected
+// Purpose: Report whether the MQTT client is connected.
+// Key aspects: Safe when client is nil.
+// Upstream: Diagnostics or health checks.
+// Downstream: mqtt.Client.IsConnected.
 func (c *Client) IsConnected() bool {
 	return c.client != nil && c.client.IsConnected()
 }
 
-// Stop closes the PSKReporter connection
+// Purpose: Stop the PSKReporter client and worker pool.
+// Key aspects: Unsubscribes, disconnects, and signals shutdown.
+// Upstream: main.go shutdown.
+// Downstream: stopWorkerPool, mqtt.Client.Disconnect.
 func (c *Client) Stop() {
 	log.Println("Stopping PSKReporter client...")
 
