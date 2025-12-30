@@ -258,7 +258,8 @@ func (s *Spot) EnsureNormalized() {
 		s.ModeNorm = strings.ToUpper(strings.TrimSpace(s.Mode))
 	}
 	if s.BandNorm == "" && s.Band != "" {
-		s.BandNorm = strings.ToUpper(strings.TrimSpace(s.Band))
+		// Normalize band to canonical lowercase (e.g., "20m") so allowlists match.
+		s.BandNorm = NormalizeBand(s.Band)
 	}
 	if s.DXCallNorm == "" && s.DXCall != "" {
 		s.DXCallNorm = NormalizeCallsign(s.DXCall)

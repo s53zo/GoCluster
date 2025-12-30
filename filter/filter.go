@@ -1043,7 +1043,7 @@ func (f *Filter) Matches(s *spot.Spot) bool {
 		modeUpper = strings.ToUpper(strings.TrimSpace(s.Mode))
 	}
 
-	bandNorm := s.BandNorm
+	bandNorm := spot.NormalizeBand(s.BandNorm)
 	if bandNorm == "" {
 		bandNorm = spot.NormalizeBand(s.Band)
 	}

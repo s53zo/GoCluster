@@ -25,6 +25,29 @@ func TestNewFilterDefaultsAllowAllContinentsAndZones(t *testing.T) {
 	}
 }
 
+func TestBandAllowListNormalizesTokens(t *testing.T) {
+	f := NewFilter()
+	f.SetBand("20m", true)
+
+	allowed := &spot.Spot{
+		Mode:     "CW",
+		Band:     "20m",
+		BandNorm: "20M", // legacy uppercase token
+	}
+	if !f.Matches(allowed) {
+		t.Fatalf("expected 20m spot to pass when band allowlist includes 20m (normalized from 20M)")
+	}
+
+	blocked := &spot.Spot{
+		Mode:     "CW",
+		Band:     "40m",
+		BandNorm: "40M",
+	}
+	if f.Matches(blocked) {
+		t.Fatalf("expected 40m spot to be rejected when only 20m is allowed")
+	}
+}
+
 func TestContinentFilters(t *testing.T) {
 	f := NewFilter()
 	f.SetDXContinent("EU", true)
