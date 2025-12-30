@@ -421,6 +421,17 @@ type CallCorrectionConfig struct {
 	// are compared repeatedly during bursts.
 	DistanceCacheSize       int `yaml:"distance_cache_size"`
 	DistanceCacheTTLSeconds int `yaml:"distance_cache_ttl_seconds"`
+	// Cooldown gate to avoid flipping away from a call that already has recent, diverse
+	// support. Applies only to corrections away from the subject; corrections toward it
+	// still proceed. Bypass allows a decisively stronger alternate to override the cooldown.
+	CooldownEnabled          bool `yaml:"cooldown_enabled"`
+	CooldownMinReporters     int  `yaml:"cooldown_min_reporters"`
+	CooldownDurationSeconds  int  `yaml:"cooldown_duration_seconds"`
+	CooldownTTLSeconds       int  `yaml:"cooldown_ttl_seconds"`
+	CooldownBinHz            int  `yaml:"cooldown_bin_hz"`
+	CooldownMaxReporters     int  `yaml:"cooldown_max_reporters"`
+	CooldownBypassAdvantage  int  `yaml:"cooldown_bypass_advantage"`
+	CooldownBypassConfidence int  `yaml:"cooldown_bypass_confidence"`
 	// Frequency guard: skip corrections when a strong runner-up exists at a different frequency.
 	FreqGuardMinSeparationKHz float64 `yaml:"freq_guard_min_separation_khz"`
 	// Ratio (0-1): runner-up supporters must be at least this fraction of winner supporters to trigger the guard.
@@ -987,6 +998,43 @@ func Load(path string) (*Config, error) {
 		cfg.CallCorrection.DistanceCacheTTLSeconds = cfg.CallCorrection.RecencySeconds
 		if cfg.CallCorrection.DistanceCacheTTLSeconds <= 0 {
 			cfg.CallCorrection.DistanceCacheTTLSeconds = 120
+		}
+	}
+	if cfg.CallCorrection.CooldownBinHz <= 0 {
+		cfg.CallCorrection.CooldownBinHz = cfg.CallCorrection.QualityBinHz
+		if cfg.CallCorrection.CooldownBinHz <= 0 {
+			cfg.CallCorrection.CooldownBinHz = 1000
+		}
+	}
+	if cfg.CallCorrection.CooldownMinReporters <= 0 {
+		cfg.CallCorrection.CooldownMinReporters = 3
+	}
+	if cfg.CallCorrection.CooldownDurationSeconds <= 0 {
+		cfg.CallCorrection.CooldownDurationSeconds = 180
+	}
+	if cfg.CallCorrection.CooldownTTLSeconds <= 0 {
+		ttl := cfg.CallCorrection.RecencySeconds * 2
+		if ttl <= 0 {
+			ttl = 120
+		}
+		cfg.CallCorrection.CooldownTTLSeconds = ttl
+	}
+	if cfg.CallCorrection.CooldownMaxReporters <= 0 {
+		cfg.CallCorrection.CooldownMaxReporters = 16
+	}
+	if cfg.CallCorrection.CooldownBypassAdvantage < 0 {
+		cfg.CallCorrection.CooldownBypassAdvantage = 0
+	}
+	if cfg.CallCorrection.CooldownBypassConfidence < 0 {
+		cfg.CallCorrection.CooldownBypassConfidence = 0
+	}
+	// Provide protective defaults when cooldown is enabled but bypass knobs are unset.
+	if cfg.CallCorrection.CooldownEnabled {
+		if cfg.CallCorrection.CooldownBypassAdvantage == 0 {
+			cfg.CallCorrection.CooldownBypassAdvantage = 2
+		}
+		if cfg.CallCorrection.CooldownBypassConfidence == 0 {
+			cfg.CallCorrection.CooldownBypassConfidence = 10
 		}
 	}
 	cfg.CallCorrection.BandStateOverrides = normalizeBandStateOverrides(

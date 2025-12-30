@@ -555,6 +555,20 @@ func main() {
 		correctionIndex = spot.NewCorrectionIndex()
 		correctionIndex.StartCleanup(time.Minute, callCorrectionWindow(cfg.CallCorrection))
 	}
+	var callCooldown *spot.CallCooldown
+	if cfg.CallCorrection.CooldownEnabled {
+		callCooldown = spot.NewCallCooldown(spot.CallCooldownConfig{
+			Enabled:          cfg.CallCorrection.CooldownEnabled,
+			MinReporters:     cfg.CallCorrection.CooldownMinReporters,
+			Duration:         time.Duration(cfg.CallCorrection.CooldownDurationSeconds) * time.Second,
+			TTL:              time.Duration(cfg.CallCorrection.CooldownTTLSeconds) * time.Second,
+			BinHz:            cfg.CallCorrection.CooldownBinHz,
+			MaxReporters:     cfg.CallCorrection.CooldownMaxReporters,
+			BypassAdvantage:  cfg.CallCorrection.CooldownBypassAdvantage,
+			BypassConfidence: cfg.CallCorrection.CooldownBypassConfidence,
+		})
+		callCooldown.StartCleanup(time.Duration(cfg.CallCorrection.CooldownTTLSeconds) * time.Second)
+	}
 
 	var knownCalls atomic.Pointer[spot.KnownCallsigns]
 	knownCallsPath := strings.TrimSpace(cfg.KnownCalls.File)
@@ -776,7 +790,7 @@ func main() {
 	// Key aspects: Handles corrections, licensing, secondary dedupe, and fan-out.
 	// Upstream: main startup after wiring dependencies.
 	// Downstream: processOutputSpots.
-	go processOutputSpots(deduplicator, secondaryDeduper, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput)
+	go processOutputSpots(deduplicator, secondaryDeduper, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput)
 	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
@@ -1243,6 +1257,7 @@ func processOutputSpots(
 	gridLookup func(call string) (string, bool),
 	unlicensedReporter func(source, role, call, mode string, freq float64),
 	corrLogger spot.CorrectionTraceLogger,
+	callCooldown *spot.CallCooldown,
 	adaptiveMinReports *spot.AdaptiveMinReports,
 	refresher *adaptiveRefresher,
 	spotterReliability spot.SpotterReliability,
@@ -1295,7 +1310,7 @@ func processOutputSpots(
 
 			var suppress bool
 			if telnet != nil && !s.IsBeacon {
-				suppress = maybeApplyCallCorrectionWithLogger(s, correctionIdx, correctionCfg, ctyDB, knownCalls, tracker, dash, corrLogger, adaptiveMinReports, spotterReliability)
+				suppress = maybeApplyCallCorrectionWithLogger(s, correctionIdx, correctionCfg, ctyDB, knownCalls, tracker, dash, corrLogger, callCooldown, adaptiveMinReports, spotterReliability)
 				if suppress {
 					return
 				}
@@ -1770,7 +1785,7 @@ func metadataFromPrefix(info *cty.PrefixInfo) spot.CallMetadata {
 // Key aspects: Evaluates corrections, updates stats, and can suppress spots.
 // Upstream: processOutputSpots call correction stage.
 // Downstream: spot.ApplyCallCorrection, traceLogger, tracker updates.
-func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash uiSurface, traceLogger spot.CorrectionTraceLogger, adaptive *spot.AdaptiveMinReports, spotterReliability spot.SpotterReliability) bool {
+func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash uiSurface, traceLogger spot.CorrectionTraceLogger, cooldown *spot.CallCooldown, adaptive *spot.AdaptiveMinReports, spotterReliability spot.SpotterReliability) bool {
 	if spotEntry == nil {
 		return false
 	}
@@ -1802,9 +1817,11 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 	}
 
 	minReports := cfg.MinConsensusReports
+	cooldownMinReports := cfg.CooldownMinReporters
 	if adaptive != nil && (modeUpper == "CW" || modeUpper == "RTTY") {
 		if dyn := adaptive.MinReportsForBand(spotEntry.Band, now); dyn > 0 {
 			minReports = dyn
+			cooldownMinReports = dyn
 		}
 	}
 	state := "normal"
@@ -1850,6 +1867,8 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 		QualityBustedDecrement:   cfg.QualityBustedDecrement,
 		SpotterReliability:       spotterReliability,
 		MinSpotterReliability:    cfg.MinSpotterReliability,
+		Cooldown:                 cooldown,
+		CooldownMinReporters:     cooldownMinReports,
 	}
 	candidateWindowKHz := 0.5
 	if isVoice {

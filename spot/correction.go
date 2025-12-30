@@ -80,6 +80,11 @@ type CorrectionSettings struct {
 	// when counting corroborators.
 	SpotterReliability    SpotterReliability
 	MinSpotterReliability float64
+	// Cooldown protects a subject call from being flipped away when it already has
+	// recent diverse support on this frequency bin.
+	Cooldown *CallCooldown
+	// CooldownMinReporters allows adaptive thresholds per band/state when provided.
+	CooldownMinReporters int
 }
 
 var correctionEligibleModes = map[string]struct{}{
@@ -513,6 +518,10 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 	localCache.configure(cacheCfg.size, cacheCfg.ttl)
 	freqHz := subject.Frequency * 1000.0
 
+	if cfg.Cooldown != nil && subjectAgg != nil {
+		cfg.Cooldown.Record(subjectCall, freqHz, subjectAgg.reporters, cfg.CooldownMinReporters, cfg.RecencyWindow, now)
+	}
+
 	// Majority-of-unique-spotters: pick the call with the most unique reporters
 	// on-frequency (within recency/SNR gates). Distance is only a safety cap.
 	callKeys := make([]string, len(callStats))
@@ -664,6 +673,15 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 		if freqSeparation >= cfg.FreqGuardMinSeparationKHz && float64(runnerUp) >= cfg.FreqGuardRunnerUpRatio*float64(bestCount) {
 			trace.Decision = "rejected"
 			trace.Reason = "freq_guard"
+			logCorrectionTrace(cfg, trace, clusterSpots)
+			return "", 0, 0, subjectConfidence, totalReporters, false
+		}
+	}
+
+	if cfg.Cooldown != nil {
+		if block, _ := cfg.Cooldown.ShouldBlock(subjectCall, freqHz, cfg.CooldownMinReporters, cfg.RecencyWindow, subjectCount, subjectConfidence, bestCount, bestConfidence, now); block {
+			trace.Decision = "rejected"
+			trace.Reason = "cooldown"
 			logCorrectionTrace(cfg, trace, clusterSpots)
 			return "", 0, 0, subjectConfidence, totalReporters, false
 		}
