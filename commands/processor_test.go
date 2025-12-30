@@ -89,6 +89,33 @@ func TestDXCommandCTYValidation(t *testing.T) {
 	}
 }
 
+func TestShowDXCCPrefixAndSiblings(t *testing.T) {
+	ctyDB := loadTestCTY(t)
+	ctyLookup := func() *cty.CTYDatabase { return ctyDB }
+	p := NewProcessor(nil, nil, nil, ctyLookup)
+
+	resp := p.ProcessCommand("SHOW DXCC IT9")
+	expected := "IT9 -> ADIF 248 | Sicily (EU) | Prefix: IT9 | CQ 15 | ITU 28 | Other: I"
+	if !strings.Contains(resp, expected) {
+		t.Fatalf("expected %q in response, got %q", expected, resp)
+	}
+}
+
+func TestShowDXCCPortableCall(t *testing.T) {
+	ctyDB := loadTestCTY(t)
+	ctyLookup := func() *cty.CTYDatabase { return ctyDB }
+	p := NewProcessor(nil, nil, nil, ctyLookup)
+
+	resp := p.ProcessCommand("SHOW DXCC W6/LZ5VV")
+	expected := "W6/LZ5VV -> ADIF 291 | United States (NA) | Prefix: K | CQ 3 | ITU 6"
+	if !strings.Contains(resp, expected) {
+		t.Fatalf("expected %q in response, got %q", expected, resp)
+	}
+	if strings.Contains(resp, "Other:") {
+		t.Fatalf("did not expect Other list for single-prefix ADIF: %q", resp)
+	}
+}
+
 const sampleCTYPLIST = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
@@ -98,6 +125,14 @@ const sampleCTYPLIST = `<?xml version="1.0" encoding="UTF-8"?>
 		<string>Alpha</string>
 		<key>Prefix</key>
 		<string>K8ZB</string>
+		<key>ADIF</key>
+		<integer>1</integer>
+		<key>CQZone</key>
+		<integer>5</integer>
+		<key>ITUZone</key>
+		<integer>8</integer>
+		<key>Continent</key>
+		<string>NA</string>
 		<key>ExactCallsign</key>
 		<true/>
 	</dict>
@@ -107,6 +142,65 @@ const sampleCTYPLIST = `<?xml version="1.0" encoding="UTF-8"?>
 		<string>Alpha</string>
 		<key>Prefix</key>
 		<string>K1</string>
+		<key>ADIF</key>
+		<integer>1</integer>
+		<key>CQZone</key>
+		<integer>5</integer>
+		<key>ITUZone</key>
+		<integer>8</integer>
+		<key>Continent</key>
+		<string>NA</string>
+		<key>ExactCallsign</key>
+		<false/>
+	</dict>
+<key>W6</key>
+	<dict>
+		<key>Country</key>
+		<string>United States</string>
+		<key>Prefix</key>
+		<string>K</string>
+		<key>ADIF</key>
+		<integer>291</integer>
+		<key>CQZone</key>
+		<integer>3</integer>
+		<key>ITUZone</key>
+		<integer>6</integer>
+		<key>Continent</key>
+		<string>NA</string>
+		<key>ExactCallsign</key>
+		<false/>
+	</dict>
+<key>I</key>
+	<dict>
+		<key>Country</key>
+		<string>Italy</string>
+		<key>Prefix</key>
+		<string>I</string>
+		<key>ADIF</key>
+		<integer>248</integer>
+		<key>CQZone</key>
+		<integer>15</integer>
+		<key>ITUZone</key>
+		<integer>28</integer>
+		<key>Continent</key>
+		<string>EU</string>
+		<key>ExactCallsign</key>
+		<false/>
+	</dict>
+<key>IT9</key>
+	<dict>
+		<key>Country</key>
+		<string>Sicily</string>
+		<key>Prefix</key>
+		<string>IT9</string>
+		<key>ADIF</key>
+		<integer>248</integer>
+		<key>CQZone</key>
+		<integer>15</integer>
+		<key>ITUZone</key>
+		<integer>28</integer>
+		<key>Continent</key>
+		<string>EU</string>
 		<key>ExactCallsign</key>
 		<false/>
 	</dict>

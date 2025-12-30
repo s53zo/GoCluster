@@ -6,8 +6,10 @@ package commands
 import (
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"dxcluster/buffer"
 	"dxcluster/cty"
@@ -27,6 +29,7 @@ type Processor struct {
 	archive    archiveReader
 	spotInput  chan<- *spot.Spot
 	ctyLookup  func() *cty.CTYDatabase
+	prefixIdx  *prefixIndex
 }
 
 // Purpose: Construct a command processor bound to shared spot state.
@@ -39,6 +42,7 @@ func NewProcessor(buf *buffer.RingBuffer, archive archiveReader, spotInput chan<
 		archive:    archive,
 		spotInput:  spotInput,
 		ctyLookup:  ctyLookup,
+		prefixIdx:  &prefixIndex{},
 	}
 }
 
@@ -98,6 +102,7 @@ func (p *Processor) handleHelp() string {
 HELP                 - Show this help
 DX <freq> <call> [comment] - Post a spot (frequency in kHz)
 SHOW/DX [count]      - Show last N DX spots (default: 10)
+SHOW DXCC <prefix|callsign> - Look up DXCC/ADIF and zones for a prefix or callsign
 BYE                  - Disconnect
 
 Filter commands (allow + block, deny wins):
@@ -220,9 +225,9 @@ func (p *Processor) handleDX(fields []string, spotter string, spotterIP string) 
 }
 
 // Purpose: Route SHOW subcommands.
-// Key aspects: Currently only supports SHOW/DX.
+// Key aspects: Supports SHOW/DX and SHOW DXCC lookups.
 // Upstream: ProcessCommandForClient (SHOW/SH).
-// Downstream: handleShowDX.
+// Downstream: handleShowDX, handleShowDXCC.
 func (p *Processor) handleShow(args []string) string {
 	if len(args) == 0 {
 		return "Usage: SHOW/DX [count]\n"
@@ -233,6 +238,8 @@ func (p *Processor) handleShow(args []string) string {
 	switch subCmd {
 	case "DX":
 		return p.handleShowDX(args[1:])
+	case "DXCC":
+		return p.handleShowDXCC(args[1:])
 	default:
 		return fmt.Sprintf("Unknown SHOW subcommand: %s\n", subCmd)
 	}
@@ -292,4 +299,106 @@ func reverseSpotsInPlace(spots []*spot.Spot) {
 	for i, j := 0, len(spots)-1; i < j; i, j = i+1, j-1 {
 		spots[i], spots[j] = spots[j], spots[i]
 	}
+}
+
+// Purpose: Resolve CTY metadata for a prefix or callsign and render DXCC details.
+// Key aspects: Uses CTY portable lookup, reports ADIF/country/zones, and lists sibling prefixes for the same ADIF.
+// Upstream: handleShow (SHOW DXCC).
+// Downstream: CTY lookup, prefixIdx for sibling retrieval.
+func (p *Processor) handleShowDXCC(args []string) string {
+	if len(args) == 0 {
+		return "Usage: SHOW DXCC <prefix|callsign>\n"
+	}
+	if p.ctyLookup == nil {
+		return "CTY database is not available.\n"
+	}
+	db := p.ctyLookup()
+	if db == nil {
+		return "CTY database is not loaded.\n"
+	}
+
+	query := strings.ToUpper(strings.TrimSpace(args[0]))
+	if query == "" {
+		return "Usage: SHOW DXCC <prefix|callsign>\n"
+	}
+
+	info, ok := db.LookupCallsignPortable(query)
+	if !ok || info == nil {
+		return "Unknown DXCC/prefix.\n"
+	}
+
+	prefix := strings.ToUpper(strings.TrimSpace(info.Prefix))
+	country := strings.TrimSpace(info.Country)
+	continent := strings.ToUpper(strings.TrimSpace(info.Continent))
+	others := p.prefixIdx.siblings(db, info.ADIF, prefix)
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("%s -> ADIF %d | %s (%s) | Prefix: %s | CQ %d | ITU %d",
+		query, info.ADIF, country, continent, prefix, info.CQZone, info.ITUZone))
+	if len(others) > 0 {
+		b.WriteString(" | Other: ")
+		b.WriteString(strings.Join(others, ", "))
+	}
+	b.WriteByte('\n')
+	return b.String()
+}
+
+// prefixIndex caches ADIF->prefix list mappings for the current CTY DB pointer.
+// It builds a fresh map when the DB pointer changes (e.g., after a CTY refresh).
+type prefixIndex struct {
+	mu             sync.Mutex
+	db             *cty.CTYDatabase
+	adifToPrefixes map[int][]string
+}
+
+func (p *prefixIndex) siblings(db *cty.CTYDatabase, adif int, current string) []string {
+	if p == nil || db == nil {
+		return nil
+	}
+	p.mu.Lock()
+	if p.db != db {
+		p.adifToPrefixes = buildPrefixMap(db)
+		p.db = db
+	}
+	prefixes := p.adifToPrefixes[adif]
+	p.mu.Unlock()
+
+	current = strings.ToUpper(strings.TrimSpace(current))
+	out := make([]string, 0, len(prefixes))
+	for _, pref := range prefixes {
+		if pref == "" || pref == current {
+			continue
+		}
+		out = append(out, pref)
+	}
+	return out
+}
+
+func buildPrefixMap(db *cty.CTYDatabase) map[int][]string {
+	if db == nil {
+		return nil
+	}
+	tmp := make(map[int]map[string]struct{}, len(db.Data))
+	for _, info := range db.Data {
+		pref := strings.ToUpper(strings.TrimSpace(info.Prefix))
+		if pref == "" {
+			continue
+		}
+		set, ok := tmp[info.ADIF]
+		if !ok {
+			set = make(map[string]struct{})
+			tmp[info.ADIF] = set
+		}
+		set[pref] = struct{}{}
+	}
+	result := make(map[int][]string, len(tmp))
+	for adif, set := range tmp {
+		prefixes := make([]string, 0, len(set))
+		for pref := range set {
+			prefixes = append(prefixes, pref)
+		}
+		sort.Strings(prefixes)
+		result[adif] = prefixes
+	}
+	return result
 }
