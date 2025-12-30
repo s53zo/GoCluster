@@ -11,6 +11,7 @@ import (
 
 	"dxcluster/config"
 	"dxcluster/spot"
+	"dxcluster/sqliteutil"
 
 	_ "modernc.org/sqlite"
 )
@@ -56,6 +57,17 @@ func NewWriter(cfg config.ArchiveConfig) (*Writer, error) {
 // Downstream: applyArchivePragmas, checkArchiveIntegrity, ensureSchema.
 func openArchiveDB(cfg config.ArchiveConfig) (*sql.DB, error) {
 	const maxAttempts = 2
+
+	timeout := time.Duration(cfg.PreflightTimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	if res, err := sqliteutil.Preflight(cfg.DBPath, "archive", timeout, log.Printf); err != nil {
+		return nil, fmt.Errorf("archive: preflight: %w", err)
+	} else if res.Quarantined {
+		log.Printf("archive: preflight quarantined db to %s (elapsed=%s)", res.QuarantinePath, res.Elapsed)
+	}
+
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		db, err := sql.Open("sqlite", cfg.DBPath)
 		if err != nil {

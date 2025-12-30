@@ -6,12 +6,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver (pure Go)
+
+	"dxcluster/sqliteutil"
 )
 
 const (
@@ -90,12 +93,18 @@ func (s *Store) Entries() ([]Record, error) {
 // Key aspects: Initializes schema and configures SQLite for low contention.
 // Upstream: main.go startup and tools.
 // Downstream: initSchema, sql.Open, PRAGMA setup.
-func Open(path string) (*Store, error) {
+func Open(path string, preflightTimeout time.Duration) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("gridstore: database path is empty")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("gridstore: ensure directory: %w", err)
+	}
+
+	if res, err := sqliteutil.Preflight(path, "grid", preflightTimeout, log.Printf); err != nil {
+		return nil, fmt.Errorf("gridstore: preflight: %w", err)
+	} else if res.Quarantined {
+		log.Printf("gridstore: preflight quarantined db to %s (elapsed=%s)", res.QuarantinePath, res.Elapsed)
 	}
 
 	db, err := sql.Open("sqlite", path)

@@ -96,6 +96,8 @@ type Config struct {
 	// historical behavior.
 	GridDBCheckOnMiss *bool `yaml:"grid_db_check_on_miss"`
 	GridTTLDays       int   `yaml:"grid_ttl_days"`
+	// GridPreflightTimeoutMS bounds the startup WAL checkpoint/quick_check before opening SQLite.
+	GridPreflightTimeoutMS int `yaml:"grid_preflight_timeout_ms"`
 	// LoadedFrom is populated by Load with the path or directory used to build
 	// this configuration. It is not driven by YAML.
 	LoadedFrom string `yaml:"-"`
@@ -223,6 +225,8 @@ type ArchiveConfig struct {
 	Synchronous string `yaml:"synchronous"`
 	// AutoDeleteCorruptDB removes the archive DB on startup if integrity checks fail.
 	AutoDeleteCorruptDB bool `yaml:"auto_delete_corrupt_db"`
+	// PreflightTimeoutMS bounds the startup WAL checkpoint/quick_check before opening SQLite.
+	PreflightTimeoutMS int `yaml:"preflight_timeout_ms"`
 }
 
 // PeeringConfig controls DXSpider node-to-node peering.
@@ -793,6 +797,9 @@ func Load(path string) (*Config, error) {
 	if cfg.Archive.BusyTimeoutMS <= 0 {
 		cfg.Archive.BusyTimeoutMS = 1000
 	}
+	if cfg.Archive.PreflightTimeoutMS <= 0 {
+		cfg.Archive.PreflightTimeoutMS = 2000
+	}
 	syncMode := strings.ToLower(strings.TrimSpace(cfg.Archive.Synchronous))
 	if syncMode == "" {
 		syncMode = "off"
@@ -1291,6 +1298,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.GridTTLDays < 0 {
 		cfg.GridTTLDays = 0
+	}
+	if cfg.GridPreflightTimeoutMS <= 0 {
+		cfg.GridPreflightTimeoutMS = 2000
 	}
 
 	// Normalize dedup settings so the window drives behavior.

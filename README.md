@@ -308,6 +308,7 @@ fcc_uls:
 - The in-memory grid cache is a bounded LRU of size `grid_cache_size` (default `100000`). Cache misses fall back to SQLite, keeping startup O(1) even as the database grows.
 - The stats line `Grids: +X / Y since start / Z in DB` counts accepted grid changes (not repeated identical reports); `Z` is the current row count from SQLite.
 - If you set `grid_ttl_days > 0`, the store purges rows whose `updated_at` timestamp is older than that many days right after each SCP refresh. Continuous SCP membership or live grid updates keep records fresh automatically.
+- On startup the grid DB runs a bounded WAL checkpoint + `quick_check` (`grid_preflight_timeout_ms`). If either fails or times out, the DB (and sidecars) is quarantined to a timestamped `.bad-*` copy so the cluster can continue with a fresh file.
 
 ## Runtime Logs and Corrections
 
@@ -379,6 +380,7 @@ The optional SQLite archive is built to stay out of the hot path: enqueue is non
 
 - `archive.synchronous`: defaults to `off` for maximum throughput when the archive is disposable; set to `normal` or `full` if you need crash safety.
 - `archive.auto_delete_corrupt_db`: when true, the server runs `PRAGMA quick_check` at startup and deletes the archive DB + WAL/SHM if integrity fails, then recreates schema.
+- Archive startup also runs a bounded WAL checkpoint + `quick_check` (`preflight_timeout_ms`); on failure/timeout the archive DB and sidecars are quarantined to a timestamped `.bad-*` copy and a fresh file is used so the cluster can continue.
 
 Operational guidance: enable `auto_delete_corrupt_db` only if the archive is truly disposable. If you need to preserve data through crashes, leave auto-delete off and raise synchronous to `normal`/`full` (or disable the archive entirely).
 

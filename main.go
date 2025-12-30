@@ -599,7 +599,8 @@ func main() {
 			}
 		}
 	}
-	gridStore, err := gridstore.Open(cfg.GridDBPath)
+	gridPreflightTimeout := time.Duration(cfg.GridPreflightTimeoutMS) * time.Millisecond
+	gridStore, err := gridstore.Open(cfg.GridDBPath, gridPreflightTimeout)
 	if err != nil {
 		log.Fatalf("Failed to open grid database: %v", err)
 	}
