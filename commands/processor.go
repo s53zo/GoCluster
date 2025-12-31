@@ -366,12 +366,16 @@ func (p *Processor) handleShowDXCC(args []string) string {
 		return "CTY database is not loaded.\n"
 	}
 
-	query := strings.ToUpper(strings.TrimSpace(args[0]))
-	if query == "" {
+	queryRaw := strings.TrimSpace(args[0])
+	if queryRaw == "" {
 		return "Usage: SHOW DXCC <prefix|callsign>\n"
 	}
+	lookup := spot.NormalizeCallsign(queryRaw)
+	if lookup == "" {
+		return "Unknown DXCC/prefix.\n"
+	}
 
-	info, ok := db.LookupCallsignPortable(query)
+	info, ok := db.LookupCallsignPortable(lookup)
 	if !ok || info == nil {
 		return "Unknown DXCC/prefix.\n"
 	}
@@ -383,7 +387,7 @@ func (p *Processor) handleShowDXCC(args []string) string {
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("%s -> ADIF %d | %s (%s) | Prefix: %s | CQ %d | ITU %d",
-		query, info.ADIF, country, continent, prefix, info.CQZone, info.ITUZone))
+		lookup, info.ADIF, country, continent, prefix, info.CQZone, info.ITUZone))
 	if len(others) > 0 {
 		b.WriteString(" | Other: ")
 		b.WriteString(strings.Join(others, ", "))

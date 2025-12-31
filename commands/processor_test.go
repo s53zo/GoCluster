@@ -117,6 +117,18 @@ func TestShowDXCCPortableCall(t *testing.T) {
 	}
 }
 
+func TestShowDXCCMobileSuffix(t *testing.T) {
+	ctyDB := loadTestCTY(t)
+	ctyLookup := func() *cty.CTYDatabase { return ctyDB }
+	p := NewProcessor(nil, nil, nil, ctyLookup)
+
+	resp := p.ProcessCommand("SHOW DXCC W6/LZ5VV/M")
+	expected := "W6/LZ5VV -> ADIF 291 | United States (NA) | Prefix: K | CQ 3 | ITU 6"
+	if !strings.Contains(resp, expected) {
+		t.Fatalf("expected %q in response, got %q", expected, resp)
+	}
+}
+
 func TestShowMYDXRequiresFilter(t *testing.T) {
 	p := NewProcessor(nil, nil, nil, nil)
 	resp := p.ProcessCommandForClient("SHOW MYDX 5", "N2WQ", "", nil)
