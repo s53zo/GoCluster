@@ -15,12 +15,12 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/bloom"
 )
 
 const (
 	recordVersion       = 1
 	recordHeaderSize    = 36
-	writeQueueDepth     = 8
 	maintenanceBatchCap = 1024
 )
 
@@ -37,6 +37,26 @@ var (
 	errInvalidCount  = errors.New("gridstore: invalid count metadata")
 	errInvalidRecord = errors.New("gridstore: invalid record encoding")
 )
+
+const (
+	defaultCacheSizeBytes        = int64(64 << 20)  // 64MB shared block cache for hot reads
+	defaultBloomFilterBits       = 10               // Bits per key for bloom filters on SSTables
+	defaultMemTableSizeBytes     = uint64(32 << 20) // 32MB write buffer for burst tolerance
+	defaultL0CompactionThreshold = 4                // Keep compactions reactive for low write amp
+	defaultL0StopWritesThreshold = 16               // Higher stop threshold to absorb short spikes
+	defaultWriteQueueDepth       = 64               // Buffered channel depth feeding the single writer
+)
+
+// Options controls Pebble tuning and writer buffering for the grid store.
+// All zero/negative fields are replaced with safe defaults via sanitizeOptions.
+type Options struct {
+	CacheSizeBytes        int64
+	BloomFilterBitsPerKey int
+	MemTableSizeBytes     uint64
+	L0CompactionThreshold int
+	L0StopWritesThreshold int
+	WriteQueueDepth       int
+}
 
 // Record represents a single callsign entry with optional grid and known-call flag.
 type Record struct {
@@ -64,6 +84,7 @@ type Store struct {
 	db     *pebble.DB
 	writes chan writeRequest
 	done   chan struct{}
+	cache  *pebble.Cache // owned cache for the DB; unref'd on Close
 
 	mu     sync.Mutex
 	closed bool
@@ -88,6 +109,31 @@ type writeRequest struct {
 type writeResult struct {
 	removed int64
 	err     error
+}
+
+func sanitizeOptions(opts Options) Options {
+	if opts.CacheSizeBytes <= 0 {
+		opts.CacheSizeBytes = defaultCacheSizeBytes
+	}
+	if opts.BloomFilterBitsPerKey <= 0 {
+		opts.BloomFilterBitsPerKey = defaultBloomFilterBits
+	}
+	if opts.MemTableSizeBytes <= 0 {
+		opts.MemTableSizeBytes = defaultMemTableSizeBytes
+	}
+	if opts.L0CompactionThreshold <= 0 {
+		opts.L0CompactionThreshold = defaultL0CompactionThreshold
+	}
+	if opts.L0StopWritesThreshold <= opts.L0CompactionThreshold {
+		opts.L0StopWritesThreshold = defaultL0StopWritesThreshold
+		if opts.L0StopWritesThreshold <= opts.L0CompactionThreshold {
+			opts.L0StopWritesThreshold = opts.L0CompactionThreshold + 4
+		}
+	}
+	if opts.WriteQueueDepth <= 0 {
+		opts.WriteQueueDepth = defaultWriteQueueDepth
+	}
+	return opts
 }
 
 // Purpose: Load all call records from the store.
@@ -126,11 +172,11 @@ func (s *Store) Entries() ([]Record, error) {
 // Key aspects: Initializes metadata and spins a single writer goroutine.
 // Upstream: main.go startup and tools.
 // Downstream: Pebble open, writer loop.
-func Open(path string, preflightTimeout time.Duration) (*Store, error) {
+func Open(path string, opts Options) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("gridstore: database path is empty")
 	}
-	_ = preflightTimeout // Retained for config compatibility; unused for Pebble.
+	opts = sanitizeOptions(opts)
 
 	if info, err := os.Stat(path); err == nil {
 		if !info.IsDir() {
@@ -144,21 +190,50 @@ func Open(path string, preflightTimeout time.Duration) (*Store, error) {
 		return nil, fmt.Errorf("gridstore: ensure directory: %w", err)
 	}
 
-	db, err := pebble.Open(path, &pebble.Options{})
+	pebbleOpts := &pebble.Options{
+		Cache:                 nil,
+		MemTableSize:          opts.MemTableSizeBytes,
+		L0CompactionThreshold: opts.L0CompactionThreshold,
+		L0StopWritesThreshold: opts.L0StopWritesThreshold,
+	}
+	if opts.CacheSizeBytes > 0 {
+		pebbleOpts.Cache = pebble.NewCache(opts.CacheSizeBytes)
+	}
+	if opts.BloomFilterBitsPerKey > 0 {
+		filter := bloom.FilterPolicy(opts.BloomFilterBitsPerKey)
+		level := pebble.LevelOptions{
+			FilterPolicy: filter,
+			FilterType:   pebble.TableFilter,
+		}
+		// Apply the same table filter policy to all default levels (Pebble defaults to 7).
+		pebbleOpts.Levels = make([]pebble.LevelOptions, 7)
+		for i := range pebbleOpts.Levels {
+			pebbleOpts.Levels[i] = level
+		}
+	}
+
+	db, err := pebble.Open(path, pebbleOpts)
 	if err != nil {
+		if pebbleOpts.Cache != nil {
+			pebbleOpts.Cache.Unref()
+		}
 		return nil, fmt.Errorf("gridstore: open: %w", err)
 	}
 
 	count, err := loadCount(db)
 	if err != nil {
 		_ = db.Close()
+		if pebbleOpts.Cache != nil {
+			pebbleOpts.Cache.Unref()
+		}
 		return nil, err
 	}
 
 	store := &Store{
 		db:     db,
-		writes: make(chan writeRequest, writeQueueDepth),
+		writes: make(chan writeRequest, opts.WriteQueueDepth),
 		done:   make(chan struct{}),
+		cache:  pebbleOpts.Cache,
 	}
 	store.count.Store(count)
 	go store.writeLoop()
@@ -176,7 +251,12 @@ func (s *Store) Close() error {
 	if s.closeWriter() {
 		<-s.done
 	}
-	return s.db.Close()
+	err := s.db.Close()
+	if s.cache != nil {
+		s.cache.Unref()
+		s.cache = nil
+	}
+	return err
 }
 
 // Purpose: Delete records older than the cutoff time.

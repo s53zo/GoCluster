@@ -599,8 +599,15 @@ func main() {
 			}
 		}
 	}
-	gridPreflightTimeout := time.Duration(cfg.GridPreflightTimeoutMS) * time.Millisecond
-	gridStore, err := gridstore.Open(cfg.GridDBPath, gridPreflightTimeout)
+	gridOpts := gridstore.Options{
+		CacheSizeBytes:        int64(cfg.GridBlockCacheMB) << 20,
+		BloomFilterBitsPerKey: cfg.GridBloomFilterBits,
+		MemTableSizeBytes:     uint64(cfg.GridMemTableSizeMB) << 20,
+		L0CompactionThreshold: cfg.GridL0Compaction,
+		L0StopWritesThreshold: cfg.GridL0StopWrites,
+		WriteQueueDepth:       cfg.GridWriteQueueDepth,
+	}
+	gridStore, err := gridstore.Open(cfg.GridDBPath, gridOpts)
 	if err != nil {
 		log.Fatalf("Failed to open grid database: %v", err)
 	}

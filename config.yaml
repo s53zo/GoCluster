@@ -252,12 +252,18 @@ fcc_uls:
   refresh_utc: "22:00"                                              # Daily download time in HH:MM UTC
 
 # Combined database for known calls + grids
-grid_db: "data/grids/calls.db"
-grid_flush_seconds: 60                 # Batch DB writes at most once per this many seconds
-grid_cache_size: 10240                 # Max in-memory grid cache entries (lazy LRU; falls back to SQLite on miss)
-grid_cache_ttl_seconds: 3600           # >0 expires cache entries after this many seconds (0=never expires)
-grid_db_check_on_miss: true            # When true, consult SQLite on cache miss to avoid redundant writes (A/B via DXC_GRID_DB_CHECK_ON_MISS)
-grid_ttl_days: 90                      # >0 prunes grid records older than this many days (0=keep forever)
+ grid_db: "data/grids/pebble"
+ grid_flush_seconds: 60                 # Batch DB writes at most once per this many seconds
+ grid_cache_size: 10240                 # Max in-memory grid cache entries (lazy LRU; falls back to Pebble on miss)
+ grid_cache_ttl_seconds: 3600           # >0 expires cache entries after this many seconds (0=never expires)
+ grid_db_check_on_miss: true            # When true, consult Pebble on cache miss to avoid redundant writes (A/B via DXC_GRID_DB_CHECK_ON_MISS)
+ grid_ttl_days: 90                      # >0 prunes grid records older than this many days (0=keep forever)
+ grid_block_cache_mb: 64                # Block cache shared across SSTables for repeated grid lookups
+ grid_bloom_filter_bits: 10             # Bloom filter bits/key for faster negative lookups
+ grid_memtable_size_mb: 32              # Write buffer size to absorb bursts before flushing SSTables
+ grid_l0_compaction_threshold: 4        # Files in L0 before triggering compaction
+ grid_l0_stop_writes_threshold: 16      # Stop writes when L0 reaches this many files (burst tolerance)
+ grid_write_queue_depth: 64             # Buffered channel feeding the single writer (higher for bursty ingest)
 
 # RBN skew correction table
 skew:

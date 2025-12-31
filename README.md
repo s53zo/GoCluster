@@ -307,6 +307,7 @@ fcc_uls:
 - Grids and known-call flags are stored in Pebble at `grid_db` (default `data/grids/pebble`, a directory). Each batch is committed with `Sync` for durability; the in-memory cache continues serving while backfills rebuild on new spots.
 - Writes are batched by `grid_flush_seconds` (default `60s`); a final flush runs during shutdown.
 - The in-memory grid cache is a bounded LRU of size `grid_cache_size` (default `100000`). Cache misses fall back to Pebble via the async backfill path when `grid_db_check_on_miss` is true, keeping the output path non-blocking.
+- Pebble tuning knobs (defaults tuned for read-heavy durability): `grid_block_cache_mb=64`, `grid_bloom_filter_bits=10`, `grid_memtable_size_mb=32`, `grid_l0_compaction_threshold=4`, `grid_l0_stop_writes_threshold=16`, `grid_write_queue_depth=64`.
 - The stats line `Grids: +X / Y since start / Z in DB` counts accepted grid changes (not repeated identical reports); `Z` is the current entry count maintained in Pebble metadata.
 - If you set `grid_ttl_days > 0`, the store purges rows whose `updated_at` timestamp is older than that many days right after each SCP refresh. Continuous SCP membership or live grid updates keep records fresh automatically.
 - `grid_preflight_timeout_ms` is ignored for the Pebble prototype (retained for config compatibility).
@@ -423,7 +424,7 @@ Operational guidance: enable `auto_delete_corrupt_db` only if the archive is tru
 4. Set `spot_policy.max_age_seconds` to drop stale spots before they're processed further. For CW/RTTY frequency smoothing, tune `spot_policy.frequency_averaging_seconds` (window), `spot_policy.frequency_averaging_tolerance_hz` (allowed deviation), and `spot_policy.frequency_averaging_min_reports` (minimum corroborating reports).
 5. (Optional) Enable `skew.enabled` after generating `skew.file` via `go run ./cmd/rbnskewfetch` (or let the server fetch it at the next 00:30 UTC window). The server applies each skimmer's multiplicative correction before normalization so SSIDs stay unique.
 6. If you maintain a historical callsign list, set `known_calls.file` plus `known_calls.url` (leave `enabled: true` to keep it refreshed). On first launch the server downloads the file if missing, loads it into memory, and then refreshes it daily at `known_calls.refresh_utc`.
-7. Grids/known calls are persisted in Pebble (`grid_db`, default `data/grids/pebble`). Tune `grid_flush_seconds` for batch cadence, `grid_cache_size` to bound the in-memory LRU used for grid comparisons, and `grid_ttl_days` if you want old, unobserved calls to expire automatically after a configurable number of days.
+7. Grids/known calls are persisted in Pebble (`grid_db`, default `data/grids/pebble`). Tune `grid_flush_seconds` for batch cadence, `grid_cache_size` to bound the in-memory LRU used for grid comparisons, `grid_block_cache_mb`/`grid_bloom_filter_bits`/`grid_memtable_size_mb`/`grid_l0_stop_writes_threshold` for Pebble read/write tuning, and `grid_write_queue_depth`/`grid_ttl_days` for buffering and retention.
 8. Adjust `stats.display_interval_seconds` in `data/config/app.yaml` to control how frequently runtime statistics print to the console (defaults to 30 seconds).
 9. Install dependencies and run:
 	 ```pwsh
@@ -443,7 +444,7 @@ Operational guidance: enable `auto_delete_corrupt_db` only if the archive is tru
 - Archive defaults keep writes lightweight: `queue_size=10000`, `batch_size=500`, `batch_interval_ms=200`, `cleanup_interval_seconds=3600`, `synchronous=off`, `auto_delete_corrupt_db=false` (`busy_timeout_ms`/`preflight_timeout_ms` are ignored for Pebble).
 - Known calls default to `data/scp/MASTER.SCP` and refresh at `01:00` UTC if unspecified. CTY falls back to `data/cty/cty.plist`.
 - FCC ULS fetches use the official URL/paths (`archive_path=data/fcc/l_amat.zip`, `db_path=data/fcc/fcc_uls.db`, `temp_dir` inherits from `db_path`), and refresh times must parse as `HH:MM` or loading fails fast.
-- Grid store defaults: `grid_db=data/grids/pebble`, `grid_flush_seconds=60`, `grid_cache_size=100000`, with TTL/retention floors of zero to avoid negative durations.
+- Grid store defaults: `grid_db=data/grids/pebble`, `grid_flush_seconds=60`, `grid_cache_size=100000`, `grid_block_cache_mb=64`, `grid_bloom_filter_bits=10`, `grid_memtable_size_mb=32`, `grid_l0_compaction_threshold=4`, `grid_l0_stop_writes_threshold=16`, `grid_write_queue_depth=64`, with TTL/retention floors of zero to avoid negative durations.
 - Dedup windows are coerced to zero-or-greater; `output_buffer_size` defaults to `1000` so bursts do not immediately drop spots.
 - Buffer capacity defaults to `300000` spots; skew downloads default to SM7IUN's CSV (`url=https://sm7iun.se/rbnskew.csv`, `file=data/skm_correction/rbnskew.json`, `refresh_utc=00:30`) with non-negative `min_spots`.
 - `config.Print` writes a concise summary of the loaded settings to stdout for easy startup diagnostics.

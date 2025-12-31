@@ -10,7 +10,11 @@
       "Bash(find:*)",
       "Bash(go version:*)",
       "Bash(go list:*)",
-      "Bash(go tool pprof:*)"
+      "Bash(go tool pprof:*)",
+      "Bash(cat:*)",
+      "Bash(git show:*)",
+      "Bash(dir:*)",
+      "Bash(go test:*)"
     ],
     "deny": [],
     "ask": []

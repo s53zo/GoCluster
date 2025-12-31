@@ -126,7 +126,7 @@ func TestPurgeOlderThan(t *testing.T) {
 
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(t.TempDir(), 0)
+	store, err := Open(t.TempDir(), Options{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -65,32 +65,38 @@ func normalizeTelnetEchoMode(value string) (string, bool) {
 // enriched with defaults during Load so downstream packages can assume sane,
 // non-zero values.
 type Config struct {
-	Server          ServerConfig         `yaml:"server"`
-	Telnet          TelnetConfig         `yaml:"telnet"`
-	UI              UIConfig             `yaml:"ui"`
-	RBN             RBNConfig            `yaml:"rbn"`
-	RBNDigital      RBNConfig            `yaml:"rbn_digital"`
-	HumanTelnet     RBNConfig            `yaml:"human_telnet"`
-	PSKReporter     PSKReporterConfig    `yaml:"pskreporter"`
-	Archive         ArchiveConfig        `yaml:"archive"`
-	Dedup           DedupConfig          `yaml:"dedup"`
-	Filter          FilterConfig         `yaml:"filter"`
-	Stats           StatsConfig          `yaml:"stats"`
-	CallCorrection  CallCorrectionConfig `yaml:"call_correction"`
-	CallCache       CallCacheConfig      `yaml:"call_cache"`
-	Harmonics       HarmonicConfig       `yaml:"harmonics"`
-	SpotPolicy      SpotPolicy           `yaml:"spot_policy"`
-	ModeInference   ModeInferenceConfig  `yaml:"mode_inference"`
-	CTY             CTYConfig            `yaml:"cty"`
-	Buffer          BufferConfig         `yaml:"buffer"`
-	Skew            SkewConfig           `yaml:"skew"`
-	FCCULS          FCCULSConfig         `yaml:"fcc_uls"`
-	KnownCalls      KnownCallsConfig     `yaml:"known_calls"`
-	Peering         PeeringConfig        `yaml:"peering"`
-	GridDBPath      string               `yaml:"grid_db"`
-	GridFlushSec    int                  `yaml:"grid_flush_seconds"`
-	GridCacheSize   int                  `yaml:"grid_cache_size"`
-	GridCacheTTLSec int                  `yaml:"grid_cache_ttl_seconds"`
+	Server              ServerConfig         `yaml:"server"`
+	Telnet              TelnetConfig         `yaml:"telnet"`
+	UI                  UIConfig             `yaml:"ui"`
+	RBN                 RBNConfig            `yaml:"rbn"`
+	RBNDigital          RBNConfig            `yaml:"rbn_digital"`
+	HumanTelnet         RBNConfig            `yaml:"human_telnet"`
+	PSKReporter         PSKReporterConfig    `yaml:"pskreporter"`
+	Archive             ArchiveConfig        `yaml:"archive"`
+	Dedup               DedupConfig          `yaml:"dedup"`
+	Filter              FilterConfig         `yaml:"filter"`
+	Stats               StatsConfig          `yaml:"stats"`
+	CallCorrection      CallCorrectionConfig `yaml:"call_correction"`
+	CallCache           CallCacheConfig      `yaml:"call_cache"`
+	Harmonics           HarmonicConfig       `yaml:"harmonics"`
+	SpotPolicy          SpotPolicy           `yaml:"spot_policy"`
+	ModeInference       ModeInferenceConfig  `yaml:"mode_inference"`
+	CTY                 CTYConfig            `yaml:"cty"`
+	Buffer              BufferConfig         `yaml:"buffer"`
+	Skew                SkewConfig           `yaml:"skew"`
+	FCCULS              FCCULSConfig         `yaml:"fcc_uls"`
+	KnownCalls          KnownCallsConfig     `yaml:"known_calls"`
+	Peering             PeeringConfig        `yaml:"peering"`
+	GridDBPath          string               `yaml:"grid_db"`
+	GridFlushSec        int                  `yaml:"grid_flush_seconds"`
+	GridCacheSize       int                  `yaml:"grid_cache_size"`
+	GridCacheTTLSec     int                  `yaml:"grid_cache_ttl_seconds"`
+	GridBlockCacheMB    int                  `yaml:"grid_block_cache_mb"`
+	GridBloomFilterBits int                  `yaml:"grid_bloom_filter_bits"`
+	GridMemTableSizeMB  int                  `yaml:"grid_memtable_size_mb"`
+	GridL0Compaction    int                  `yaml:"grid_l0_compaction_threshold"`
+	GridL0StopWrites    int                  `yaml:"grid_l0_stop_writes_threshold"`
+	GridWriteQueueDepth int                  `yaml:"grid_write_queue_depth"`
 	// GridDBCheckOnMiss controls whether grid updates consult Pebble on cache miss
 	// to avoid redundant writes. When nil, Load defaults it to true to preserve
 	// historical behavior.
@@ -208,7 +214,7 @@ const defaultPSKReporterTopic = "pskr/filter/v2/+/+/#"
 
 // ArchiveConfig controls optional Pebble archival of broadcasted spots.
 type ArchiveConfig struct {
-	Enabled                bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
 	// DBPath is the Pebble archive directory path.
 	DBPath                 string `yaml:"db_path"`
 	QueueSize              int    `yaml:"queue_size"`
@@ -222,7 +228,7 @@ type ArchiveConfig struct {
 	RetentionFTSeconds      int `yaml:"retention_ft_seconds"`      // FT8/FT4 retention
 	RetentionDefaultSeconds int `yaml:"retention_default_seconds"` // All other modes
 	// BusyTimeoutMS is ignored for the Pebble archive (retained for compatibility).
-	BusyTimeoutMS           int `yaml:"busy_timeout_ms"`
+	BusyTimeoutMS int `yaml:"busy_timeout_ms"`
 	// Synchronous controls archive durability: off disables fsync; normal/full/extra enable sync.
 	Synchronous string `yaml:"synchronous"`
 	// AutoDeleteCorruptDB removes the archive DB on startup if corruption is detected.
@@ -1294,6 +1300,27 @@ func Load(path string) (*Config, error) {
 	if cfg.GridCacheTTLSec < 0 {
 		cfg.GridCacheTTLSec = 0
 	}
+	if cfg.GridBlockCacheMB <= 0 {
+		cfg.GridBlockCacheMB = 64
+	}
+	if cfg.GridBloomFilterBits <= 0 {
+		cfg.GridBloomFilterBits = 10
+	}
+	if cfg.GridMemTableSizeMB <= 0 {
+		cfg.GridMemTableSizeMB = 32
+	}
+	if cfg.GridL0Compaction <= 0 {
+		cfg.GridL0Compaction = 4
+	}
+	if cfg.GridL0StopWrites <= 0 {
+		cfg.GridL0StopWrites = 16
+	}
+	if cfg.GridL0StopWrites <= cfg.GridL0Compaction {
+		cfg.GridL0StopWrites = cfg.GridL0Compaction + 4
+	}
+	if cfg.GridWriteQueueDepth <= 0 {
+		cfg.GridWriteQueueDepth = 64
+	}
 	if cfg.GridDBCheckOnMiss == nil {
 		v := true
 		cfg.GridDBCheckOnMiss = &v
@@ -1573,13 +1600,19 @@ func (c *Config) Print() {
 		if c.GridDBCheckOnMiss != nil {
 			dbCheckOnMiss = *c.GridDBCheckOnMiss
 		}
-		fmt.Printf("Grid/known DB: %s (flush=%ds cache=%d cache_ttl=%ds db_check_on_miss=%t ttl=%dd)\n",
+		fmt.Printf("Grid/known DB: %s (flush=%ds cache=%d cache_ttl=%ds db_check_on_miss=%t ttl=%dd block_cache=%dMB bloom_bits=%d memtable=%dMB l0_compact=%d l0_stop=%d write_queue=%d)\n",
 			c.GridDBPath,
 			c.GridFlushSec,
 			c.GridCacheSize,
 			c.GridCacheTTLSec,
 			dbCheckOnMiss,
-			c.GridTTLDays)
+			c.GridTTLDays,
+			c.GridBlockCacheMB,
+			c.GridBloomFilterBits,
+			c.GridMemTableSizeMB,
+			c.GridL0Compaction,
+			c.GridL0StopWrites,
+			c.GridWriteQueueDepth)
 	}
 	if c.Skew.Enabled {
 		fmt.Printf("Skew: refresh %s UTC (min_spots=%d source=%s)\n", c.Skew.RefreshUTC, c.Skew.MinSpots, c.Skew.URL)
