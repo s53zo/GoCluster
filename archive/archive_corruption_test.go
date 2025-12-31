@@ -8,13 +8,13 @@ import (
 	"dxcluster/config"
 )
 
-// Purpose: Ensure corrupt archive files are deleted and recreated when enabled.
-// Key aspects: Writes invalid bytes, enables auto-delete, and verifies schema exists.
+// Purpose: Ensure non-directory archive paths are deleted and recreated when enabled.
+// Key aspects: Writes invalid bytes, enables auto-delete, and verifies directory exists.
 // Upstream: go test.
-// Downstream: NewWriter, checkArchiveIntegrity.
+// Downstream: NewWriter.
 func TestAutoDeleteCorruptDB(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "archive.db")
+	dbPath := filepath.Join(dir, "archive-pebble")
 	if err := os.WriteFile(dbPath, []byte("not a sqlite db"), 0o644); err != nil {
 		t.Fatalf("write corrupt db: %v", err)
 	}
@@ -30,7 +30,6 @@ func TestAutoDeleteCorruptDB(t *testing.T) {
 		CleanupBatchYieldMS:     0,
 		RetentionFTSeconds:      1,
 		RetentionDefaultSeconds: 1,
-		BusyTimeoutMS:           100,
 		Synchronous:             "off",
 		AutoDeleteCorruptDB:     true,
 	}
@@ -40,11 +39,11 @@ func TestAutoDeleteCorruptDB(t *testing.T) {
 	}
 	defer writer.Stop()
 
-	var name string
-	if err := writer.db.QueryRow(`select name from sqlite_master where type='table' and name='spots'`).Scan(&name); err != nil {
-		t.Fatalf("schema query failed: %v", err)
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat db path failed: %v", err)
 	}
-	if name != "spots" {
-		t.Fatalf("expected spots table, got %q", name)
+	if !info.IsDir() {
+		t.Fatalf("expected archive path to be directory, got file")
 	}
 }

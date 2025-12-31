@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"dxcluster/buffer"
 	"dxcluster/cty"
 	"dxcluster/spot"
 )
@@ -14,7 +15,7 @@ func TestDXCommandQueuesSpot(t *testing.T) {
 	input := make(chan *spot.Spot, 1)
 	p := NewProcessor(nil, nil, input, nil)
 
-	resp := p.ProcessCommandForClient("DX 7001 K8ZB Testing...1...2...3", "N2WQ", "203.0.113.5")
+	resp := p.ProcessCommandForClient("DX 7001 K8ZB Testing...1...2...3", "N2WQ", "203.0.113.5", nil)
 	if !strings.Contains(resp, "Spot queued") {
 		t.Fatalf("expected queue response, got %q", resp)
 	}
@@ -48,7 +49,7 @@ func TestDXCommandValidation(t *testing.T) {
 	input := make(chan *spot.Spot, 1)
 	p := NewProcessor(nil, nil, input, nil)
 
-	resp := p.ProcessCommandForClient("DX 7001 K8ZB", "N2WQ", "")
+	resp := p.ProcessCommandForClient("DX 7001 K8ZB", "N2WQ", "", nil)
 	if strings.Contains(resp, "Usage: DX") {
 		t.Fatalf("expected optional comment to queue, got %q", resp)
 	}
@@ -61,7 +62,7 @@ func TestDXCommandValidation(t *testing.T) {
 		t.Fatal("expected spot to be queued without comment")
 	}
 
-	resp = p.ProcessCommandForClient("DX 7001 K8ZB Test", "", "")
+	resp = p.ProcessCommandForClient("DX 7001 K8ZB Test", "", "", nil)
 	if !strings.Contains(resp, "logged-in") {
 		t.Fatalf("expected callsign error, got %q", resp)
 	}
@@ -73,7 +74,7 @@ func TestDXCommandCTYValidation(t *testing.T) {
 	input := make(chan *spot.Spot, 1)
 	p := NewProcessor(nil, nil, input, ctyLookup)
 
-	resp := p.ProcessCommandForClient("DX 7001 K8ZB Test", "N2WQ", "")
+	resp := p.ProcessCommandForClient("DX 7001 K8ZB Test", "N2WQ", "", nil)
 	if strings.Contains(resp, "Unknown DX callsign") {
 		t.Fatalf("expected known DX to queue, got %q", resp)
 	}
@@ -83,7 +84,7 @@ func TestDXCommandCTYValidation(t *testing.T) {
 		t.Fatalf("expected spot queued for known CTY call")
 	}
 
-	resp = p.ProcessCommandForClient("DX 7001 K4ZZZ Test", "N2WQ", "")
+	resp = p.ProcessCommandForClient("DX 7001 K4ZZZ Test", "N2WQ", "", nil)
 	if !strings.Contains(resp, "Unknown DX callsign") {
 		t.Fatalf("expected CTY validation error, got %q", resp)
 	}
@@ -113,6 +114,36 @@ func TestShowDXCCPortableCall(t *testing.T) {
 	}
 	if strings.Contains(resp, "Other:") {
 		t.Fatalf("did not expect Other list for single-prefix ADIF: %q", resp)
+	}
+}
+
+func TestShowMYDXRequiresFilter(t *testing.T) {
+	p := NewProcessor(nil, nil, nil, nil)
+	resp := p.ProcessCommandForClient("SHOW MYDX 5", "N2WQ", "", nil)
+	if !strings.Contains(resp, "SHOW MYDX requires a logged-in session") {
+		t.Fatalf("expected filter requirement message, got %q", resp)
+	}
+}
+
+func TestShowMYDXFiltersResults(t *testing.T) {
+	rb := buffer.NewRingBuffer(10)
+	spotOld := spot.NewSpot("DXAAA", "DE1AA", 14074.0, "FT8")
+	spotOld.Time = time.Now().UTC().Add(-2 * time.Minute)
+	spotNew := spot.NewSpot("DXBBB", "DE2BB", 14030.0, "CW")
+	spotNew.Time = time.Now().UTC().Add(-1 * time.Minute)
+	rb.Add(spotOld)
+	rb.Add(spotNew)
+
+	p := NewProcessor(rb, nil, nil, nil)
+	filterFn := func(s *spot.Spot) bool {
+		return s != nil && s.DXCall == "DXBBB"
+	}
+	resp := p.ProcessCommandForClient("SHOW MYDX 5", "N2WQ", "", filterFn)
+	if !strings.Contains(resp, "DXBBB") {
+		t.Fatalf("expected filtered spot DXBBB, got %q", resp)
+	}
+	if strings.Contains(resp, "DXAAA") {
+		t.Fatalf("unexpected filtered spot DXAAA in response: %q", resp)
 	}
 }
 

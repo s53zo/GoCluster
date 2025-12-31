@@ -1,42 +1,95 @@
 package archive
 
 import (
-	"database/sql"
+	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
-	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"dxcluster/config"
 	"dxcluster/spot"
-	"dxcluster/sqliteutil"
 
-	_ "modernc.org/sqlite"
+	"github.com/cockroachdb/pebble"
 )
 
-// Writer persists spots to SQLite asynchronously with per-mode retention.
+const (
+	spotPrefix = "s|"
+	spotKeyLen = len(spotPrefix) + 8 + 4
+)
+
+var spotPrefixBytes = []byte(spotPrefix)
+
+const (
+	recordVersion         = 1
+	recordFixedHeaderSize = 28
+)
+
+const (
+	fieldDXCall = iota
+	fieldDECall
+	fieldMode
+	fieldComment
+	fieldSource
+	fieldSourceNode
+	fieldConfidence
+	fieldBand
+	fieldDXGrid
+	fieldDEGrid
+	fieldDXCont
+	fieldDECont
+	fieldCount
+)
+
+const (
+	recordHeaderSize     = recordFixedHeaderSize + fieldCount*2
+	recentScanMultiplier = 20
+	recentScanMax        = 5000
+)
+
+const (
+	flagHasReport = 1 << iota
+	flagIsHuman
+)
+
+var errInvalidRecord = errors.New("archive: invalid record encoding")
+
+// Writer persists spots to Pebble asynchronously with per-mode retention.
 // It is designed to be removable: the hot path never blocks on the writer,
-// and backpressure results in dropped archive writes (logged via counters).
+// and backpressure results in dropped archive writes.
 type Writer struct {
-	cfg       config.ArchiveConfig
-	db        *sql.DB
-	queue     chan *spot.Spot
-	stop      chan struct{}
-	dropCount uint64
+	cfg        config.ArchiveConfig
+	db         *pebble.DB
+	queue      chan *spot.Spot
+	stop       chan struct{}
+	doneInsert chan struct{}
+	doneClean  chan struct{}
+	writeOpts  *pebble.WriteOptions
+
+	startOnce sync.Once
+	stopOnce  sync.Once
+	started   atomic.Bool
+	seq       uint32
 }
 
 // Purpose: Initialize archive storage and return a writer instance.
-// Key aspects: Creates SQLite DB and schema; sets queue size defaults.
+// Key aspects: Creates Pebble DB directory and queue defaults.
 // Upstream: main.go archive setup.
-// Downstream: ensureSchema, SQLite open/pragmas.
+// Downstream: openArchiveDB.
 func NewWriter(cfg config.ArchiveConfig) (*Writer, error) {
-	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
-		return nil, fmt.Errorf("archive: mkdir: %w", err)
-	}
 	db, err := openArchiveDB(cfg)
 	if err != nil {
+		return nil, err
+	}
+	writeOpts, err := archiveWriteOptions(cfg)
+	if err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	qsize := cfg.QueueSize
@@ -44,162 +97,81 @@ func NewWriter(cfg config.ArchiveConfig) (*Writer, error) {
 		qsize = 10000
 	}
 	return &Writer{
-		cfg:   cfg,
-		db:    db,
-		queue: make(chan *spot.Spot, qsize),
-		stop:  make(chan struct{}),
+		cfg:        cfg,
+		db:         db,
+		queue:      make(chan *spot.Spot, qsize),
+		stop:       make(chan struct{}),
+		doneInsert: make(chan struct{}),
+		doneClean:  make(chan struct{}),
+		writeOpts:  writeOpts,
 	}, nil
 }
 
-// Purpose: Open the archive DB with durability settings and optional corruption recovery.
-// Key aspects: Applies pragmas, validates integrity when enabled, and recreates on corruption.
+// Purpose: Open the archive Pebble DB with optional corruption recovery.
+// Key aspects: Ensures a directory exists; deletes corrupt DB when configured.
 // Upstream: NewWriter.
-// Downstream: applyArchivePragmas, checkArchiveIntegrity, ensureSchema.
-func openArchiveDB(cfg config.ArchiveConfig) (*sql.DB, error) {
-	const maxAttempts = 2
-
-	timeout := time.Duration(cfg.PreflightTimeoutMS) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 2 * time.Second
+// Downstream: pebble.Open.
+func openArchiveDB(cfg config.ArchiveConfig) (*pebble.DB, error) {
+	path := strings.TrimSpace(cfg.DBPath)
+	if path == "" {
+		return nil, errors.New("archive: db_path is empty")
 	}
-	if res, err := sqliteutil.Preflight(cfg.DBPath, "archive", timeout, log.Printf); err != nil {
-		return nil, fmt.Errorf("archive: preflight: %w", err)
-	} else if res.Quarantined {
-		log.Printf("archive: preflight quarantined db to %s (elapsed=%s)", res.QuarantinePath, res.Elapsed)
+	if info, err := os.Stat(path); err == nil {
+		if !info.IsDir() {
+			if cfg.AutoDeleteCorruptDB {
+				if err := DropDB(path); err != nil {
+					return nil, fmt.Errorf("archive: delete non-directory path: %w", err)
+				}
+				log.Printf("archive: removed non-directory path at %s", path)
+			} else {
+				return nil, fmt.Errorf("archive: %s exists and is not a directory", path)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("archive: stat path: %w", err)
 	}
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		db, err := sql.Open("sqlite", cfg.DBPath)
-		if err != nil {
-			return nil, fmt.Errorf("archive: open db: %w", err)
-		}
-		// Serialize all archive writes through a single connection to avoid SQLITE_BUSY
-		// contention between inserts and cleanup deletes, and to ensure PRAGMA settings
-		// (busy_timeout, journal_mode) are consistently applied.
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-		if err := applyArchivePragmas(db, cfg); err != nil {
-			_ = db.Close()
-			if cfg.AutoDeleteCorruptDB && isSQLiteCorrupted(err) {
-				if err := DropDB(cfg.DBPath); err != nil {
-					return nil, fmt.Errorf("archive: delete corrupt db: %w", err)
-				}
-				log.Printf("archive: pragmas failed (%v), deleted %s", err, cfg.DBPath)
-				continue
-			}
-			return nil, fmt.Errorf("archive: pragmas: %w", err)
-		}
-		if cfg.AutoDeleteCorruptDB {
-			healthy, detail, err := checkArchiveIntegrity(db)
-			if err != nil && !isSQLiteCorrupted(err) {
-				_ = db.Close()
-				return nil, fmt.Errorf("archive: integrity check failed: %w", err)
-			}
-			if err != nil || !healthy {
-				_ = db.Close()
-				if err := DropDB(cfg.DBPath); err != nil {
-					return nil, fmt.Errorf("archive: delete corrupt db: %w", err)
-				}
-				if detail == "" && err != nil {
-					detail = err.Error()
-				}
-				if detail == "" {
-					detail = "unknown corruption"
-				}
-				log.Printf("archive: integrity check failed (%s), deleted %s", detail, cfg.DBPath)
-				continue
-			}
-		}
-		if err := ensureSchema(db); err != nil {
-			if cfg.AutoDeleteCorruptDB && isSQLiteCorrupted(err) {
-				_ = db.Close()
-				if err := DropDB(cfg.DBPath); err != nil {
-					return nil, fmt.Errorf("archive: delete corrupt db: %w", err)
-				}
-				log.Printf("archive: schema failed (%v), deleted %s", err, cfg.DBPath)
-				continue
-			}
-			_ = db.Close()
-			return nil, err
-		}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return nil, fmt.Errorf("archive: ensure directory: %w", err)
+	}
+	db, err := pebble.Open(path, &pebble.Options{})
+	if err == nil {
 		return db, nil
 	}
-	return nil, fmt.Errorf("archive: failed to initialize after removing corrupt db")
-}
-
-// Purpose: Apply SQLite durability and busy-timeout pragmas for the archive writer.
-// Key aspects: WAL mode, configurable synchronous, and bounded busy timeout.
-// Upstream: openArchiveDB.
-// Downstream: sqlite pragmas.
-func applyArchivePragmas(db *sql.DB, cfg config.ArchiveConfig) error {
-	syncMode, err := archiveSynchronousPragma(cfg)
-	if err != nil {
-		return err
+	if cfg.AutoDeleteCorruptDB && pebble.IsCorruptionError(err) {
+		if err := DropDB(path); err != nil {
+			return nil, fmt.Errorf("archive: delete corrupt db: %w", err)
+		}
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return nil, fmt.Errorf("archive: ensure directory: %w", err)
+		}
+		db, err = pebble.Open(path, &pebble.Options{})
+		if err != nil {
+			return nil, fmt.Errorf("archive: open after delete: %w", err)
+		}
+		log.Printf("archive: deleted corrupt db at %s", path)
+		return db, nil
 	}
-	_, err = db.Exec(fmt.Sprintf("pragma journal_mode=WAL; pragma synchronous=%s; pragma busy_timeout=%d", syncMode, cfg.BusyTimeoutMS))
-	return err
+	return nil, fmt.Errorf("archive: open: %w", err)
 }
 
-// Purpose: Normalize archive synchronous setting to a SQLite pragma value.
-// Key aspects: Defaults to OFF to favor throughput when the archive is disposable.
-// Upstream: applyArchivePragmas.
-// Downstream: sqlite pragma string.
-func archiveSynchronousPragma(cfg config.ArchiveConfig) (string, error) {
+// Purpose: Map archive synchronous mode to Pebble write options.
+// Key aspects: "off" disables fsync; other modes enable sync.
+// Upstream: NewWriter.
+// Downstream: pebble.WriteOptions.
+func archiveWriteOptions(cfg config.ArchiveConfig) (*pebble.WriteOptions, error) {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Synchronous))
 	if mode == "" {
 		mode = "off"
 	}
 	switch mode {
-	case "off", "normal", "full", "extra":
-		return strings.ToUpper(mode), nil
+	case "off":
+		return pebble.NoSync, nil
+	case "normal", "full", "extra":
+		return pebble.Sync, nil
 	default:
-		return "", fmt.Errorf("archive: invalid synchronous mode %q", cfg.Synchronous)
+		return nil, fmt.Errorf("archive: invalid synchronous mode %q", cfg.Synchronous)
 	}
-}
-
-// Purpose: Run a fast integrity check for obvious SQLite corruption.
-// Key aspects: quick_check returns "ok" when healthy; any other row signals corruption.
-// Upstream: openArchiveDB.
-// Downstream: sqlite pragma query.
-func checkArchiveIntegrity(db *sql.DB) (bool, string, error) {
-	rows, err := db.Query("pragma quick_check")
-	if err != nil {
-		return false, "", err
-	}
-	defer rows.Close()
-
-	seen := false
-	for rows.Next() {
-		seen = true
-		var result string
-		if err := rows.Scan(&result); err != nil {
-			return false, "", err
-		}
-		if strings.ToLower(strings.TrimSpace(result)) != "ok" {
-			return false, result, nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, "", err
-	}
-	if !seen {
-		return false, "", fmt.Errorf("archive: integrity check returned no rows")
-	}
-	return true, "", nil
-}
-
-// Purpose: Identify common SQLite corruption errors.
-// Key aspects: String match keeps dependencies minimal and matches modernc/sqlite errors.
-// Upstream: openArchiveDB.
-// Downstream: None.
-func isSQLiteCorrupted(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "database disk image is malformed") ||
-		strings.Contains(msg, "file is encrypted or is not a database") ||
-		strings.Contains(msg, "file is not a database")
 }
 
 // Purpose: Start background loops for inserts and retention cleanup.
@@ -207,28 +179,46 @@ func isSQLiteCorrupted(err error) bool {
 // Upstream: main.go startup.
 // Downstream: insertLoop goroutine, cleanupLoop goroutine.
 func (w *Writer) Start() {
-	// Goroutine: batched insert loop drains queue without blocking ingest.
-	go w.insertLoop()
-	// Goroutine: periodic cleanup loop enforces retention windows.
-	go w.cleanupLoop()
+	if w == nil {
+		return
+	}
+	w.startOnce.Do(func() {
+		w.started.Store(true)
+		go w.insertLoop()
+		go w.cleanupLoop()
+	})
 }
 
 // Purpose: Stop the writer and close the underlying DB.
-// Key aspects: Signals loops to exit; closes DB without waiting for full drain.
+// Key aspects: Signals loops to exit; waits for completion before closing Pebble.
 // Upstream: main.go shutdown.
-// Downstream: close(w.stop), db.Close.
+// Downstream: insertLoop, cleanupLoop, db.Close.
 func (w *Writer) Stop() {
-	close(w.stop)
-	_ = w.db.Close()
+	if w == nil {
+		return
+	}
+	w.stopOnce.Do(func() { close(w.stop) })
+	if w.started.Load() {
+		<-w.doneInsert
+		<-w.doneClean
+	}
+	if w.db != nil {
+		_ = w.db.Close()
+	}
 }
 
 // Purpose: Try to enqueue a spot for archival without blocking.
-// Key aspects: Drops silently when the queue is full to protect hot path.
+// Key aspects: Drops silently when the queue is full to protect the hot path.
 // Upstream: main.go spot ingest/broadcast.
 // Downstream: writer queue channel.
 func (w *Writer) Enqueue(s *spot.Spot) {
 	if w == nil || s == nil {
 		return
+	}
+	select {
+	case <-w.stop:
+		return
+	default:
 	}
 	select {
 	case w.queue <- s:
@@ -237,90 +227,96 @@ func (w *Writer) Enqueue(s *spot.Spot) {
 	}
 }
 
-// Purpose: Batch and insert queued spots into SQLite.
+// Purpose: Batch and insert queued spots into Pebble.
 // Key aspects: Uses a size/time batch; flushes on stop signal.
 // Upstream: Start goroutine.
 // Downstream: flush, time.Timer.
 func (w *Writer) insertLoop() {
-	batch := make([]*spot.Spot, 0, w.cfg.BatchSize)
-	timer := time.NewTimer(time.Duration(w.cfg.BatchIntervalMS) * time.Millisecond)
+	defer close(w.doneInsert)
+
+	batchSize := w.cfg.BatchSize
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	interval := time.Duration(w.cfg.BatchIntervalMS) * time.Millisecond
+	if interval <= 0 {
+		interval = 200 * time.Millisecond
+	}
+	batch := make([]*spot.Spot, 0, batchSize)
+	timer := time.NewTimer(interval)
 	defer timer.Stop()
 
 	for {
 		select {
 		case <-w.stop:
+			batch = w.drainQueue(batch, batchSize)
 			w.flush(batch)
 			return
 		case s := <-w.queue:
 			batch = append(batch, s)
-			if len(batch) >= w.cfg.BatchSize {
+			if len(batch) >= batchSize {
 				w.flush(batch)
 				batch = batch[:0]
 				if !timer.Stop() {
 					<-timer.C
 				}
-				timer.Reset(time.Duration(w.cfg.BatchIntervalMS) * time.Millisecond)
+				timer.Reset(interval)
 			}
 		case <-timer.C:
 			if len(batch) > 0 {
 				w.flush(batch)
 				batch = batch[:0]
 			}
-			timer.Reset(time.Duration(w.cfg.BatchIntervalMS) * time.Millisecond)
+			timer.Reset(interval)
 		}
 	}
 }
 
-// Purpose: Flush a batch of spots into SQLite in a single transaction.
-// Key aspects: Best-effort logging on errors; per-spot inserts within tx.
+func (w *Writer) drainQueue(batch []*spot.Spot, batchSize int) []*spot.Spot {
+	for {
+		select {
+		case s := <-w.queue:
+			batch = append(batch, s)
+			if len(batch) >= batchSize {
+				w.flush(batch)
+				batch = batch[:0]
+			}
+		default:
+			return batch
+		}
+	}
+}
+
+// Purpose: Flush a batch of spots into Pebble in a single write batch.
+// Key aspects: Best-effort logging on errors; batch commit honors sync config.
 // Upstream: insertLoop.
-// Downstream: sql.Tx, stmt.Exec.
+// Downstream: pebble.Batch.
 func (w *Writer) flush(batch []*spot.Spot) {
 	if len(batch) == 0 {
 		return
 	}
-	tx, err := w.db.Begin()
-	if err != nil {
-		log.Printf("archive: begin tx: %v", err)
-		return
-	}
-	stmt, err := tx.Prepare(`insert into spots(ts, dx, de, freq, mode, report, has_report, comment, source, source_node, ttl, is_beacon, dx_grid, de_grid, confidence, band) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		log.Printf("archive: prepare: %v", err)
-		_ = tx.Rollback()
-		return
-	}
-	now := time.Now().UTC()
+	pebbleBatch := w.db.NewBatch()
+	defer pebbleBatch.Close()
+
 	for _, s := range batch {
 		if s == nil {
 			continue
 		}
-		if _, err := stmt.Exec(
-			s.Time.UTC().Unix(),
-			s.DXCall,
-			s.DECall,
-			s.Frequency,
-			s.Mode,
-			s.Report,
-			boolToInt(s.HasReport),
-			s.Comment,
-			string(s.SourceType),
-			s.SourceNode,
-			s.TTL,
-			boolToInt(s.IsBeacon),
-			s.DXMetadata.Grid,
-			s.DEMetadata.Grid,
-			s.Confidence,
-			s.Band,
-		); err != nil {
-			log.Printf("archive: insert failed: %v", err)
+		s.EnsureNormalized()
+		key := spotKeyBytes(normalizeUnixNano(s.Time), w.nextSeq())
+		val := encodeRecord(s)
+		if err := pebbleBatch.Set(key, val, nil); err != nil {
+			log.Printf("archive: batch set failed: %v", err)
 		}
 	}
-	_ = stmt.Close()
-	if err := tx.Commit(); err != nil {
-		log.Printf("archive: commit: %v", err)
+	if err := pebbleBatch.Commit(w.writeOpts); err != nil {
+		log.Printf("archive: batch commit: %v", err)
 	}
-	_ = now
+}
+
+func (w *Writer) nextSeq() uint32 {
+	w.seq++
+	return w.seq
 }
 
 // Purpose: Periodically enforce retention policy by deleting old rows.
@@ -328,6 +324,7 @@ func (w *Writer) flush(batch []*spot.Spot) {
 // Upstream: Start goroutine.
 // Downstream: cleanupOnce, time.Ticker.
 func (w *Writer) cleanupLoop() {
+	defer close(w.doneClean)
 	interval := time.Duration(w.cfg.CleanupIntervalSeconds) * time.Second
 	if interval <= 0 {
 		interval = time.Hour
@@ -348,11 +345,18 @@ func (w *Writer) cleanupLoop() {
 // Key aspects: Applies separate retention windows and deletes in small batches
 // to keep write locks short under high ingest rates.
 // Upstream: cleanupLoop.
-// Downstream: sql.Exec deletes.
+// Downstream: pebble.Batch deletes.
 func (w *Writer) cleanupOnce() {
-	now := time.Now().UTC().Unix()
-	cutoffFT := now - int64(w.cfg.RetentionFTSeconds)
-	cutoffDefault := now - int64(w.cfg.RetentionDefaultSeconds)
+	if w == nil || w.db == nil {
+		return
+	}
+	now := time.Now().UTC().UnixNano()
+	cutoffFT := retentionCutoff(now, w.cfg.RetentionFTSeconds)
+	cutoffDefault := retentionCutoff(now, w.cfg.RetentionDefaultSeconds)
+	stopAfter := cutoffFT
+	if cutoffDefault > stopAfter {
+		stopAfter = cutoffDefault
+	}
 
 	batchSize := w.cfg.CleanupBatchSize
 	if batchSize <= 0 {
@@ -363,186 +367,453 @@ func (w *Writer) cleanupOnce() {
 		yield = 0
 	}
 
-	deleteBatch := func(label, query string, cutoff int64) {
-		for {
-			// Use rowid-limited deletes to keep each transaction short and avoid long-lived locks.
-			res, err := w.db.Exec(query, cutoff, batchSize)
-			if err != nil {
-				log.Printf("archive: cleanup %s: %v", label, err)
+	iter, err := w.db.NewIter(iterOptionsForPrefix(spotPrefixBytes))
+	if err != nil {
+		log.Printf("archive: cleanup iterator: %v", err)
+		return
+	}
+	defer iter.Close()
+
+	pebbleBatch := w.db.NewBatch()
+	defer pebbleBatch.Close()
+
+	pending := 0
+	commitBatch := func() bool {
+		if pending == 0 {
+			return true
+		}
+		if err := pebbleBatch.Commit(w.writeOpts); err != nil {
+			log.Printf("archive: cleanup commit: %v", err)
+			return false
+		}
+		pebbleBatch.Reset()
+		pending = 0
+		if yield > 0 {
+			time.Sleep(yield)
+		}
+		return true
+	}
+
+	for iter.First(); iter.Valid(); iter.Next() {
+		ts, _, ok := parseSpotKey(iter.Key())
+		if !ok {
+			continue
+		}
+		if ts >= stopAfter {
+			break
+		}
+		rec, err := decodeRecord(iter.Value())
+		if err != nil {
+			log.Printf("archive: cleanup decode: %v", err)
+			if err := pebbleBatch.Delete(iter.Key(), nil); err != nil {
+				log.Printf("archive: cleanup delete corrupt: %v", err)
 				return
 			}
-			affected, err := res.RowsAffected()
-			if err != nil {
-				log.Printf("archive: cleanup %s: rows affected: %v", label, err)
+			pending++
+			if pending >= batchSize && !commitBatch() {
 				return
 			}
-			if affected < int64(batchSize) {
-				return
-			}
-			if yield > 0 {
-				time.Sleep(yield)
-			}
+			continue
+		}
+		cutoff := cutoffDefault
+		if isFTMode(rec.mode) {
+			cutoff = cutoffFT
+		}
+		if ts >= cutoff {
+			continue
+		}
+		if err := pebbleBatch.Delete(iter.Key(), nil); err != nil {
+			log.Printf("archive: cleanup delete: %v", err)
+			return
+		}
+		pending++
+		if pending >= batchSize && !commitBatch() {
+			return
 		}
 	}
-
-	deleteBatch("FT", `delete from spots where rowid in (
-		select rowid from spots where mode in ('FT8','FT4') and ts < ? limit ?
-	)`, cutoffFT)
-	deleteBatch("default", `delete from spots where rowid in (
-		select rowid from spots where mode not in ('FT8','FT4') and ts < ? limit ?
-	)`, cutoffDefault)
+	if err := iter.Error(); err != nil {
+		log.Printf("archive: cleanup iterate: %v", err)
+		return
+	}
+	_ = commitBatch()
 }
 
-// Purpose: Ensure the archive schema and indexes exist.
-// Key aspects: Executes a single multi-statement schema block.
-// Upstream: NewWriter.
-// Downstream: db.Exec.
-func ensureSchema(db *sql.DB) error {
-	schema := `
-	create table if not exists spots (
-		id integer primary key autoincrement,
-		ts integer,
-		dx text,
-		de text,
-		freq real,
-		mode text,
-		report integer,
-		has_report integer,
-		comment text,
-		source text,
-		source_node text,
-		ttl integer,
-		is_beacon integer,
-		dx_grid text,
-		de_grid text,
-		confidence text,
-		band text
-	);
-	create index if not exists idx_spots_ts on spots(ts);
-	create index if not exists idx_spots_mode_ts on spots(mode, ts);
-	create index if not exists idx_spots_dx_ts on spots(dx, ts);
-	create index if not exists idx_spots_de_ts on spots(de, ts);
-	`
-	if _, err := db.Exec(schema); err != nil {
-		return fmt.Errorf("archive: schema: %w", err)
+func retentionCutoff(now int64, seconds int) int64 {
+	if seconds <= 0 {
+		return math.MinInt64
 	}
-	return nil
-}
-
-// Purpose: Convert a bool to a SQLite-friendly integer.
-// Key aspects: True->1, false->0.
-// Upstream: flush, Recent row mapping.
-// Downstream: None.
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
+	return now - int64(seconds)*int64(time.Second)
 }
 
 // Purpose: Delete the archive DB files (test helper).
-// Key aspects: Removes main DB plus WAL/SHM/journal sidecars when present.
+// Key aspects: Removes the DB directory tree or file path.
 // Upstream: Tests or maintenance tools.
-// Downstream: os.Remove.
+// Downstream: os.RemoveAll.
 func DropDB(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("archive: empty path")
 	}
-	targets := []string{
-		path,
-		path + "-wal",
-		path + "-shm",
-		path + "-journal",
-	}
-	var firstErr error
-	for _, target := range targets {
-		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	return firstErr
+	return os.RemoveAll(path)
 }
 
 // Purpose: Return the most recent N archived spots, newest-first.
-// Key aspects: Read-only query; reconstructs Spot objects from rows.
+// Key aspects: Read-only iterator; reconstructs Spot objects from records.
 // Upstream: Telnet SHOW/DX handlers when archive is enabled.
-// Downstream: db.Query, Spot normalization helpers.
+// Downstream: decodeSpot.
 func (w *Writer) Recent(limit int) ([]*spot.Spot, error) {
+	return w.RecentFiltered(limit, nil)
+}
+
+// Purpose: Return the most recent N archived spots that match a predicate.
+// Key aspects: Bounded scan to avoid unbounded reads on narrow filters.
+// Upstream: Telnet SHOW MYDX handlers.
+// Downstream: decodeSpot, predicate match.
+func (w *Writer) RecentFiltered(limit int, match func(*spot.Spot) bool) ([]*spot.Spot, error) {
 	if w == nil || w.db == nil {
 		return nil, fmt.Errorf("archive: writer is nil")
 	}
 	if limit <= 0 {
 		return []*spot.Spot{}, nil
 	}
-	rows, err := w.db.Query(`select ts, dx, de, freq, mode, report, has_report, comment, source, source_node, ttl, is_beacon, dx_grid, de_grid, confidence, band from spots order by ts desc limit ?`, limit)
+	iter, err := w.db.NewIter(iterOptionsForPrefix(spotPrefixBytes))
 	if err != nil {
-		return nil, fmt.Errorf("archive: query recent: %w", err)
+		return nil, fmt.Errorf("archive: recent iterator: %w", err)
 	}
-	defer rows.Close()
+	defer iter.Close()
 
 	results := make([]*spot.Spot, 0, limit)
-	for rows.Next() {
-		var (
-			ts         int64
-			dx         string
-			de         string
-			freq       float64
-			mode       string
-			report     int
-			hasReport  int
-			comment    string
-			source     string
-			sourceNode string
-			ttl        int
-			isBeacon   int
-			dxGrid     string
-			deGrid     string
-			conf       string
-			band       string
-		)
-		if err := rows.Scan(&ts, &dx, &de, &freq, &mode, &report, &hasReport, &comment, &source, &sourceNode, &ttl, &isBeacon, &dxGrid, &deGrid, &conf, &band); err != nil {
-			return nil, fmt.Errorf("archive: scan recent: %w", err)
+	scanLimit := limit * recentScanMultiplier
+	if scanLimit < limit {
+		scanLimit = limit
+	}
+	if scanLimit > recentScanMax {
+		scanLimit = recentScanMax
+	}
+
+	scanned := 0
+	decodeErrors := 0
+	for ok := iter.Last(); ok && len(results) < limit && scanned < scanLimit; ok = iter.Prev() {
+		scanned++
+		ts, _, ok := parseSpotKey(iter.Key())
+		if !ok {
+			continue
 		}
-		s := &spot.Spot{
-			DXCall:     dx,
-			DECall:     de,
-			Frequency:  freq,
-			Mode:       mode,
-			Report:     report,
-			Time:       time.Unix(ts, 0).UTC(),
-			Comment:    comment,
-			SourceType: spot.SourceType(source),
-			SourceNode: sourceNode,
-			TTL:        uint8(clampToByte(ttl)),
-			IsBeacon:   isBeacon > 0,
-			HasReport:  hasReport > 0,
-			Confidence: conf,
-			Band:       band,
+		s, err := decodeSpot(ts, iter.Value())
+		if err != nil {
+			decodeErrors++
+			if decodeErrors == 1 {
+				log.Printf("archive: recent decode: %v", err)
+			}
+			continue
 		}
-		s.DXMetadata.Grid = dxGrid
-		s.DEMetadata.Grid = deGrid
-		s.EnsureNormalized()
-		s.RefreshBeaconFlag()
+		if match != nil && !match(s) {
+			continue
+		}
 		results = append(results, s)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("archive: iterate recent: %w", err)
+	if err := iter.Error(); err != nil {
+		return nil, fmt.Errorf("archive: recent iterate: %w", err)
 	}
 	return results, nil
 }
 
-// Purpose: Clamp an integer into the 0..255 range.
-// Key aspects: Used to rebuild uint8 fields from DB rows.
-// Upstream: Recent.
-// Downstream: None.
-func clampToByte(v int) int {
-	if v < 0 {
+type archiveRecord struct {
+	dxCall     string
+	deCall     string
+	mode       string
+	comment    string
+	source     string
+	sourceNode string
+	confidence string
+	band       string
+	dxGrid     string
+	deGrid     string
+	dxCont     string
+	deCont     string
+	freq       float64
+	report     int
+	hasReport  bool
+	isHuman    bool
+	ttl        uint8
+	dxCQZone   int
+	deCQZone   int
+	dxADIF     int
+	deADIF     int
+}
+
+func encodeRecord(s *spot.Spot) []byte {
+	dxCall := strings.TrimSpace(s.DXCallNorm)
+	if dxCall == "" {
+		dxCall = strings.TrimSpace(s.DXCall)
+	}
+	deCall := strings.TrimSpace(s.DECallNorm)
+	if deCall == "" {
+		deCall = strings.TrimSpace(s.DECall)
+	}
+	mode := strings.TrimSpace(s.ModeNorm)
+	if mode == "" {
+		mode = strings.TrimSpace(s.Mode)
+	}
+	mode = strings.ToUpper(mode)
+	comment := strings.TrimSpace(s.Comment)
+	source := strings.TrimSpace(string(s.SourceType))
+	sourceNode := strings.TrimSpace(s.SourceNode)
+	confidence := strings.TrimSpace(s.Confidence)
+	band := strings.TrimSpace(s.BandNorm)
+	if band == "" {
+		band = strings.TrimSpace(s.Band)
+	}
+	dxGrid := strings.TrimSpace(s.DXGridNorm)
+	if dxGrid == "" {
+		dxGrid = strings.TrimSpace(s.DXMetadata.Grid)
+	}
+	deGrid := strings.TrimSpace(s.DEGridNorm)
+	if deGrid == "" {
+		deGrid = strings.TrimSpace(s.DEMetadata.Grid)
+	}
+	dxCont := strings.ToUpper(strings.TrimSpace(s.DXMetadata.Continent))
+	deCont := strings.ToUpper(strings.TrimSpace(s.DEMetadata.Continent))
+
+	lengths := [fieldCount]int{
+		len(dxCall),
+		len(deCall),
+		len(mode),
+		len(comment),
+		len(source),
+		len(sourceNode),
+		len(confidence),
+		len(band),
+		len(dxGrid),
+		len(deGrid),
+		len(dxCont),
+		len(deCont),
+	}
+	total := recordHeaderSize
+	for _, l := range lengths {
+		total += l
+	}
+	buf := make([]byte, total)
+	buf[0] = recordVersion
+	flags := uint8(0)
+	if s.HasReport {
+		flags |= flagHasReport
+	}
+	if s.IsHuman {
+		flags |= flagIsHuman
+	}
+	buf[1] = flags
+	buf[2] = s.TTL
+	buf[3] = 0
+	binary.BigEndian.PutUint64(buf[4:], math.Float64bits(s.Frequency))
+	binary.BigEndian.PutUint32(buf[12:], uint32(int32(s.Report)))
+	binary.BigEndian.PutUint16(buf[16:], clampUint16(s.DXMetadata.CQZone))
+	binary.BigEndian.PutUint16(buf[18:], clampUint16(s.DEMetadata.CQZone))
+	binary.BigEndian.PutUint32(buf[20:], uint32(clampInt(s.DXMetadata.ADIF)))
+	binary.BigEndian.PutUint32(buf[24:], uint32(clampInt(s.DEMetadata.ADIF)))
+
+	offset := recordFixedHeaderSize
+	for i := 0; i < fieldCount; i++ {
+		binary.BigEndian.PutUint16(buf[offset:], uint16(lengths[i]))
+		offset += 2
+	}
+	writeOffset := recordHeaderSize
+	writeString := func(value string) {
+		if value == "" {
+			return
+		}
+		copy(buf[writeOffset:], value)
+		writeOffset += len(value)
+	}
+	writeString(dxCall)
+	writeString(deCall)
+	writeString(mode)
+	writeString(comment)
+	writeString(source)
+	writeString(sourceNode)
+	writeString(confidence)
+	writeString(band)
+	writeString(dxGrid)
+	writeString(deGrid)
+	writeString(dxCont)
+	writeString(deCont)
+	return buf
+}
+
+func decodeRecord(raw []byte) (archiveRecord, error) {
+	if len(raw) < recordHeaderSize {
+		return archiveRecord{}, errInvalidRecord
+	}
+	if raw[0] != recordVersion {
+		return archiveRecord{}, errInvalidRecord
+	}
+	flags := raw[1]
+	ttl := raw[2]
+	freq := math.Float64frombits(binary.BigEndian.Uint64(raw[4:]))
+	report := int32(binary.BigEndian.Uint32(raw[12:]))
+	dxCQ := int(binary.BigEndian.Uint16(raw[16:]))
+	deCQ := int(binary.BigEndian.Uint16(raw[18:]))
+	dxADIF := int(binary.BigEndian.Uint32(raw[20:]))
+	deADIF := int(binary.BigEndian.Uint32(raw[24:]))
+
+	offset := recordFixedHeaderSize
+	lengths := [fieldCount]int{}
+	for i := 0; i < fieldCount; i++ {
+		lengths[i] = int(binary.BigEndian.Uint16(raw[offset:]))
+		offset += 2
+	}
+	dataOffset := recordHeaderSize
+	fields := [fieldCount]string{}
+	for i := 0; i < fieldCount; i++ {
+		l := lengths[i]
+		if l == 0 {
+			continue
+		}
+		if dataOffset+l > len(raw) {
+			return archiveRecord{}, errInvalidRecord
+		}
+		fields[i] = string(raw[dataOffset : dataOffset+l])
+		dataOffset += l
+	}
+	if dataOffset != len(raw) {
+		return archiveRecord{}, errInvalidRecord
+	}
+
+	return archiveRecord{
+		dxCall:     fields[fieldDXCall],
+		deCall:     fields[fieldDECall],
+		mode:       fields[fieldMode],
+		comment:    fields[fieldComment],
+		source:     fields[fieldSource],
+		sourceNode: fields[fieldSourceNode],
+		confidence: fields[fieldConfidence],
+		band:       fields[fieldBand],
+		dxGrid:     fields[fieldDXGrid],
+		deGrid:     fields[fieldDEGrid],
+		dxCont:     fields[fieldDXCont],
+		deCont:     fields[fieldDECont],
+		freq:       freq,
+		report:     int(report),
+		hasReport:  flags&flagHasReport != 0,
+		isHuman:    flags&flagIsHuman != 0,
+		ttl:        ttl,
+		dxCQZone:   dxCQ,
+		deCQZone:   deCQ,
+		dxADIF:     dxADIF,
+		deADIF:     deADIF,
+	}, nil
+}
+
+func decodeSpot(ts int64, raw []byte) (*spot.Spot, error) {
+	rec, err := decodeRecord(raw)
+	if err != nil {
+		return nil, err
+	}
+	band := strings.TrimSpace(rec.band)
+	if band == "" {
+		band = spot.FreqToBand(rec.freq)
+	}
+	s := &spot.Spot{
+		DXCall:     rec.dxCall,
+		DECall:     rec.deCall,
+		Frequency:  rec.freq,
+		Mode:       rec.mode,
+		Report:     rec.report,
+		Time:       time.Unix(0, ts).UTC(),
+		Comment:    rec.comment,
+		SourceType: spot.SourceType(rec.source),
+		SourceNode: rec.sourceNode,
+		TTL:        rec.ttl,
+		IsHuman:    rec.isHuman,
+		HasReport:  rec.hasReport,
+		Confidence: rec.confidence,
+		Band:       band,
+	}
+	s.DXMetadata = spot.CallMetadata{
+		Grid:      rec.dxGrid,
+		Continent: rec.dxCont,
+		CQZone:    rec.dxCQZone,
+		ADIF:      rec.dxADIF,
+	}
+	s.DEMetadata = spot.CallMetadata{
+		Grid:      rec.deGrid,
+		Continent: rec.deCont,
+		CQZone:    rec.deCQZone,
+		ADIF:      rec.deADIF,
+	}
+	s.EnsureNormalized()
+	s.RefreshBeaconFlag()
+	return s, nil
+}
+
+func isFTMode(mode string) bool {
+	mode = strings.ToUpper(strings.TrimSpace(mode))
+	return mode == "FT8" || mode == "FT4"
+}
+
+func spotKeyBytes(ts int64, seq uint32) []byte {
+	buf := make([]byte, spotKeyLen)
+	copy(buf, spotPrefix)
+	binary.BigEndian.PutUint64(buf[len(spotPrefix):], uint64(ts))
+	binary.BigEndian.PutUint32(buf[len(spotPrefix)+8:], seq)
+	return buf
+}
+
+func parseSpotKey(key []byte) (int64, uint32, bool) {
+	if len(key) != spotKeyLen || !bytes.HasPrefix(key, spotPrefixBytes) {
+		return 0, 0, false
+	}
+	ts := int64(binary.BigEndian.Uint64(key[len(spotPrefix):]))
+	seq := binary.BigEndian.Uint32(key[len(spotPrefix)+8:])
+	return ts, seq, true
+}
+
+func normalizeUnixNano(t time.Time) int64 {
+	if t.IsZero() {
+		return time.Now().UTC().UnixNano()
+	}
+	ts := t.UTC().UnixNano()
+	if ts < 0 {
 		return 0
 	}
-	if v > 255 {
-		return 255
+	return ts
+}
+
+func clampUint16(value int) uint16 {
+	if value <= 0 {
+		return 0
 	}
-	return v
+	if value > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(value)
+}
+
+func clampInt(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func iterOptionsForPrefix(prefix []byte) *pebble.IterOptions {
+	lower := append([]byte(nil), prefix...)
+	return &pebble.IterOptions{
+		LowerBound: lower,
+		UpperBound: prefixUpperBound(lower),
+	}
+}
+
+func prefixUpperBound(prefix []byte) []byte {
+	if len(prefix) == 0 {
+		return nil
+	}
+	upper := make([]byte, len(prefix))
+	copy(upper, prefix)
+	for i := len(upper) - 1; i >= 0; i-- {
+		if upper[i] != 0xFF {
+			upper[i]++
+			return upper[:i+1]
+		}
+	}
+	return nil
 }

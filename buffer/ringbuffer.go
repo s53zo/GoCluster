@@ -22,6 +22,11 @@ type RingBuffer struct {
 	total    atomic.Uint64 // Total spots added (may exceed capacity)
 }
 
+const (
+	recentFilterMultiplier = 20
+	recentFilterMax        = 5000
+)
+
 // Purpose: Construct a bounded ring buffer for recent spot snapshots.
 // Key aspects: Capacity bounds retention; storage is independent of dedup/broadcast.
 // Upstream: main.go initializes the shared spot cache.
@@ -81,6 +86,55 @@ func (rb *RingBuffer) GetRecent(n int) []*spot.Spot {
 		}
 	}
 
+	return result
+}
+
+// Purpose: Return up to N most recent spots that match a predicate.
+// Key aspects: Bounded scan to avoid unbounded work on narrow filters.
+// Upstream: Telnet SHOW MYDX handlers.
+// Downstream: atomic loads from ring slots.
+func (rb *RingBuffer) GetRecentFiltered(n int, match func(*spot.Spot) bool) []*spot.Spot {
+	if n <= 0 {
+		return []*spot.Spot{}
+	}
+	if rb == nil {
+		return []*spot.Spot{}
+	}
+
+	total := rb.total.Load()
+	available := int(total)
+	if available > rb.capacity {
+		available = rb.capacity
+	}
+	if available == 0 {
+		return []*spot.Spot{}
+	}
+	if n > available {
+		n = available
+	}
+
+	scanLimit := n * recentFilterMultiplier
+	if scanLimit < n {
+		scanLimit = n
+	}
+	if scanLimit > recentFilterMax {
+		scanLimit = recentFilterMax
+	}
+
+	result := make([]*spot.Spot, 0, n)
+	minIndex := total - uint64(available)
+	scanned := 0
+	for idx := total; idx > minIndex && len(result) < n && scanned < scanLimit; {
+		idx--
+		scanned++
+		slot := idx % uint64(rb.capacity)
+		if sp := rb.slots[slot].Load(); sp != nil && sp.ID == idx+1 {
+			if match != nil && !match(sp) {
+				continue
+			}
+			result = append(result, sp)
+		}
+	}
 	return result
 }
 

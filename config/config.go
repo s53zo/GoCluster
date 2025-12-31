@@ -91,12 +91,12 @@ type Config struct {
 	GridFlushSec    int                  `yaml:"grid_flush_seconds"`
 	GridCacheSize   int                  `yaml:"grid_cache_size"`
 	GridCacheTTLSec int                  `yaml:"grid_cache_ttl_seconds"`
-	// GridDBCheckOnMiss controls whether grid updates consult SQLite on cache miss
+	// GridDBCheckOnMiss controls whether grid updates consult Pebble on cache miss
 	// to avoid redundant writes. When nil, Load defaults it to true to preserve
 	// historical behavior.
 	GridDBCheckOnMiss *bool `yaml:"grid_db_check_on_miss"`
 	GridTTLDays       int   `yaml:"grid_ttl_days"`
-	// GridPreflightTimeoutMS bounds the startup WAL checkpoint/quick_check before opening SQLite.
+	// GridPreflightTimeoutMS is ignored for the Pebble grid store (retained for compatibility).
 	GridPreflightTimeoutMS int `yaml:"grid_preflight_timeout_ms"`
 	// LoadedFrom is populated by Load with the path or directory used to build
 	// this configuration. It is not driven by YAML.
@@ -206,9 +206,10 @@ type PSKReporterConfig struct {
 
 const defaultPSKReporterTopic = "pskr/filter/v2/+/+/#"
 
-// ArchiveConfig controls optional SQLite archival of broadcasted spots.
+// ArchiveConfig controls optional Pebble archival of broadcasted spots.
 type ArchiveConfig struct {
 	Enabled                bool   `yaml:"enabled"`
+	// DBPath is the Pebble archive directory path.
 	DBPath                 string `yaml:"db_path"`
 	QueueSize              int    `yaml:"queue_size"`
 	BatchSize              int    `yaml:"batch_size"`
@@ -220,12 +221,13 @@ type ArchiveConfig struct {
 	CleanupBatchYieldMS     int `yaml:"cleanup_batch_yield_ms"`
 	RetentionFTSeconds      int `yaml:"retention_ft_seconds"`      // FT8/FT4 retention
 	RetentionDefaultSeconds int `yaml:"retention_default_seconds"` // All other modes
+	// BusyTimeoutMS is ignored for the Pebble archive (retained for compatibility).
 	BusyTimeoutMS           int `yaml:"busy_timeout_ms"`
-	// Synchronous controls SQLite durability (off, normal, full, extra).
+	// Synchronous controls archive durability: off disables fsync; normal/full/extra enable sync.
 	Synchronous string `yaml:"synchronous"`
-	// AutoDeleteCorruptDB removes the archive DB on startup if integrity checks fail.
+	// AutoDeleteCorruptDB removes the archive DB on startup if corruption is detected.
 	AutoDeleteCorruptDB bool `yaml:"auto_delete_corrupt_db"`
-	// PreflightTimeoutMS bounds the startup WAL checkpoint/quick_check before opening SQLite.
+	// PreflightTimeoutMS is ignored for the Pebble archive (retained for compatibility).
 	PreflightTimeoutMS int `yaml:"preflight_timeout_ms"`
 }
 
@@ -792,7 +794,7 @@ func Load(path string) (*Config, error) {
 		cfg.Archive.RetentionDefaultSeconds = 86400 // 1 day for other modes
 	}
 	if strings.TrimSpace(cfg.Archive.DBPath) == "" {
-		cfg.Archive.DBPath = "data/archive/spots.db"
+		cfg.Archive.DBPath = "data/archive/pebble"
 	}
 	if cfg.Archive.BusyTimeoutMS <= 0 {
 		cfg.Archive.BusyTimeoutMS = 1000
@@ -1281,7 +1283,7 @@ func Load(path string) (*Config, error) {
 	}
 	// Grid store defaults keep the local cache warm and bound persistence churn.
 	if strings.TrimSpace(cfg.GridDBPath) == "" {
-		cfg.GridDBPath = "data/grids/calls.db"
+		cfg.GridDBPath = "data/grids/pebble"
 	}
 	if cfg.GridFlushSec <= 0 {
 		cfg.GridFlushSec = 60

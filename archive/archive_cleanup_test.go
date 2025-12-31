@@ -12,7 +12,7 @@ import (
 // Purpose: Ensure cleanup deletes old rows even when batch size is small.
 // Key aspects: Inserts more stale rows than the batch size and validates retention.
 // Upstream: go test.
-// Downstream: NewWriter, cleanupOnce, db.QueryRow.
+// Downstream: NewWriter, cleanupOnce, Recent.
 func TestCleanupOnceDeletesInBatches(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "archive.db")
@@ -27,7 +27,7 @@ func TestCleanupOnceDeletesInBatches(t *testing.T) {
 		CleanupBatchYieldMS:     0,
 		RetentionFTSeconds:      1,
 		RetentionDefaultSeconds: 1,
-		BusyTimeoutMS:           1000,
+		Synchronous:             "off",
 	}
 	writer, err := NewWriter(cfg)
 	if err != nil {
@@ -59,11 +59,20 @@ func TestCleanupOnceDeletesInBatches(t *testing.T) {
 	writer.flush(batch)
 	writer.cleanupOnce()
 
-	var count int
-	if err := writer.db.QueryRow(`select count(*) from spots`).Scan(&count); err != nil {
-		t.Fatalf("count query failed: %v", err)
+	spots, err := writer.Recent(10)
+	if err != nil {
+		t.Fatalf("recent failed: %v", err)
 	}
-	if count != 2 {
-		t.Fatalf("expected 2 retained spots, got %d", count)
+	if len(spots) != 2 {
+		t.Fatalf("expected 2 retained spots, got %d", len(spots))
+	}
+	seen := make(map[string]bool, len(spots))
+	for _, s := range spots {
+		if s != nil {
+			seen[s.DXCall] = true
+		}
+	}
+	if !seen["DXFTNEW"] || !seen["DXCWNEW"] {
+		t.Fatalf("expected retained DXFTNEW and DXCWNEW, got %+v", seen)
 	}
 }

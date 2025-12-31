@@ -1,6 +1,6 @@
 // Package commands implements the minimal command processor used by telnet
-// sessions. It focuses on HELP/SHOW/DX and defers filter manipulation to the
-// telnet package so both layers stay small and easy to reason about.
+// sessions. It focuses on HELP/SHOW/DX/SHOW MYDX and defers filter manipulation
+// to the telnet package so both layers stay small and easy to reason about.
 package commands
 
 import (
@@ -20,6 +20,7 @@ import (
 // archiveReader is the minimal interface the archive layer exposes for read paths.
 type archiveReader interface {
 	Recent(limit int) ([]*spot.Spot, error)
+	RecentFiltered(limit int, match func(*spot.Spot) bool) ([]*spot.Spot, error)
 }
 
 // Processor handles telnet command parsing and replies that rely on shared state
@@ -51,14 +52,14 @@ func NewProcessor(buf *buffer.RingBuffer, archive archiveReader, spotInput chan<
 // Upstream: Telnet client command loop.
 // Downstream: ProcessCommandForClient.
 func (p *Processor) ProcessCommand(cmd string) string {
-	return p.ProcessCommandForClient(cmd, "", "")
+	return p.ProcessCommandForClient(cmd, "", "", nil)
 }
 
-// Purpose: Parse a command with client context for DX posting.
-// Key aspects: Routes DX commands and normalizes command tokens.
+// Purpose: Parse a command with client context for DX posting and filtered history.
+// Key aspects: Routes DX commands, SHOW/DX, and SHOW/MYDX with optional filter.
 // Upstream: Telnet client command loop with callsign context.
 // Downstream: handleDX, handleHelp, handleShow.
-func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterIP string) string {
+func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterIP string, filterFn func(*spot.Spot) bool) string {
 	cmd = strings.TrimSpace(cmd)
 
 	// Empty command
@@ -85,7 +86,7 @@ func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterI
 		if len(parts) < 2 {
 			return "Usage: SHOW/DX [count]\n"
 		}
-		return p.handleShow(parts[1:])
+		return p.handleShow(parts[1:], filterFn)
 	case "BYE", "QUIT", "EXIT":
 		return "BYE"
 	default:
@@ -102,6 +103,7 @@ func (p *Processor) handleHelp() string {
 HELP                 - Show this help
 DX <freq> <call> [comment] - Post a spot (frequency in kHz)
 SHOW/DX [count]      - Show last N DX spots (default: 10)
+SHOW MYDX [count]    - Show last N DX spots that match your active filters
 SHOW DXCC <prefix|callsign> - Look up DXCC/ADIF and zones for a prefix or callsign
 BYE                  - Disconnect
 
@@ -224,11 +226,11 @@ func (p *Processor) handleDX(fields []string, spotter string, spotterIP string) 
 	}
 }
 
-// Purpose: Route SHOW subcommands.
-// Key aspects: Supports SHOW/DX and SHOW DXCC lookups.
+// Purpose: Route SHOW subcommands with optional filter predicate.
+// Key aspects: Supports SHOW/DX, SHOW/MYDX, and SHOW DXCC lookups.
 // Upstream: ProcessCommandForClient (SHOW/SH).
-// Downstream: handleShowDX, handleShowDXCC.
-func (p *Processor) handleShow(args []string) string {
+// Downstream: handleShowDX, handleShowMYDX, handleShowDXCC.
+func (p *Processor) handleShow(args []string, filterFn func(*spot.Spot) bool) string {
 	if len(args) == 0 {
 		return "Usage: SHOW/DX [count]\n"
 	}
@@ -238,6 +240,8 @@ func (p *Processor) handleShow(args []string) string {
 	switch subCmd {
 	case "DX":
 		return p.handleShowDX(args[1:])
+	case "MYDX":
+		return p.handleShowMYDX(args[1:], filterFn)
 	case "DXCC":
 		return p.handleShowDXCC(args[1:])
 	default:
@@ -282,6 +286,51 @@ func (p *Processor) handleShowDX(args []string) string {
 	reverseSpotsInPlace(spots)
 
 	// Build response
+	var result strings.Builder
+	for _, spot := range spots {
+		result.WriteString(spot.FormatDXCluster())
+		result.WriteString("\r\n")
+	}
+
+	return result.String()
+}
+
+// Purpose: Render the most recent N spots that match the provided filter.
+// Key aspects: Prefers archive; falls back to ring buffer; outputs oldest-first.
+// Upstream: handleShow (SHOW MYDX).
+// Downstream: archive.RecentFiltered, ring buffer filtered read.
+func (p *Processor) handleShowMYDX(args []string, filterFn func(*spot.Spot) bool) string {
+	if filterFn == nil {
+		return "SHOW MYDX requires a logged-in session.\n"
+	}
+	count := 10 // Default count
+
+	if len(args) > 0 {
+		var err error
+		_, err = fmt.Sscanf(args[0], "%d", &count)
+		if err != nil || count < 1 || count > 100 {
+			return "Invalid count. Use 1-100.\n"
+		}
+	}
+
+	var spots []*spot.Spot
+	if p.archive != nil {
+		if rows, err := p.archive.RecentFiltered(count, filterFn); err != nil {
+			log.Printf("SHOW MYDX: archive query failed, falling back to ring buffer: %v", err)
+		} else {
+			spots = rows
+		}
+	}
+	if len(spots) == 0 && p.spotBuffer != nil {
+		spots = p.spotBuffer.GetRecentFiltered(count, filterFn)
+	}
+
+	if len(spots) == 0 {
+		return "No spots available.\n"
+	}
+
+	reverseSpotsInPlace(spots)
+
 	var result strings.Builder
 	for _, spot := range spots {
 		result.WriteString(spot.FormatDXCluster())

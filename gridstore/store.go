@@ -1,26 +1,41 @@
-// Package gridstore persists known calls and grids to a small SQLite database,
+// Package gridstore persists known calls and grids in a Pebble key/value store,
 // providing durable lookup and aggregation for grid statistics and TTL purges.
 package gridstore
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"os"
-	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
-	_ "modernc.org/sqlite" // SQLite driver (pure Go)
-
-	"dxcluster/sqliteutil"
+	"github.com/cockroachdb/pebble"
 )
 
 const (
-	busyTimeoutMS    = 5000
-	busyRetryMax     = 3
-	busyRetryBackoff = 50 * time.Millisecond
+	recordVersion       = 1
+	recordHeaderSize    = 36
+	writeQueueDepth     = 8
+	maintenanceBatchCap = 1024
+)
+
+const (
+	callPrefix    = "c|"
+	updatedPrefix = "u|"
+	metaCountKey  = "meta|count"
+)
+
+const expiresNone = int64(-1)
+
+var (
+	errStoreClosed   = errors.New("gridstore: store is closed")
+	errInvalidCount  = errors.New("gridstore: invalid count metadata")
+	errInvalidRecord = errors.New("gridstore: invalid record encoding")
 )
 
 // Record represents a single callsign entry with optional grid and known-call flag.
@@ -34,192 +49,182 @@ type Record struct {
 	ExpiresAt    *time.Time
 }
 
-// Store manages the SQLite database that holds call metadata.
+type recordValue struct {
+	isKnown      bool
+	grid         string
+	gridValid    bool
+	observations uint64
+	firstSeen    int64
+	updatedAt    int64
+	expiresAt    int64
+}
+
+// Store manages the Pebble database that holds call metadata.
 type Store struct {
-	db *sql.DB
+	db     *pebble.DB
+	writes chan writeRequest
+	done   chan struct{}
+
+	mu     sync.Mutex
+	closed bool
+	count  atomic.Int64
+}
+
+type writeKind int
+
+const (
+	writeUpsertBatch writeKind = iota
+	writeClearKnown
+	writePurge
+)
+
+type writeRequest struct {
+	kind   writeKind
+	recs   []Record
+	cutoff time.Time
+	resp   chan writeResult
+}
+
+type writeResult struct {
+	removed int64
+	err     error
 }
 
 // Purpose: Load all call records from the store.
 // Key aspects: Reads full table; returns a slice of Record values.
 // Upstream: Administrative tools or diagnostics.
-// Downstream: db.Query, row scanning.
+// Downstream: Pebble iterator.
 func (s *Store) Entries() ([]Record, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("gridstore: store is not initialized")
 	}
-	rows, err := s.db.Query(`SELECT call, is_known, grid, observations, first_seen, updated_at, expires_at FROM calls`)
+	iter, err := s.db.NewIter(iterOptionsForPrefix(callPrefix))
 	if err != nil {
-		return nil, fmt.Errorf("gridstore: query entries: %w", err)
+		return nil, fmt.Errorf("gridstore: entries iterator: %w", err)
 	}
-	defer rows.Close()
+	defer iter.Close()
 
 	var list []Record
-	for rows.Next() {
-		var (
-			call         string
-			isKnown      int
-			grid         sql.NullString
-			observations int
-			firstSeen    int64
-			updatedAt    int64
-			expiresAt    sql.NullInt64
-		)
-		if err := rows.Scan(&call, &isKnown, &grid, &observations, &firstSeen, &updatedAt, &expiresAt); err != nil {
-			return nil, fmt.Errorf("gridstore: scan entries: %w", err)
+	for iter.First(); iter.Valid(); iter.Next() {
+		call, ok := parseCallKey(iter.Key())
+		if !ok {
+			continue
 		}
-		var expires *time.Time
-		if expiresAt.Valid {
-			t := time.Unix(expiresAt.Int64, 0).UTC()
-			expires = &t
+		val, err := decodeRecordValue(iter.Value())
+		if err != nil {
+			return nil, fmt.Errorf("gridstore: decode entry: %w", err)
 		}
-		rec := Record{
-			Call:         call,
-			IsKnown:      isKnown != 0,
-			Grid:         grid,
-			Observations: observations,
-			FirstSeen:    time.Unix(firstSeen, 0).UTC(),
-			UpdatedAt:    time.Unix(updatedAt, 0).UTC(),
-			ExpiresAt:    expires,
-		}
-		list = append(list, rec)
+		list = append(list, recordValueToRecord(call, val))
 	}
-	if err := rows.Err(); err != nil {
+	if err := iter.Error(); err != nil {
 		return nil, fmt.Errorf("gridstore: iterate entries: %w", err)
 	}
 	return list, nil
 }
 
-// Purpose: Open or create the gridstore SQLite database.
-// Key aspects: Initializes schema and configures SQLite for low contention.
+// Purpose: Open or create the gridstore Pebble database.
+// Key aspects: Initializes metadata and spins a single writer goroutine.
 // Upstream: main.go startup and tools.
-// Downstream: initSchema, sql.Open, PRAGMA setup.
+// Downstream: Pebble open, writer loop.
 func Open(path string, preflightTimeout time.Duration) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("gridstore: database path is empty")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	_ = preflightTimeout // Retained for config compatibility; unused for Pebble.
+
+	if info, err := os.Stat(path); err == nil {
+		if !info.IsDir() {
+			return nil, fmt.Errorf("gridstore: %s exists and is not a directory", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("gridstore: stat path: %w", err)
+	}
+
+	if err := os.MkdirAll(path, 0o755); err != nil {
 		return nil, fmt.Errorf("gridstore: ensure directory: %w", err)
 	}
 
-	if res, err := sqliteutil.Preflight(path, "grid", preflightTimeout, log.Printf); err != nil {
-		return nil, fmt.Errorf("gridstore: preflight: %w", err)
-	} else if res.Quarantined {
-		log.Printf("gridstore: preflight quarantined db to %s (elapsed=%s)", res.QuarantinePath, res.Elapsed)
-	}
-
-	db, err := sql.Open("sqlite", path)
+	db, err := pebble.Open(path, &pebble.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("gridstore: open: %w", err)
 	}
-	// Limit concurrency to avoid SQLITE_BUSY in the pure-Go driver for this small store.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
 
-	if _, err := db.Exec(`PRAGMA busy_timeout = ` + fmt.Sprint(busyTimeoutMS) + `; PRAGMA journal_mode = WAL; PRAGMA synchronous = OFF;`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("gridstore: set pragmas: %w", err)
-	}
-
-	if err := initSchema(db); err != nil {
-		db.Close()
+	count, err := loadCount(db)
+	if err != nil {
+		_ = db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+
+	store := &Store{
+		db:     db,
+		writes: make(chan writeRequest, writeQueueDepth),
+		done:   make(chan struct{}),
+	}
+	store.count.Store(count)
+	go store.writeLoop()
+	return store, nil
 }
 
 // Purpose: Close the underlying database handle.
-// Key aspects: Safe to call on nil store.
+// Key aspects: Drains writer goroutine before closing Pebble.
 // Upstream: main.go shutdown or tests.
-// Downstream: db.Close.
+// Downstream: writer loop, db.Close.
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
+	}
+	if s.closeWriter() {
+		<-s.done
 	}
 	return s.db.Close()
 }
 
 // Purpose: Delete records older than the cutoff time.
-// Key aspects: Uses updated_at timestamps; returns rows removed.
+// Key aspects: Uses updated_at index; returns rows removed.
 // Upstream: Periodic maintenance in main pipeline.
-// Downstream: db.Exec.
+// Downstream: Pebble deletes.
 func (s *Store) PurgeOlderThan(cutoff time.Time) (int64, error) {
 	if s == nil || s.db == nil {
 		return 0, errors.New("gridstore: store is not initialized")
 	}
-	res, err := s.db.Exec(`DELETE FROM calls WHERE updated_at < ?`, cutoff.UTC().Unix())
-	if err != nil {
-		return 0, fmt.Errorf("gridstore: purge: %w", err)
+	resp := make(chan writeResult, 1)
+	req := writeRequest{kind: writePurge, cutoff: cutoff, resp: resp}
+	if err := s.enqueue(req); err != nil {
+		return 0, err
 	}
-	removed, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("gridstore: purge rows: %w", err)
-	}
-	return removed, nil
+	result := <-resp
+	return result.removed, result.err
 }
 
 // Purpose: Clear the known-call flag for all entries.
 // Key aspects: Bulk update across the calls table.
 // Upstream: Admin reset flows or tests.
-// Downstream: db.Exec.
+// Downstream: writer loop.
 func (s *Store) ClearKnownFlags() error {
 	if s == nil || s.db == nil {
 		return errors.New("gridstore: store is not initialized")
 	}
-	if _, err := s.db.Exec(`UPDATE calls SET is_known = 0 WHERE is_known != 0`); err != nil {
-		return fmt.Errorf("gridstore: clear known flags: %w", err)
+	resp := make(chan writeResult, 1)
+	req := writeRequest{kind: writeClearKnown, resp: resp}
+	if err := s.enqueue(req); err != nil {
+		return err
 	}
-	return nil
+	result := <-resp
+	return result.err
 }
 
 // Purpose: Insert or update a call record atomically.
-// Key aspects: Normalizes callsign; uses UPSERT to merge flags and counts.
+// Key aspects: Normalizes callsign; uses single writer goroutine.
 // Upstream: Spot processing and enrichment.
-// Downstream: withBusyRetry, db.Exec.
+// Downstream: UpsertBatch.
 func (s *Store) Upsert(rec Record) error {
-	if s == nil || s.db == nil {
-		return errors.New("gridstore: store is not initialized")
-	}
-	rec.Call = strings.TrimSpace(strings.ToUpper(rec.Call))
-	if rec.Call == "" {
-		return errors.New("gridstore: call is empty")
-	}
-	now := time.Now().UTC()
-	if rec.UpdatedAt.IsZero() {
-		rec.UpdatedAt = now
-	}
-	if rec.FirstSeen.IsZero() {
-		rec.FirstSeen = rec.UpdatedAt
-	}
-	var expires *int64
-	if rec.ExpiresAt != nil {
-		ts := rec.ExpiresAt.UTC().Unix()
-		expires = &ts
-	}
-
-	err := withBusyRetry(func() error {
-		_, execErr := s.db.Exec(`
-INSERT INTO calls (call, is_known, grid, observations, first_seen, updated_at, expires_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(call) DO UPDATE SET
-    is_known = MAX(calls.is_known, excluded.is_known),
-    grid = COALESCE(excluded.grid, calls.grid),
-    observations = calls.observations + excluded.observations,
-    first_seen = MIN(calls.first_seen, excluded.first_seen),
-    updated_at = MAX(calls.updated_at, excluded.updated_at),
-    expires_at = COALESCE(excluded.expires_at, calls.expires_at)
-`, rec.Call, boolToInt(rec.IsKnown), nullString(rec.Grid), rec.Observations, rec.FirstSeen.UTC().Unix(), rec.UpdatedAt.UTC().Unix(), expires)
-		if execErr != nil {
-			return fmt.Errorf("gridstore: upsert %s: %w", rec.Call, execErr)
-		}
-		return nil
-	})
-	return err
+	return s.UpsertBatch([]Record{rec})
 }
 
-// Purpose: Insert or update multiple records in a single transaction.
-// Key aspects: Reuses a prepared statement; normalizes timestamps per batch.
+// Purpose: Insert or update multiple records in a single batch.
+// Key aspects: Serializes writes through a single goroutine and Syncs to disk.
 // Upstream: Batch updates from spot pipelines or tools.
-// Downstream: withBusyRetry, sql.Tx.
+// Downstream: writer loop.
 func (s *Store) UpsertBatch(recs []Record) error {
 	if s == nil || s.db == nil {
 		return errors.New("gridstore: store is not initialized")
@@ -227,198 +232,572 @@ func (s *Store) UpsertBatch(recs []Record) error {
 	if len(recs) == 0 {
 		return nil
 	}
-	err := withBusyRetry(func() error {
-		tx, beginErr := s.db.Begin()
-		if beginErr != nil {
-			return fmt.Errorf("gridstore: begin tx: %w", beginErr)
-		}
-		stmt, prepErr := tx.Prepare(`
-INSERT INTO calls (call, is_known, grid, observations, first_seen, updated_at, expires_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(call) DO UPDATE SET
-    is_known = MAX(calls.is_known, excluded.is_known),
-    grid = COALESCE(excluded.grid, calls.grid),
-    observations = calls.observations + excluded.observations,
-    first_seen = MIN(calls.first_seen, excluded.first_seen),
-    updated_at = MAX(calls.updated_at, excluded.updated_at),
-    expires_at = COALESCE(excluded.expires_at, calls.expires_at)
-`)
-		if prepErr != nil {
-			tx.Rollback()
-			return fmt.Errorf("gridstore: prepare batch: %w", prepErr)
-		}
-		now := time.Now().UTC()
-		for i := range recs {
-			rec := recs[i]
-			rec.Call = strings.TrimSpace(strings.ToUpper(rec.Call))
-			if rec.Call == "" {
-				continue
-			}
-			if rec.UpdatedAt.IsZero() {
-				rec.UpdatedAt = now
-			}
-			if rec.FirstSeen.IsZero() {
-				rec.FirstSeen = rec.UpdatedAt
-			}
-			var expires *int64
-			if rec.ExpiresAt != nil {
-				ts := rec.ExpiresAt.UTC().Unix()
-				expires = &ts
-			}
-			if _, execErr := stmt.Exec(rec.Call, boolToInt(rec.IsKnown), nullString(rec.Grid), rec.Observations, rec.FirstSeen.UTC().Unix(), rec.UpdatedAt.UTC().Unix(), expires); execErr != nil {
-				stmt.Close()
-				tx.Rollback()
-				return fmt.Errorf("gridstore: batch upsert %s: %w", rec.Call, execErr)
-			}
-		}
-		if err := stmt.Close(); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("gridstore: close stmt: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("gridstore: commit: %w", err)
-		}
-		return nil
-	})
-	return err
+	resp := make(chan writeResult, 1)
+	req := writeRequest{kind: writeUpsertBatch, recs: recs, resp: resp}
+	if err := s.enqueue(req); err != nil {
+		return err
+	}
+	result := <-resp
+	return result.err
 }
 
 // Purpose: Fetch a record by callsign.
 // Key aspects: Returns (nil, nil) when not found; normalizes callsign.
 // Upstream: Spot enrichment queries.
-// Downstream: db.QueryRow.
+// Downstream: Pebble get.
 func (s *Store) Get(call string) (*Record, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("gridstore: store is not initialized")
 	}
-	call = strings.TrimSpace(strings.ToUpper(call))
+	call = normalizeCall(call)
 	if call == "" {
 		return nil, errors.New("gridstore: call is empty")
 	}
-	var (
-		isKnown      int
-		grid         sql.NullString
-		observations int
-		firstSeen    int64
-		updatedAt    int64
-		expiresAt    sql.NullInt64
-	)
-	err := s.db.QueryRow(`
-SELECT is_known, grid, observations, first_seen, updated_at, expires_at
-FROM calls
-WHERE call = ?
-`, call).Scan(&isKnown, &grid, &observations, &firstSeen, &updatedAt, &expiresAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	value, closer, err := s.db.Get(callKeyBytes(call))
 	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("gridstore: get %s: %w", call, err)
 	}
-	var expires *time.Time
-	if expiresAt.Valid {
-		t := time.Unix(expiresAt.Int64, 0).UTC()
-		expires = &t
+	defer closer.Close()
+	val, err := decodeRecordValue(value)
+	if err != nil {
+		return nil, fmt.Errorf("gridstore: decode %s: %w", call, err)
 	}
-	return &Record{
-		Call:         call,
-		IsKnown:      isKnown != 0,
-		Grid:         grid,
-		Observations: observations,
-		FirstSeen:    time.Unix(firstSeen, 0).UTC(),
-		UpdatedAt:    time.Unix(updatedAt, 0).UTC(),
-		ExpiresAt:    expires,
-	}, nil
+	rec := recordValueToRecord(call, val)
+	return &rec, nil
 }
 
 // Purpose: Return the total number of stored calls.
-// Key aspects: Simple COUNT(*) query.
+// Key aspects: Uses cached count maintained by the writer.
 // Upstream: Metrics/diagnostics.
-// Downstream: db.QueryRow.
+// Downstream: atomic count.
 func (s *Store) Count() (int64, error) {
 	if s == nil || s.db == nil {
 		return 0, errors.New("gridstore: store is not initialized")
 	}
-	var count int64
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM calls`).Scan(&count); err != nil {
-		return 0, fmt.Errorf("gridstore: count: %w", err)
+	return s.count.Load(), nil
+}
+
+// Purpose: Retry logic for legacy callers; Pebble has no SQLITE_BUSY analog.
+// Key aspects: Always returns false to indicate no busy retry.
+// Upstream: startGridWriter retry guards.
+// Downstream: None.
+func IsBusyError(err error) bool {
+	return false
+}
+
+func (s *Store) enqueue(req writeRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errStoreClosed
+	}
+	s.writes <- req
+	return nil
+}
+
+func (s *Store) closeWriter() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.closed = true
+	close(s.writes)
+	return true
+}
+
+func (s *Store) writeLoop() {
+	defer close(s.done)
+	for req := range s.writes {
+		result := writeResult{}
+		switch req.kind {
+		case writeUpsertBatch:
+			result.err = s.applyUpsertBatch(req.recs)
+		case writeClearKnown:
+			result.err = s.applyClearKnownFlags()
+		case writePurge:
+			result.removed, result.err = s.applyPurgeOlderThan(req.cutoff)
+		default:
+			result.err = fmt.Errorf("gridstore: unknown write request")
+		}
+		if req.resp != nil {
+			req.resp <- result
+		}
+	}
+}
+
+// applyUpsertBatch merges incoming records with existing data and commits a
+// single Pebble batch with Sync for durability.
+func (s *Store) applyUpsertBatch(recs []Record) error {
+	if len(recs) == 0 {
+		return nil
+	}
+	batch := s.db.NewBatch()
+	defer batch.Close()
+
+	now := time.Now().UTC()
+	count := s.count.Load()
+	countDelta := int64(0)
+
+	for i := range recs {
+		rec := recs[i]
+		call := normalizeCall(rec.Call)
+		if call == "" {
+			continue
+		}
+		incoming := normalizeRecordValue(rec, now)
+		existing, found, err := s.getRecordValue(call)
+		if err != nil {
+			return err
+		}
+		merged := mergeRecordValue(existing, found, incoming)
+
+		if err := batch.Set(callKeyBytes(call), encodeRecordValue(merged), nil); err != nil {
+			return fmt.Errorf("gridstore: batch set %s: %w", call, err)
+		}
+
+		if !found {
+			countDelta++
+		}
+
+		if found && existing.updatedAt != 0 && existing.updatedAt != merged.updatedAt {
+			if err := batch.Delete(updatedKeyBytes(existing.updatedAt, call), nil); err != nil {
+				return fmt.Errorf("gridstore: batch delete idx %s: %w", call, err)
+			}
+		}
+
+		if !found || existing.updatedAt != merged.updatedAt {
+			if err := batch.Set(updatedKeyBytes(merged.updatedAt, call), nil, nil); err != nil {
+				return fmt.Errorf("gridstore: batch set idx %s: %w", call, err)
+			}
+		}
+	}
+
+	if countDelta != 0 {
+		count += countDelta
+		if count < 0 {
+			count = 0
+		}
+		if err := batch.Set([]byte(metaCountKey), encodeCount(count), nil); err != nil {
+			return fmt.Errorf("gridstore: batch set count: %w", err)
+		}
+	}
+
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return fmt.Errorf("gridstore: batch commit: %w", err)
+	}
+
+	if countDelta != 0 {
+		s.count.Store(count)
+	}
+	return nil
+}
+
+// applyClearKnownFlags walks all records and clears known-call flags in batches.
+func (s *Store) applyClearKnownFlags() error {
+	iter, err := s.db.NewIter(iterOptionsForPrefix(callPrefix))
+	if err != nil {
+		return fmt.Errorf("gridstore: clear known iterator: %w", err)
+	}
+	defer iter.Close()
+
+	batch := s.db.NewBatch()
+	defer batch.Close()
+
+	pending := 0
+	for iter.First(); iter.Valid(); iter.Next() {
+		call, ok := parseCallKey(iter.Key())
+		if !ok {
+			continue
+		}
+		val, err := decodeRecordValue(iter.Value())
+		if err != nil {
+			return err
+		}
+		if !val.isKnown {
+			continue
+		}
+		val.isKnown = false
+		if err := batch.Set(callKeyBytes(call), encodeRecordValue(val), nil); err != nil {
+			return fmt.Errorf("gridstore: clear known %s: %w", call, err)
+		}
+		pending++
+		if pending >= maintenanceBatchCap {
+			if err := batch.Commit(pebble.Sync); err != nil {
+				return fmt.Errorf("gridstore: clear known commit: %w", err)
+			}
+			batch.Reset()
+			pending = 0
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return fmt.Errorf("gridstore: clear known iterate: %w", err)
+	}
+	if pending > 0 {
+		if err := batch.Commit(pebble.Sync); err != nil {
+			return fmt.Errorf("gridstore: clear known commit: %w", err)
+		}
+	}
+	return nil
+}
+
+// applyPurgeOlderThan deletes records older than the cutoff using the updated-at index.
+func (s *Store) applyPurgeOlderThan(cutoff time.Time) (int64, error) {
+	if cutoff.IsZero() {
+		return 0, nil
+	}
+	cutoffUnix := cutoff.UTC().Unix()
+	if cutoffUnix <= 0 {
+		return 0, nil
+	}
+	upper := updatedUpperBound(cutoffUnix)
+	iter, err := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte(updatedPrefix),
+		UpperBound: upper,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("gridstore: purge iterator: %w", err)
+	}
+	defer iter.Close()
+
+	batch := s.db.NewBatch()
+	defer batch.Close()
+
+	count := s.count.Load()
+	pending := int64(0)
+	removedTotal := int64(0)
+
+	commitBatch := func() error {
+		if pending == 0 {
+			return nil
+		}
+		count -= pending
+		if count < 0 {
+			count = 0
+		}
+		if err := batch.Set([]byte(metaCountKey), encodeCount(count), nil); err != nil {
+			return fmt.Errorf("gridstore: purge set count: %w", err)
+		}
+		if err := batch.Commit(pebble.Sync); err != nil {
+			return fmt.Errorf("gridstore: purge commit: %w", err)
+		}
+		batch.Reset()
+		removedTotal += pending
+		pending = 0
+		return nil
+	}
+
+	for iter.First(); iter.Valid(); iter.Next() {
+		ts, call, ok := parseUpdatedKey(iter.Key())
+		if !ok {
+			continue
+		}
+		if ts > cutoffUnix {
+			break
+		}
+		if err := batch.Delete(iter.Key(), nil); err != nil {
+			return removedTotal, fmt.Errorf("gridstore: purge delete idx %s: %w", call, err)
+		}
+		if err := batch.Delete(callKeyBytes(call), nil); err != nil {
+			return removedTotal, fmt.Errorf("gridstore: purge delete %s: %w", call, err)
+		}
+		pending++
+		if pending >= maintenanceBatchCap {
+			if err := commitBatch(); err != nil {
+				return removedTotal, err
+			}
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return removedTotal, fmt.Errorf("gridstore: purge iterate: %w", err)
+	}
+	if err := commitBatch(); err != nil {
+		return removedTotal, err
+	}
+	s.count.Store(count)
+	return removedTotal, nil
+}
+
+func (s *Store) getRecordValue(call string) (recordValue, bool, error) {
+	value, closer, err := s.db.Get(callKeyBytes(call))
+	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return recordValue{}, false, nil
+		}
+		return recordValue{}, false, fmt.Errorf("gridstore: get %s: %w", call, err)
+	}
+	defer closer.Close()
+	val, err := decodeRecordValue(value)
+	if err != nil {
+		return recordValue{}, false, fmt.Errorf("gridstore: decode %s: %w", call, err)
+	}
+	return val, true, nil
+}
+
+func normalizeRecordValue(rec Record, now time.Time) recordValue {
+	updatedAt := rec.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
+	firstSeen := rec.FirstSeen
+	if firstSeen.IsZero() {
+		firstSeen = updatedAt
+	}
+	expires := expiresNone
+	if rec.ExpiresAt != nil {
+		expires = rec.ExpiresAt.UTC().Unix()
+	}
+	grid, gridValid := normalizeGrid(rec.Grid)
+	obs := rec.Observations
+	if obs < 0 {
+		obs = 0
+	}
+	return recordValue{
+		isKnown:      rec.IsKnown,
+		grid:         grid,
+		gridValid:    gridValid,
+		observations: uint64(obs),
+		firstSeen:    firstSeen.UTC().Unix(),
+		updatedAt:    updatedAt.UTC().Unix(),
+		expiresAt:    expires,
+	}
+}
+
+func mergeRecordValue(existing recordValue, found bool, incoming recordValue) recordValue {
+	if !found {
+		return incoming
+	}
+	merged := incoming
+	merged.isKnown = existing.isKnown || incoming.isKnown
+	if !incoming.gridValid {
+		merged.grid = existing.grid
+		merged.gridValid = existing.gridValid
+	}
+	merged.observations = existing.observations + incoming.observations
+	if existing.firstSeen != 0 && (merged.firstSeen == 0 || existing.firstSeen < merged.firstSeen) {
+		merged.firstSeen = existing.firstSeen
+	}
+	if existing.updatedAt > merged.updatedAt {
+		merged.updatedAt = existing.updatedAt
+	}
+	if merged.expiresAt == expiresNone {
+		merged.expiresAt = existing.expiresAt
+	}
+	return merged
+}
+
+func recordValueToRecord(call string, val recordValue) Record {
+	var grid sql.NullString
+	if val.gridValid && strings.TrimSpace(val.grid) != "" {
+		grid = sql.NullString{String: val.grid, Valid: true}
+	}
+	var expires *time.Time
+	if val.expiresAt != expiresNone {
+		t := time.Unix(val.expiresAt, 0).UTC()
+		expires = &t
+	}
+	return Record{
+		Call:         call,
+		IsKnown:      val.isKnown,
+		Grid:         grid,
+		Observations: int(val.observations),
+		FirstSeen:    time.Unix(val.firstSeen, 0).UTC(),
+		UpdatedAt:    time.Unix(val.updatedAt, 0).UTC(),
+		ExpiresAt:    expires,
+	}
+}
+
+func encodeRecordValue(val recordValue) []byte {
+	grid := ""
+	if val.gridValid {
+		grid = val.grid
+	}
+	gridLen := len(grid)
+	buf := make([]byte, recordHeaderSize+gridLen)
+	buf[0] = recordVersion
+	if val.isKnown {
+		buf[1] = 1
+	}
+	binary.BigEndian.PutUint64(buf[2:], val.observations)
+	binary.BigEndian.PutUint64(buf[10:], uint64(val.firstSeen))
+	binary.BigEndian.PutUint64(buf[18:], uint64(val.updatedAt))
+	expires := uint64(^uint64(0))
+	if val.expiresAt != expiresNone {
+		expires = uint64(val.expiresAt)
+	}
+	binary.BigEndian.PutUint64(buf[26:], expires)
+	binary.BigEndian.PutUint16(buf[34:], uint16(gridLen))
+	copy(buf[36:], grid)
+	return buf
+}
+
+func decodeRecordValue(raw []byte) (recordValue, error) {
+	if len(raw) < recordHeaderSize {
+		return recordValue{}, errInvalidRecord
+	}
+	if raw[0] != recordVersion {
+		return recordValue{}, errInvalidRecord
+	}
+	isKnown := raw[1] != 0
+	observations := binary.BigEndian.Uint64(raw[2:])
+	firstSeen := int64(binary.BigEndian.Uint64(raw[10:]))
+	updatedAt := int64(binary.BigEndian.Uint64(raw[18:]))
+	expiresRaw := binary.BigEndian.Uint64(raw[26:])
+	gridLen := int(binary.BigEndian.Uint16(raw[34:]))
+	if recordHeaderSize+gridLen > len(raw) {
+		return recordValue{}, errInvalidRecord
+	}
+	grid := ""
+	gridValid := false
+	if gridLen > 0 {
+		grid = string(raw[36 : 36+gridLen])
+		gridValid = true
+	}
+	expires := expiresNone
+	if expiresRaw != ^uint64(0) {
+		expires = int64(expiresRaw)
+	}
+	return recordValue{
+		isKnown:      isKnown,
+		grid:         grid,
+		gridValid:    gridValid,
+		observations: observations,
+		firstSeen:    firstSeen,
+		updatedAt:    updatedAt,
+		expiresAt:    expires,
+	}, nil
+}
+
+func encodeCount(count int64) []byte {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, uint64(count))
+	return buf
+}
+
+func loadCount(db *pebble.DB) (int64, error) {
+	count, err := readCountMeta(db)
+	if err == nil {
+		return count, nil
+	}
+	if !errors.Is(err, pebble.ErrNotFound) && !errors.Is(err, errInvalidCount) {
+		return 0, fmt.Errorf("gridstore: read count: %w", err)
+	}
+	count, err = computeCount(db)
+	if err != nil {
+		return 0, err
+	}
+	if err := db.Set([]byte(metaCountKey), encodeCount(count), pebble.Sync); err != nil {
+		return 0, fmt.Errorf("gridstore: write count: %w", err)
 	}
 	return count, nil
 }
 
-// Purpose: Create the calls table schema and indexes if missing.
-// Key aspects: Executes a multi-statement schema definition.
-// Upstream: Open.
-// Downstream: db.Exec.
-func initSchema(db *sql.DB) error {
-	const schema = `
-CREATE TABLE IF NOT EXISTS calls (
-    call TEXT PRIMARY KEY,
-    is_known INTEGER NOT NULL DEFAULT 0,
-    grid TEXT,
-    observations INTEGER NOT NULL DEFAULT 0,
-    first_seen INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    expires_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_calls_updated_at ON calls(updated_at);
-DROP INDEX IF EXISTS idx_calls_grid;
-`
-	if _, err := db.Exec(schema); err != nil {
-		return fmt.Errorf("gridstore: init schema: %w", err)
+func readCountMeta(db *pebble.DB) (int64, error) {
+	value, closer, err := db.Get([]byte(metaCountKey))
+	if err != nil {
+		return 0, err
+	}
+	defer closer.Close()
+	if len(value) != 8 {
+		return 0, errInvalidCount
+	}
+	return int64(binary.BigEndian.Uint64(value)), nil
+}
+
+func computeCount(db *pebble.DB) (int64, error) {
+	iter, err := db.NewIter(iterOptionsForPrefix(callPrefix))
+	if err != nil {
+		return 0, fmt.Errorf("gridstore: count iterator: %w", err)
+	}
+	defer iter.Close()
+	count := int64(0)
+	for iter.First(); iter.Valid(); iter.Next() {
+		count++
+	}
+	if err := iter.Error(); err != nil {
+		return 0, fmt.Errorf("gridstore: count iterate: %w", err)
+	}
+	return count, nil
+}
+
+func normalizeCall(call string) string {
+	return strings.ToUpper(strings.TrimSpace(call))
+}
+
+func normalizeGrid(grid sql.NullString) (string, bool) {
+	if !grid.Valid {
+		return "", false
+	}
+	value := strings.ToUpper(strings.TrimSpace(grid.String))
+	if value == "" {
+		return "", false
+	}
+	return value, true
+}
+
+func callKeyBytes(call string) []byte {
+	return append([]byte(callPrefix), call...)
+}
+
+func parseCallKey(key []byte) (string, bool) {
+	prefix := []byte(callPrefix)
+	if len(key) <= len(prefix) || !bytes.HasPrefix(key, prefix) {
+		return "", false
+	}
+	return string(key[len(prefix):]), true
+}
+
+func updatedKeyBytes(updatedAt int64, call string) []byte {
+	buf := make([]byte, len(updatedPrefix)+8+len(call))
+	copy(buf, updatedPrefix)
+	binary.BigEndian.PutUint64(buf[len(updatedPrefix):], uint64(updatedAt))
+	copy(buf[len(updatedPrefix)+8:], call)
+	return buf
+}
+
+func parseUpdatedKey(key []byte) (int64, string, bool) {
+	prefix := []byte(updatedPrefix)
+	if len(key) <= len(prefix)+8 {
+		return 0, "", false
+	}
+	if !bytes.HasPrefix(key, prefix) {
+		return 0, "", false
+	}
+	ts := int64(binary.BigEndian.Uint64(key[len(prefix):]))
+	call := string(key[len(prefix)+8:])
+	if call == "" {
+		return 0, "", false
+	}
+	return ts, call, true
+}
+
+func updatedUpperBound(cutoffUnix int64) []byte {
+	if cutoffUnix == int64(^uint64(0)>>1) {
+		return nil
+	}
+	return updatedKeyBytes(cutoffUnix+1, "")
+}
+
+func iterOptionsForPrefix(prefix string) *pebble.IterOptions {
+	lower := []byte(prefix)
+	upper := prefixUpperBound(lower)
+	return &pebble.IterOptions{LowerBound: lower, UpperBound: upper}
+}
+
+func prefixUpperBound(prefix []byte) []byte {
+	if len(prefix) == 0 {
+		return nil
+	}
+	upper := make([]byte, len(prefix))
+	copy(upper, prefix)
+	for i := len(upper) - 1; i >= 0; i-- {
+		if upper[i] != 0xFF {
+			upper[i]++
+			return upper[:i+1]
+		}
 	}
 	return nil
-}
-
-// Purpose: Convert a bool to 0/1 for SQLite writes.
-// Key aspects: True -> 1, false -> 0.
-// Upstream: Upsert, UpsertBatch.
-// Downstream: None.
-func boolToInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
-}
-
-// Purpose: Convert sql.NullString to nil or string for binding.
-// Key aspects: Preserves NULLs when invalid.
-// Upstream: Upsert, UpsertBatch.
-// Downstream: None.
-func nullString(v sql.NullString) any {
-	if v.Valid {
-		return v.String
-	}
-	return nil
-}
-
-// Purpose: Retry SQLite operations that fail with SQLITE_BUSY.
-// Key aspects: Bounded retry with linear backoff.
-// Upstream: Upsert, UpsertBatch.
-// Downstream: IsBusyError, time.Sleep.
-func withBusyRetry(fn func() error) error {
-	var err error
-	for attempt := 1; attempt <= busyRetryMax; attempt++ {
-		err = fn()
-		if err == nil {
-			return nil
-		}
-		if !IsBusyError(err) || attempt == busyRetryMax {
-			return err
-		}
-		time.Sleep(time.Duration(attempt) * busyRetryBackoff)
-	}
-	return err
-}
-
-// Purpose: Detect SQLITE_BUSY / database locked errors.
-// Key aspects: Matches normalized error strings from the driver.
-// Upstream: withBusyRetry.
-// Downstream: strings.Contains.
-func IsBusyError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToUpper(err.Error())
-	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "DATABASE IS LOCKED")
 }

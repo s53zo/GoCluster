@@ -924,7 +924,20 @@ func (s *Server) handleClient(conn net.Conn) {
 		}
 
 		// Process other commands
-		response := s.processor.ProcessCommandForClient(line, client.callsign, spotterIP(client.address))
+		filterFn := func(s *spot.Spot) bool {
+			if s == nil {
+				return false
+			}
+			if strings.EqualFold(s.DXCall, client.callsign) {
+				return true
+			}
+			client.filterMu.RLock()
+			f := client.filter
+			matches := f != nil && f.Matches(s)
+			client.filterMu.RUnlock()
+			return matches
+		}
+		response := s.processor.ProcessCommandForClient(line, client.callsign, spotterIP(client.address), filterFn)
 
 		// Check for disconnect signal
 		if response == "BYE" {

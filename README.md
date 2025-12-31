@@ -169,7 +169,8 @@ All ingest sources run through a shared CTY/ULS validation gate before deduplica
 Telnet clients can issue commands via the prompt once logged in. The processor, located in `commands/processor.go`, supports the following general commands:
 
 - `HELP` / `H` – display the help text that includes short summaries and valid bands/modes at the bottom of the message.
-- `SHOW DX [N]` / `SHOW/DX [N]` - stream the most recent `N` spots (`N` ranges from 1-100, default 10). When the SQLite archive is enabled, results come from the archive (newest-first); otherwise they fall back to the in-memory ring buffer. The command accepts the alias `SH DX` as well.
+- `SHOW DX [N]` / `SHOW/DX [N]` - stream the most recent `N` spots (`N` ranges from 1-100, default 10). When the Pebble archive is enabled, results come from the archive (newest-first); otherwise they fall back to the in-memory ring buffer. The command accepts the alias `SH DX` as well.
+- `SHOW MYDX [N]` - like `SHOW DX`, but runs archived/ring-buffered spots through the logged-in user's filters (self-spots always pass). Very narrow filters may return fewer than `N` results.
 - `BYE`, `QUIT`, `EXIT` - request a graceful logout; the server replies with `73!` and closes the connection.
 
 Filter management commands are implemented directly in `telnet/server.go` and operate on each client's `filter.Filter`. They can be used at any time and fall into `PASS`, `REJECT`, and `SHOW FILTER` groups:
@@ -303,12 +304,12 @@ fcc_uls:
 
 ## Grid Persistence and Caching
 
-- Grids and known-call flags are stored in SQLite at `grid_db` (default `data/grids/calls.db`). The DB uses WAL mode with `synchronous=OFF` to favor throughput and low write latency; a crash can lose the most recent batch of grid updates, but the cache continues serving and fresh reports rebuild quickly.
+- Grids and known-call flags are stored in Pebble at `grid_db` (default `data/grids/pebble`, a directory). Each batch is committed with `Sync` for durability; the in-memory cache continues serving while backfills rebuild on new spots.
 - Writes are batched by `grid_flush_seconds` (default `60s`); a final flush runs during shutdown.
-- The in-memory grid cache is a bounded LRU of size `grid_cache_size` (default `100000`). Cache misses fall back to SQLite, keeping startup O(1) even as the database grows.
-- The stats line `Grids: +X / Y since start / Z in DB` counts accepted grid changes (not repeated identical reports); `Z` is the current row count from SQLite.
+- The in-memory grid cache is a bounded LRU of size `grid_cache_size` (default `100000`). Cache misses fall back to Pebble via the async backfill path when `grid_db_check_on_miss` is true, keeping the output path non-blocking.
+- The stats line `Grids: +X / Y since start / Z in DB` counts accepted grid changes (not repeated identical reports); `Z` is the current entry count maintained in Pebble metadata.
 - If you set `grid_ttl_days > 0`, the store purges rows whose `updated_at` timestamp is older than that many days right after each SCP refresh. Continuous SCP membership or live grid updates keep records fresh automatically.
-- On startup the grid DB runs a bounded WAL checkpoint + `quick_check` (`grid_preflight_timeout_ms`). If either fails or times out, the DB (and sidecars) is quarantined to a timestamped `.bad-*` copy so the cluster can continue with a fresh file.
+- `grid_preflight_timeout_ms` is ignored for the Pebble prototype (retained for config compatibility).
 
 ## Runtime Logs and Corrections
 
@@ -374,13 +375,13 @@ The telnet server fans every post-dedup spot to every connected client. When PSK
 
 Increase the queue sizes if you see the broadcast-channel drop message frequently, or raise `broadcast_workers` when you have CPU headroom and thousands of concurrent clients.
 
-### Archive Durability (SQLite)
+### Archive Durability (Pebble)
 
-The optional SQLite archive is built to stay out of the hot path: enqueue is non-blocking and drops when backpressure builds. With the archive enabled, you can tune durability vs throughput:
+The optional Pebble archive is built to stay out of the hot path: enqueue is non-blocking and drops when backpressure builds. With the archive enabled, you can tune durability vs throughput:
 
-- `archive.synchronous`: defaults to `off` for maximum throughput when the archive is disposable; set to `normal` or `full` if you need crash safety.
-- `archive.auto_delete_corrupt_db`: when true, the server runs `PRAGMA quick_check` at startup and deletes the archive DB + WAL/SHM if integrity fails, then recreates schema.
-- Archive startup also runs a bounded WAL checkpoint + `quick_check` (`preflight_timeout_ms`); on failure/timeout the archive DB and sidecars are quarantined to a timestamped `.bad-*` copy and a fresh file is used so the cluster can continue.
+- `archive.synchronous`: defaults to `off` for maximum throughput when the archive is disposable; `normal`, `full`, or `extra` enable fsync for stronger crash safety.
+- `archive.auto_delete_corrupt_db`: when true, the server deletes the archive directory on startup if Pebble reports corruption (or the path is not a directory), then recreates an empty store.
+- `archive.busy_timeout_ms` and `archive.preflight_timeout_ms` are ignored for Pebble (retained for compatibility).
 
 Operational guidance: enable `auto_delete_corrupt_db` only if the archive is truly disposable. If you need to preserve data through crashes, leave auto-delete off and raise synchronous to `normal`/`full` (or disable the archive entirely).
 
@@ -422,7 +423,7 @@ Operational guidance: enable `auto_delete_corrupt_db` only if the archive is tru
 4. Set `spot_policy.max_age_seconds` to drop stale spots before they're processed further. For CW/RTTY frequency smoothing, tune `spot_policy.frequency_averaging_seconds` (window), `spot_policy.frequency_averaging_tolerance_hz` (allowed deviation), and `spot_policy.frequency_averaging_min_reports` (minimum corroborating reports).
 5. (Optional) Enable `skew.enabled` after generating `skew.file` via `go run ./cmd/rbnskewfetch` (or let the server fetch it at the next 00:30 UTC window). The server applies each skimmer's multiplicative correction before normalization so SSIDs stay unique.
 6. If you maintain a historical callsign list, set `known_calls.file` plus `known_calls.url` (leave `enabled: true` to keep it refreshed). On first launch the server downloads the file if missing, loads it into memory, and then refreshes it daily at `known_calls.refresh_utc`.
-7. Grids/known calls are persisted in SQLite (`grid_db`, default `data/grids/calls.db`). Tune `grid_flush_seconds` for batch cadence, `grid_cache_size` to bound the in-memory LRU used for grid comparisons, and `grid_ttl_days` if you want old, unobserved calls to expire automatically after a configurable number of days.
+7. Grids/known calls are persisted in Pebble (`grid_db`, default `data/grids/pebble`). Tune `grid_flush_seconds` for batch cadence, `grid_cache_size` to bound the in-memory LRU used for grid comparisons, and `grid_ttl_days` if you want old, unobserved calls to expire automatically after a configurable number of days.
 8. Adjust `stats.display_interval_seconds` in `data/config/app.yaml` to control how frequently runtime statistics print to the console (defaults to 30 seconds).
 9. Install dependencies and run:
 	 ```pwsh
@@ -439,10 +440,10 @@ Operational guidance: enable `auto_delete_corrupt_db` only if the archive is tru
 - Call correction uses conservative baselines unless overridden: `min_consensus_reports=4`, `min_advantage=1`, `min_confidence_percent=70`, `recency_seconds=45`, `max_edit_distance=2`, `frequency_tolerance_hz=0.5`, `voice_frequency_tolerance_hz=2000`, `voice_candidate_window_khz=2`, `min_snr_voice=0`, `invalid_action=broadcast`. Empty distance models inherit from `distance_model` or default to `plain`; negative SNR floors/extras are clamped to zero. Distance cache defaults to `size=5000` and `ttl=recency_seconds` (or `120s`).
 - Harmonic suppression clamps to sane minimums (`recency_seconds=120`, `max_harmonic_multiple=4`, `frequency_tolerance_hz=20`, `min_report_delta=6`, `min_report_delta_step>=0`).
 - Spot policy defaults prevent runaway averaging: `max_age_seconds=120`, `frequency_averaging_seconds=45`, `frequency_averaging_tolerance_hz=300`, `frequency_averaging_min_reports=4`.
-- Archive defaults keep writes lightweight: `queue_size=10000`, `batch_size=500`, `batch_interval_ms=200`, `cleanup_interval_seconds=3600`, `busy_timeout_ms=1000`, `synchronous=off`, `auto_delete_corrupt_db=false`.
+- Archive defaults keep writes lightweight: `queue_size=10000`, `batch_size=500`, `batch_interval_ms=200`, `cleanup_interval_seconds=3600`, `synchronous=off`, `auto_delete_corrupt_db=false` (`busy_timeout_ms`/`preflight_timeout_ms` are ignored for Pebble).
 - Known calls default to `data/scp/MASTER.SCP` and refresh at `01:00` UTC if unspecified. CTY falls back to `data/cty/cty.plist`.
 - FCC ULS fetches use the official URL/paths (`archive_path=data/fcc/l_amat.zip`, `db_path=data/fcc/fcc_uls.db`, `temp_dir` inherits from `db_path`), and refresh times must parse as `HH:MM` or loading fails fast.
-- Grid store defaults: `grid_db=data/grids/calls.db`, `grid_flush_seconds=60`, `grid_cache_size=100000`, with TTL/retention floors of zero to avoid negative durations.
+- Grid store defaults: `grid_db=data/grids/pebble`, `grid_flush_seconds=60`, `grid_cache_size=100000`, with TTL/retention floors of zero to avoid negative durations.
 - Dedup windows are coerced to zero-or-greater; `output_buffer_size` defaults to `1000` so bursts do not immediately drop spots.
 - Buffer capacity defaults to `300000` spots; skew downloads default to SM7IUN's CSV (`url=https://sm7iun.se/rbnskew.csv`, `file=data/skm_correction/rbnskew.json`, `refresh_utc=00:30`) with non-negative `min_spots`.
 - `config.Print` writes a concise summary of the loaded settings to stdout for easy startup diagnostics.
