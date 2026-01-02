@@ -1,11 +1,12 @@
 // Package dedup also provides a late-stage secondary deduplicator used to
 // thin broadcast volume without altering the main ring buffer history. It
 // shares the same CPU-efficient hashing approach as the primary dedupe
-// engine but keys on DE metadata (DXCC + CQ zone) plus DX call and frequency.
+// engine but keys on DE metadata (DXCC + grid2 + band) plus DX call.
 package dedup
 
 import (
 	"encoding/binary"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,9 +20,9 @@ const secondaryShardCount = 64
 
 // SecondaryDeduper drops repeat spots within a time window using a metadata
 // key composed of:
-//   - Frequency (integer kHz from existing 0.1 kHz rounding)
+//   - Band (normalized string packed into 4 bytes)
 //   - DE ADIF (spotter DXCC)
-//   - DE CQ zone
+//   - DE grid2 prefix
 //   - Normalized DX call
 //   - Source class (human vs skimmer)
 //
@@ -92,25 +93,23 @@ func (d *SecondaryDeduper) Stop() {
 }
 
 // Purpose: Determine whether a spot should pass secondary dedupe.
-// Key aspects: Uses DE DXCC/zone + DX/freq + source class and optional stronger SNR.
+// Key aspects: Uses DE DXCC/grid2 + DX/band + source class and optional stronger SNR.
 // Upstream: processOutputSpots broadcast stage.
 // Downstream: secondaryHash and isSecondaryDuplicateLocked.
 // ShouldForward returns true when the spot is not a duplicate within the
 // configured window. When preferStronger is enabled, a stronger SNR replaces
 // the cached entry and the new spot is forwarded.
-// When required metadata is missing (DE DXCC or DE CQ zone <=0) it returns true to avoid
-// false positives.
+// When required metadata is missing (DE DXCC <=0) it returns true to avoid false positives.
 func (d *SecondaryDeduper) ShouldForward(s *spot.Spot) bool {
 	if d == nil || d.window <= 0 || s == nil {
 		return true
 	}
 	deDXCC := s.DEMetadata.ADIF
-	deZone := s.DEMetadata.CQZone
-	if deDXCC <= 0 || deZone <= 0 {
+	if deDXCC <= 0 {
 		return true
 	}
 
-	hash := secondaryHash(s, deDXCC, deZone)
+	hash := secondaryHash(s, deDXCC)
 	shard := d.shardFor(hash)
 
 	shard.mu.Lock()
@@ -208,27 +207,77 @@ const (
 )
 
 // Purpose: Hash a spot into the secondary dedupe keyspace.
-// Key aspects: Includes freq, DE DXCC/zone, DX call, and source class.
+// Key aspects: Includes band, DE DXCC/grid2, DX call, and source class.
 // Upstream: ShouldForward.
 // Downstream: writeFixedCallNormalized and secondarySourceClass.
 // secondaryHash mirrors the primary hash structure (minute + kHz + fixed DX
-// call) but swaps DE callsign for DE DXCC + DE CQ zone, appends a source class
+// call) but keys on band + DE DXCC + DE grid2, appends a source class
 // discriminator, and omits the time. The time window is enforced by the cache
 // itself so the hash is stable across minute boundaries, collapsing within the
 // configured window. The source class split ensures a skimmer spot cannot
-// suppress a human spot (and vice versa) during broadcast-only dedupe.
-func secondaryHash(s *spot.Spot, deDXCC int, deZone int) uint32 {
+// suppress a human spot (and vice versa) during broadcast-only dedupe. A
+// missing or malformed grid falls back to a zeroed grid2 bucket so behavior
+// remains deterministic.
+func secondaryHash(s *spot.Spot, deDXCC int) uint32 {
 	var buf [32]byte
 	if s != nil {
 		s.EnsureNormalized()
 	}
-	freq := uint32(s.Frequency)
-	binary.LittleEndian.PutUint32(buf[0:4], freq)
+	bandKey := bandKeyNumeric(s)
+	binary.LittleEndian.PutUint32(buf[0:4], bandKey)
 	binary.LittleEndian.PutUint16(buf[4:6], uint16(deDXCC))
-	binary.LittleEndian.PutUint16(buf[6:8], uint16(deZone))
+	grid2 := fixedGrid2(s)
+	buf[6] = grid2[0]
+	buf[7] = grid2[1]
 	writeFixedCallNormalized(buf[8:20], s.DXCallNorm)
 	buf[20] = secondarySourceClass(s)
 	return uint32(xxh3.Hash(buf[:]))
+}
+
+// bandKeyNumeric packs the band string into 4 bytes for hashing. Falls back to
+// FreqToBand when BandNorm is empty.
+func bandKeyNumeric(s *spot.Spot) uint32 {
+	if s == nil {
+		return 0
+	}
+	band := s.BandNorm
+	if band == "" {
+		band = spot.FreqToBand(s.Frequency)
+	}
+	band = strings.ToUpper(strings.TrimSpace(band))
+	var buf [4]byte
+	for i := 0; i < len(band) && i < len(buf); i++ {
+		buf[i] = band[i]
+	}
+	return binary.LittleEndian.Uint32(buf[:])
+}
+
+// fixedGrid2 extracts a two-byte grid prefix, uppercased and zero-padded when
+// missing. It avoids allocating by operating on normalized fields.
+func fixedGrid2(s *spot.Spot) [2]byte {
+	var out [2]byte
+	if s == nil {
+		return out
+	}
+	grid := s.DEGrid2
+	if grid == "" && len(s.DEGridNorm) >= 2 {
+		grid = s.DEGridNorm[:2]
+	}
+	if len(grid) >= 2 {
+		out[0] = toUpperASCII(grid[0])
+		out[1] = toUpperASCII(grid[1])
+	} else if len(grid) == 1 {
+		out[0] = toUpperASCII(grid[0])
+		out[1] = 0
+	}
+	return out
+}
+
+func toUpperASCII(b byte) byte {
+	if b >= 'a' && b <= 'z' {
+		return b - 32
+	}
+	return b
 }
 
 // Purpose: Normalize a spot into human vs skimmer class for dedupe.
