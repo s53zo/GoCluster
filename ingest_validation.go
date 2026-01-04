@@ -30,6 +30,7 @@ type ingestValidator struct {
 	ctyDropDXCounter   rateCounter
 	ctyDropDECounter   rateCounter
 	dedupDropCounter   rateCounter
+	ingestTotal        atomic.Uint64 // total spots received (includes those dropped by validation)
 }
 
 // newIngestValidator wires a bounded ingest gate for CTY/ULS checks.
@@ -79,6 +80,7 @@ func (v *ingestValidator) run() {
 		if s == nil {
 			continue
 		}
+		v.ingestTotal.Add(1)
 		if !v.validateSpot(s) {
 			continue
 		}
@@ -90,6 +92,14 @@ func (v *ingestValidator) run() {
 			}
 		}
 	}
+}
+
+// IngestCount returns the total number of spots observed at ingest (pre-validation).
+func (v *ingestValidator) IngestCount() uint64 {
+	if v == nil {
+		return 0
+	}
+	return v.ingestTotal.Load()
 }
 
 // validateSpot enforces CTY validity and DE licensing before dedup.

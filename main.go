@@ -917,7 +917,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, deduplicator, secondaryDeduper, spotBuffer, ctyLookup, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath)
+	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryDeduper, spotBuffer, ctyLookup, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -1042,7 +1042,7 @@ func makeUnlicensedReporter(dash uiSurface, tracker *stats.Tracker) func(source,
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -1081,14 +1081,51 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *
 		totalFreqCorrections := tracker.FrequencyCorrections()
 		totalHarmonics := tracker.HarmonicSuppressions()
 
-		var secondaryLine string
-		if secondary != nil {
-			secProcessed, secDupes, secCache := secondary.GetStats()
-			_ = secCache
-			forwarded := secProcessed - secDupes
-			secondaryLine = fmt.Sprintf("Secondary dedup: %s in / %s dup / %s fwd", humanize.Comma(int64(secProcessed)), humanize.Comma(int64(secDupes)), humanize.Comma(int64(forwarded)))
+		ingestTotal := uint64(0)
+		if ingestStats != nil {
+			ingestTotal = ingestStats.IngestCount()
+		}
+
+		var pipelineLine string
+		if dedup == nil {
+			pipelineLine = "Pipeline: primary dedup disabled"
 		} else {
-			secondaryLine = "Secondary dedup: disabled"
+			primaryProcessed, primaryDupes, _ := dedup.GetStats()
+			primaryForwarded := primaryProcessed
+			if primaryDupes < primaryProcessed {
+				primaryForwarded = primaryProcessed - primaryDupes
+			} else {
+				primaryForwarded = 0
+			}
+
+			if secondary != nil {
+				secProcessed, secDupes, _ := secondary.GetStats()
+				secondaryForwarded := secProcessed
+				if secDupes < secProcessed {
+					secondaryForwarded = secProcessed - secDupes
+				} else {
+					secondaryForwarded = 0
+				}
+				percent := 0
+				if ingestTotal > 0 {
+					percent = int((secondaryForwarded * 100) / ingestTotal)
+				}
+				pipelineLine = fmt.Sprintf("Pipeline: %s | %s | %s (%d%%)",
+					humanize.Comma(int64(ingestTotal)),
+					humanize.Comma(int64(primaryProcessed)),
+					humanize.Comma(int64(secondaryForwarded)),
+					percent)
+			} else {
+				percent := 0
+				if ingestTotal > 0 {
+					percent = int((primaryForwarded * 100) / ingestTotal)
+				}
+				pipelineLine = fmt.Sprintf("Pipeline: %s | %s | %s (no secondary, %d%%)",
+					humanize.Comma(int64(ingestTotal)),
+					humanize.Comma(int64(primaryProcessed)),
+					humanize.Comma(int64(primaryForwarded)),
+					percent)
+			}
 		}
 
 		var queueDrops, clientDrops uint64
@@ -1114,7 +1151,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, dedup *
 				humanize.Comma(int64(pskMSK144)),
 			), // 6
 			fmt.Sprintf("Corrected calls: %d (C) / %d (U) / %d (F) / %d (H)", totalCorrections, totalUnlicensed, totalFreqCorrections, totalHarmonics), // 7
-			secondaryLine, // 8
+			pipelineLine, // 8
 			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C)", clientCount, queueDrops, clientDrops), // 9
 		}
 
