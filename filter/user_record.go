@@ -17,6 +17,7 @@ const maxRecentIPs = 5
 type UserRecord struct {
 	Filter    `yaml:",inline"`
 	RecentIPs []string `yaml:"recent_ips,omitempty"`
+	Dialect   string   `yaml:"dialect,omitempty"`
 }
 
 // Purpose: Load a persisted user record by callsign.
@@ -40,6 +41,9 @@ func LoadUserRecord(callsign string) (*UserRecord, error) {
 	record.Filter.migrateLegacyConfidence()
 	record.Filter.normalizeDefaults()
 	record.RecentIPs = trimRecentIPs(record.RecentIPs, maxRecentIPs)
+	if strings.TrimSpace(record.Dialect) == "" {
+		record.Dialect = "classic"
+	}
 	return &record, nil
 }
 
@@ -52,7 +56,7 @@ func TouchUserRecordIP(callsign, ip string) (*UserRecord, bool, error) {
 	created := false
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			record = &UserRecord{Filter: *NewFilter()}
+			record = &UserRecord{Filter: *NewFilter(), Dialect: "classic"}
 			created = true
 		} else {
 			return nil, false, err

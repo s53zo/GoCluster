@@ -10,7 +10,8 @@ import (
 
 func newTestClient() *Client {
 	return &Client{
-		filter: filter.NewFilter(),
+		filter:  filter.NewFilter(),
+		dialect: DialectGoCluster,
 	}
 }
 
@@ -203,10 +204,14 @@ func TestPassCommands(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newTestClient()
+			engine := newFilterCommandEngine()
 			if tt.setup != nil {
 				tt.setup(client)
 			}
-			resp := client.handleFilterCommand(tt.cmd)
+			resp, handled := engine.Handle(client, tt.cmd)
+			if !handled {
+				t.Fatalf("command %q was not handled", tt.cmd)
+			}
 			if resp == "" {
 				t.Fatalf("expected response for command %q", tt.cmd)
 			}
@@ -350,10 +355,14 @@ func TestRejectCommands(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newTestClient()
+			engine := newFilterCommandEngine()
 			if tt.setup != nil {
 				tt.setup(client)
 			}
-			resp := client.handleFilterCommand(tt.cmd)
+			resp, handled := engine.Handle(client, tt.cmd)
+			if !handled {
+				t.Fatalf("command %q was not handled", tt.cmd)
+			}
 			if resp == "" {
 				t.Fatalf("expected response for command %q", tt.cmd)
 			}
@@ -362,19 +371,235 @@ func TestRejectCommands(t *testing.T) {
 	}
 }
 
-func TestLegacySyntaxReturnsHint(t *testing.T) {
+func TestCCSyntaxReturnsHint(t *testing.T) {
 	client := newTestClient()
-	resp := client.handleFilterCommand("SET/FILTER BAND 20M")
-	if !strings.Contains(resp, "syntax changed") {
-		t.Fatalf("expected legacy syntax hint, got: %q", resp)
+	engine := newFilterCommandEngine()
+	resp, handled := engine.Handle(client, "SET/FILTER BAND 20M")
+	if !handled {
+		t.Fatalf("expected cc-style command to be handled")
+	}
+	if !strings.Contains(strings.ToLower(resp), "dialect") || !strings.Contains(strings.ToUpper(resp), "CC") {
+		t.Fatalf("expected cc syntax hint mentioning dialect, got: %q", resp)
 	}
 }
 
 func TestInvalidFilterCommandShowsHelpHint(t *testing.T) {
 	client := newTestClient()
-	resp := client.handleFilterCommand("PASS")
+	engine := newFilterCommandEngine()
+	resp, handled := engine.Handle(client, "PASS")
+	if !handled {
+		t.Fatalf("expected PASS command to be handled")
+	}
 	if !strings.Contains(strings.ToLower(resp), "help") {
 		t.Fatalf("expected help hint in response, got: %q", resp)
+	}
+}
+
+func TestDialectSwitchCommand(t *testing.T) {
+	server := &Server{filterEngine: newFilterCommandEngine()}
+	client := newTestClient()
+
+	resp, handled := server.handleDialectCommand(client, "DIALECT")
+	if !handled || !strings.Contains(strings.ToLower(resp), "dialect") {
+		t.Fatalf("expected current dialect response, got handled=%v resp=%q", handled, resp)
+	}
+
+	resp, handled = server.handleDialectCommand(client, "DIALECT LIST")
+	if !handled || !strings.Contains(resp, "GOCLUSTER") || !strings.Contains(resp, "CC") || strings.Contains(strings.ToUpper(resp), "LEGACY") {
+		t.Fatalf("expected dialect list, got handled=%v resp=%q", handled, resp)
+	}
+
+	resp, handled = server.handleDialectCommand(client, "DIALECT cc")
+	if !handled {
+		t.Fatalf("expected dialect switch to be handled")
+	}
+	if client.dialect != DialectCC {
+		t.Fatalf("expected dialect set to cc, got %s", client.dialect)
+	}
+	if !strings.Contains(strings.ToUpper(resp), "CC") {
+		t.Fatalf("expected confirmation of cc dialect, got %q", resp)
+	}
+}
+
+func TestCCDialectSetFilterExecutes(t *testing.T) {
+	engine := newFilterCommandEngine()
+	client := newTestClient()
+	client.dialect = DialectCC
+
+	resp, handled := engine.Handle(client, "SET/FILTER BAND 20M")
+	if !handled {
+		t.Fatalf("expected cc command to be handled")
+	}
+	if resp == "" {
+		t.Fatalf("expected response for cc command")
+	}
+	band := spot.NormalizeBand("20m")
+	if !client.filter.Bands[band] {
+		t.Fatalf("expected band %s enabled under cc dialect", band)
+	}
+}
+
+func TestCCDialectAliases(t *testing.T) {
+	engine := newFilterCommandEngine()
+	client := newTestClient()
+	client.dialect = DialectCC
+
+	resp, handled := engine.Handle(client, "SET/ANN")
+	if !handled || resp == "" {
+		t.Fatalf("expected SET/ANN handled with response, got handled=%v resp=%q", handled, resp)
+	}
+	if !client.filter.AnnounceEnabled() {
+		t.Fatalf("expected announcements enabled via CC dialect")
+	}
+
+	resp, handled = engine.Handle(client, "SET/NOBEACON")
+	if !handled || resp == "" {
+		t.Fatalf("expected SET/NOBEACON handled with response, got handled=%v resp=%q", handled, resp)
+	}
+	if client.filter.BeaconsEnabled() {
+		t.Fatalf("expected beacons disabled via CC dialect")
+	}
+
+	resp, handled = engine.Handle(client, "SET/SKIMMER")
+	if !handled || resp == "" {
+		t.Fatalf("expected SET/SKIMMER handled with response, got handled=%v resp=%q", handled, resp)
+	}
+	if !client.filter.Sources["SKIMMER"] || client.filter.BlockSources["SKIMMER"] {
+		t.Fatalf("expected SKIMMER allowed via CC dialect")
+	}
+
+	resp, handled = engine.Handle(client, "SET/NOSKIMMER")
+	if !handled || resp == "" {
+		t.Fatalf("expected SET/NOSKIMMER handled with response, got handled=%v resp=%q", handled, resp)
+	}
+	if !client.filter.BlockSources["SKIMMER"] {
+		t.Fatalf("expected SKIMMER blocked via CC dialect")
+	}
+
+	resp, handled = engine.Handle(client, "SET/FT8")
+	if !handled || resp == "" {
+		t.Fatalf("expected SET/FT8 handled with response, got handled=%v resp=%q", handled, resp)
+	}
+	if !client.filter.Modes["FT8"] {
+		t.Fatalf("expected FT8 enabled via CC dialect")
+	}
+
+	resp, handled = engine.Handle(client, "SET/NOFT8")
+	if !handled || resp == "" {
+		t.Fatalf("expected SET/NOFT8 handled with response, got handled=%v resp=%q", handled, resp)
+	}
+	if !client.filter.BlockModes["FT8"] {
+		t.Fatalf("expected FT8 blocked via CC dialect")
+	}
+}
+
+func TestCCDialectDXBMMapping(t *testing.T) {
+	engine := newFilterCommandEngine()
+	client := newTestClient()
+	client.dialect = DialectCC
+
+	resp, handled := engine.Handle(client, "SET/FILTER DXBM/PASS 160,20")
+	if !handled || resp == "" {
+		t.Fatalf("expected DXBM PASS handled, got handled=%v resp=%q", handled, resp)
+	}
+	if !client.filter.Bands[spot.NormalizeBand("160m")] || !client.filter.Bands[spot.NormalizeBand("20m")] {
+		t.Fatalf("expected 160m and 20m allowed via DXBM mapping")
+	}
+
+	resp, handled = engine.Handle(client, "SET/FILTER DXBM/REJECT 160")
+	if !handled || resp == "" {
+		t.Fatalf("expected DXBM REJECT handled, got handled=%v resp=%q", handled, resp)
+	}
+	if client.filter.Bands[spot.NormalizeBand("160m")] {
+		t.Fatalf("expected 160m blocked via DXBM REJECT")
+	}
+
+	resp, handled = engine.Handle(client, "SET/FILTER DXBM/PASS MW-MW")
+	if !handled || !strings.Contains(resp, "Unknown DXBM band") {
+		t.Fatalf("expected unknown DXBM band error, got handled=%v resp=%q", handled, resp)
+	}
+}
+
+func TestCCDialectNoFilterReset(t *testing.T) {
+	engine := newFilterCommandEngine()
+	client := newTestClient()
+	client.dialect = DialectCC
+
+	// Bias the filter to ensure reset occurs.
+	client.filter.SetBand("20M", false)
+	client.filter.BlockAllBands = true
+
+	resp, handled := engine.Handle(client, "SET/NOFILTER")
+	if !handled || resp == "" {
+		t.Fatalf("expected SET/NOFILTER handled with response, got handled=%v resp=%q", handled, resp)
+	}
+	if !client.filter.AllBands || client.filter.BlockAllBands {
+		t.Fatalf("expected filters reset to permissive defaults")
+	}
+}
+
+func TestCCDialectFilterOffSuffix(t *testing.T) {
+	engine := newFilterCommandEngine()
+	client := newTestClient()
+	client.dialect = DialectCC
+
+	resp, handled := engine.Handle(client, "SET/FILTER BAND/OFF")
+	if !handled || resp == "" {
+		t.Fatalf("expected BAND/OFF handled, got handled=%v resp=%q", handled, resp)
+	}
+	if !client.filter.BlockAllBands || client.filter.AllBands {
+		t.Fatalf("expected BAND/OFF to block all bands")
+	}
+}
+
+func TestDialectPersistence(t *testing.T) {
+	origDir := filter.UserDataDir
+	tmp := t.TempDir()
+	filter.UserDataDir = tmp
+	defer func() { filter.UserDataDir = origDir }()
+
+	client := &Client{
+		filter:   filter.NewFilter(),
+		dialect:  DialectCC,
+		callsign: "TEST1",
+	}
+	client.recentIPs = filter.UpdateRecentIPs(nil, "1.2.3.4")
+
+	if err := client.saveFilter(); err != nil {
+		t.Fatalf("saveFilter failed: %v", err)
+	}
+
+	record, err := filter.LoadUserRecord("TEST1")
+	if err != nil {
+		t.Fatalf("load user record failed: %v", err)
+	}
+	if got := normalizeDialectName(record.Dialect); got != DialectCC {
+		t.Fatalf("expected dialect cc persisted, got %s", got)
+	}
+}
+
+func TestLegacyRecordFallsBackToGoCluster(t *testing.T) {
+	if got := normalizeDialectName("legacy"); got != DialectGoCluster {
+		t.Fatalf("expected legacy token to normalize to gocluster, got %s", got)
+	}
+}
+
+func TestDialectWelcomeLine(t *testing.T) {
+	defaultDialect := DialectGoCluster
+	line := dialectWelcomeLine(DialectGoCluster, true, nil, defaultDialect)
+	if !strings.Contains(line, "GOCLUSTER") || !strings.Contains(strings.ToLower(line), "default") {
+		t.Fatalf("expected default dialect welcome line, got %q", line)
+	}
+	if !strings.Contains(strings.ToUpper(line), "HELP") {
+		t.Fatalf("expected welcome line to mention HELP, got %q", line)
+	}
+
+	line = dialectWelcomeLine(DialectCC, false, nil, defaultDialect)
+	if !strings.Contains(line, "CC") || !strings.Contains(strings.ToLower(line), "persisted") {
+		t.Fatalf("expected persisted cc dialect welcome line, got %q", line)
+	}
+	if !strings.Contains(strings.ToUpper(line), "HELP") {
+		t.Fatalf("expected welcome line to mention HELP, got %q", line)
 	}
 }
 

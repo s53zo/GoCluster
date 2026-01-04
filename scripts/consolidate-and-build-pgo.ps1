@@ -8,6 +8,7 @@ $repoRoot = "C:\src\gocluster"
 $logsDir = Join-Path $repoRoot "logs"
 $mergedProfile = Join-Path $logsDir "pgo-merged.pprof"
 $outputExe = Join-Path $repoRoot "gocluster_pgo.exe"
+$exePath = Join-Path $repoRoot "gocluster.exe"
 
 Set-Location $repoRoot
 
@@ -25,6 +26,10 @@ if ($profiles.Count -eq 0) {
 # Merge profiles into a single proto pprof
 Write-Host "Merging $($profiles.Count) profiles into $mergedProfile ..."
 $profilePaths = $profiles | ForEach-Object { $_.FullName }
+if (-not (Test-Path $exePath)) {
+    Write-Error "Source binary for profiles not found: $exePath (expected same binary used to generate cpu-*.pprof)"
+    exit 1
+}
 & go tool pprof -proto "-output=$mergedProfile" $exePath @profilePaths
 if ($LASTEXITCODE -ne 0) {
     Write-Error "pprof merge failed"

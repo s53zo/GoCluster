@@ -37,8 +37,6 @@ import (
 	"log"
 	"net"
 	"runtime"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -100,6 +98,7 @@ type Server struct {
 	clientBufferSize  int                  // Per-client spot channel capacity
 	loginLineLimit    int                  // Maximum bytes accepted for login/callsign input
 	commandLineLimit  int                  // Maximum bytes accepted for post-login commands
+	filterEngine      *filterCommandEngine // Table-driven filter command parser/executor
 }
 
 // Client represents a connected telnet client session.
@@ -123,6 +122,7 @@ type Client struct {
 	bulletinChan chan bulletin   // Buffered channel for WWV/WCY bulletin delivery
 	handleIAC    bool            // True when we parse IAC sequences in ReadLine
 	echoInput    bool            // True when we should echo typed characters back to the client
+	dialect      DialectName     // Active command dialect for filter commands
 
 	// filterMu guards filter, which is read by telnet broadcast workers while the
 	// client session goroutine mutates it in response to PASS/REJECT commands.
@@ -169,6 +169,7 @@ func (c *Client) saveFilter() error {
 	record := &filter.UserRecord{
 		Filter:    *c.filter,
 		RecentIPs: c.recentIPs,
+		Dialect:   string(c.dialect),
 	}
 	if existing, err := filter.LoadUserRecord(callsign); err == nil {
 		record.RecentIPs = filter.MergeRecentIPs(record.RecentIPs, existing.RecentIPs)
@@ -213,21 +214,55 @@ func (m *broadcastMetrics) snapshot() (queueDrops, clientDrops uint64) {
 	return
 }
 
-func isFilterCommand(line string) bool {
-	lower := strings.ToLower(strings.TrimSpace(line))
-	if lower == "" {
-		return false
+// handleDialectCommand lets a client select a filter command dialect explicitly.
+func (s *Server) handleDialectCommand(client *Client, line string) (string, bool) {
+	if client == nil || s == nil || s.filterEngine == nil {
+		return "", false
 	}
-	if strings.HasPrefix(lower, "pass") ||
-		strings.HasPrefix(lower, "reject") ||
-		strings.HasPrefix(lower, "show filter") {
-		return true
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) == 0 {
+		return "", false
 	}
-	// Catch legacy verbs so we can return the syntax-changed hint.
-	return strings.HasPrefix(lower, "set/filter") ||
-		strings.HasPrefix(lower, "unset/filter") ||
-		strings.HasPrefix(lower, "show/filter") ||
-		strings.HasPrefix(lower, "sh/filter")
+	if !strings.EqualFold(fields[0], "DIALECT") {
+		return "", false
+	}
+	if len(fields) == 1 {
+		return fmt.Sprintf("Current dialect: %s\n", strings.ToUpper(string(client.dialect))), true
+	}
+	if len(fields) == 2 && strings.EqualFold(fields[1], "LIST") {
+		names := s.filterEngine.availableDialectNames()
+		return fmt.Sprintf("Available dialects: %s\n", strings.ToUpper(strings.Join(names, ", "))), true
+	}
+	nameToken := strings.ToLower(strings.TrimSpace(fields[1]))
+	selected, ok := s.filterEngine.dialectAliases[nameToken]
+	if !ok {
+		// Also accept exact dialect names.
+		if dialect := DialectName(nameToken); s.filterEngine.dialects[dialect] != nil {
+			selected = dialect
+			ok = true
+		}
+	}
+	if !ok {
+		return fmt.Sprintf("Unknown dialect: %s\nAvailable dialects: %s\n", fields[1], strings.ToUpper(strings.Join(s.filterEngine.availableDialectNames(), ", "))), true
+	}
+	if client.dialect == selected {
+		return fmt.Sprintf("Dialect already set to %s\n", strings.ToUpper(string(selected))), true
+	}
+	client.dialect = selected
+	// Persist updated dialect selection.
+	_ = client.saveFilter()
+	return fmt.Sprintf("Dialect set to %s\n", strings.ToUpper(string(selected))), true
+}
+
+func dialectWelcomeLine(active DialectName, created bool, loadErr error, defaultDialect DialectName) string {
+	source := "default"
+	if loadErr == nil && !created {
+		source = "persisted"
+	}
+	if active != defaultDialect {
+		source = "persisted"
+	}
+	return fmt.Sprintf("Current dialect: %s (%s). Use DIALECT LIST or DIALECT CC to switch. Type HELP for commands in this dialect.\n", strings.ToUpper(string(active)), source)
 }
 
 func shouldLogQueueDrop(total uint64) bool {
@@ -270,9 +305,11 @@ const (
 )
 
 const (
-	passFilterUsageMsg    = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern> | PASS DECALL <pattern> | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK31.\nType HELP for usage.\n"
-	rejectFilterUsageMsg  = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER> | REJECT DXCALL | REJECT DECALL | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK31.\nType HELP for usage.\n"
-	legacyFilterSyntaxMsg = "Filter syntax changed: use PASS/REJECT/SHOW FILTER.\nType HELP for usage.\n"
+	passFilterUsageMsg      = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern> | PASS DECALL <pattern> | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK31.\nType HELP for usage.\n"
+	rejectFilterUsageMsg    = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER> | REJECT DXCALL | REJECT DECALL | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK31.\nType HELP for usage.\n"
+	unknownPassTypeMsg      = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
+	unknownRejectTypeMsg    = "Unknown filter type. Use: ALL, BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
+	invalidFilterCommandMsg = "Invalid filter command. Type HELP for usage.\n"
 )
 
 // ServerOptions configures the telnet server instance.
@@ -323,6 +360,7 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		processor:         processor,
 		loginLineLimit:    config.LoginLineLimit,
 		commandLineLimit:  config.CommandLineLimit,
+		filterEngine:      newFilterCommandEngine(),
 	}
 }
 
@@ -795,6 +833,10 @@ func (s *Server) handleClient(conn net.Conn) {
 		spotQueueSize = defaultClientBufferSize
 	}
 
+	if s.filterEngine == nil {
+		s.filterEngine = newFilterCommandEngine()
+	}
+
 	// Create client object and select the telnet transport backend.
 	readerConn := conn
 	writerConn := conn
@@ -817,6 +859,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		bulletinChan: make(chan bulletin, spotQueueSize),
 		filter:       filter.NewFilter(), // Start with no filters (accept all)
 		handleIAC:    !s.useZiutek,
+		dialect:      s.filterEngine.defaultDialect,
 		// Echo policy is configured explicitly so we can support local echo even
 		// when clients toggle their own modes.
 		echoInput: s.echoMode == telnetEchoServer,
@@ -866,6 +909,7 @@ func (s *Server) handleClient(conn net.Conn) {
 	if err == nil {
 		client.filter = &record.Filter
 		client.recentIPs = record.RecentIPs
+		client.dialect = normalizeDialectName(record.Dialect)
 		if created {
 			log.Printf("Created default filter for %s", client.callsign)
 		} else {
@@ -874,6 +918,7 @@ func (s *Server) handleClient(conn net.Conn) {
 	} else {
 		client.filter = filter.NewFilter()
 		client.recentIPs = filter.UpdateRecentIPs(nil, spotterIP(client.address))
+		client.dialect = s.filterEngine.defaultDialect
 		log.Printf("Warning: failed to load user record for %s: %v", client.callsign, err)
 		if err := client.saveFilter(); err != nil {
 			log.Printf("Warning: failed to save user record for %s: %v", client.callsign, err)
@@ -890,6 +935,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		greeting = fmt.Sprintf("Hello %s, you are now connected.", client.callsign)
 	}
 	client.Send(greeting + "\n")
+	client.Send(dialectWelcomeLine(client.dialect, created, err, s.filterEngine.defaultDialect))
 
 	// Start spot sender goroutine
 	go client.spotSender()
@@ -916,10 +962,19 @@ func (s *Server) handleClient(conn net.Conn) {
 			continue
 		}
 
-		// Check for filter commands first
-		if isFilterCommand(line) {
-			response := client.handleFilterCommand(line)
-			client.Send(response)
+		// Dialect selection is handled before filter commands.
+		if resp, handled := s.handleDialectCommand(client, line); handled {
+			if resp != "" {
+				client.Send(resp)
+			}
+			continue
+		}
+
+		// Check for filter commands under the active dialect.
+		if resp, handled := s.filterEngine.Handle(client, line); handled {
+			if resp != "" {
+				client.Send(resp)
+			}
 			continue
 		}
 
@@ -937,7 +992,7 @@ func (s *Server) handleClient(conn net.Conn) {
 			client.filterMu.RUnlock()
 			return matches
 		}
-		response := s.processor.ProcessCommandForClient(line, client.callsign, spotterIP(client.address), filterFn)
+		response := s.processor.ProcessCommandForClient(line, client.callsign, spotterIP(client.address), filterFn, string(client.dialect))
 
 		// Check for disconnect signal
 		if response == "BYE" {
@@ -994,1222 +1049,6 @@ func sendTelnetOption(conn net.Conn, command, option byte) {
 	_, _ = conn.Write([]byte{IAC, command, option})
 	_ = conn.SetWriteDeadline(time.Time{})
 }
-
-// handleFilterCommand processes filter-related commands
-func (c *Client) handleFilterCommand(cmd string) string {
-	parts := strings.Fields(cmd)
-	if len(parts) == 0 {
-		return "Invalid filter command. Type HELP for usage.\n"
-	}
-
-	command := strings.ToLower(parts[0])
-
-	// Explicitly catch legacy verbs to provide a clearer error.
-	switch command {
-	case "set/filter", "unset/filter", "show/filter", "sh/filter":
-		return legacyFilterSyntaxMsg
-	}
-
-	switch command {
-	case "show":
-		if len(parts) < 2 || strings.ToLower(parts[1]) != "filter" {
-			return "Invalid filter command. Type HELP for usage.\n"
-		}
-		// If user asked for modes specifically, show supported modes and enabled state
-		if len(parts) > 2 {
-			arg := strings.ToLower(parts[2])
-			switch arg {
-			case "modes":
-				var b strings.Builder
-				for i, mode := range filter.SupportedModes {
-					enabled := "DISABLED"
-					if c.filter.AllModes || c.filter.Modes[mode] {
-						enabled = "ENABLED"
-					}
-					b.WriteString(fmt.Sprintf("%s=%s", mode, enabled))
-					if i < len(filter.SupportedModes)-1 {
-						b.WriteString(", ")
-					}
-				}
-				return fmt.Sprintf("Supported modes: %s\n", b.String())
-			case "bands":
-				return fmt.Sprintf("Supported bands: %s\n", strings.Join(spot.SupportedBandNames(), ", "))
-			case "confidence":
-				var b strings.Builder
-				for i, symbol := range filter.SupportedConfidenceSymbols {
-					enabled := "DISABLED"
-					if c.filter.AllConfidence || c.filter.ConfidenceSymbolEnabled(symbol) {
-						enabled = "ENABLED"
-					}
-					b.WriteString(fmt.Sprintf("%s=%s", symbol, enabled))
-					if i < len(filter.SupportedConfidenceSymbols)-1 {
-						b.WriteString(", ")
-					}
-				}
-				return fmt.Sprintf("Confidence symbols: %s\n", b.String())
-			case "beacon":
-				status := "ENABLED"
-				if !c.filter.BeaconsEnabled() {
-					status = "DISABLED"
-				}
-				return fmt.Sprintf("Beacon spots: %s\n", status)
-			case "wwv":
-				status := "ENABLED"
-				if !c.filter.WWVEnabled() {
-					status = "DISABLED"
-				}
-				return fmt.Sprintf("WWV bulletins: %s\n", status)
-			case "wcy":
-				status := "ENABLED"
-				if !c.filter.WCYEnabled() {
-					status = "DISABLED"
-				}
-				return fmt.Sprintf("WCY bulletins: %s\n", status)
-			case "announce", "pc93":
-				status := "ENABLED"
-				if !c.filter.AnnounceEnabled() {
-					status = "DISABLED"
-				}
-				return fmt.Sprintf("Announcements: %s\n", status)
-			case "dxcont":
-				return fmt.Sprintf("DX continents: %s\n", formatAllowBlockStrings(c.filter.AllDXContinents, c.filter.BlockAllDXContinents, c.filter.DXContinents, c.filter.BlockDXContinents))
-			case "decont":
-				return fmt.Sprintf("DE continents: %s\n", formatAllowBlockStrings(c.filter.AllDEContinents, c.filter.BlockAllDEContinents, c.filter.DEContinents, c.filter.BlockDEContinents))
-			case "dxzone":
-				return fmt.Sprintf("DX zones: %s\n", formatAllowBlockInts(c.filter.AllDXZones, c.filter.BlockAllDXZones, c.filter.DXZones, c.filter.BlockDXZones))
-			case "dezone":
-				return fmt.Sprintf("DE zones: %s\n", formatAllowBlockInts(c.filter.AllDEZones, c.filter.BlockAllDEZones, c.filter.DEZones, c.filter.BlockDEZones))
-			case "dxgrid2":
-				return fmt.Sprintf("DX 2-character grids: %s\n", formatAllowBlockStrings(c.filter.AllDXGrid2, c.filter.BlockAllDXGrid2, c.filter.DXGrid2Prefixes, c.filter.BlockDXGrid2))
-			case "degrid2":
-				return fmt.Sprintf("DE 2-character grids: %s\n", formatAllowBlockStrings(c.filter.AllDEGrid2, c.filter.BlockAllDEGrid2, c.filter.DEGrid2Prefixes, c.filter.BlockDEGrid2))
-			case "dxdxcc":
-				return fmt.Sprintf("DX DXCC: %s\n", formatAllowBlockInts(c.filter.AllDXDXCC, c.filter.BlockAllDXDXCC, c.filter.DXDXCC, c.filter.BlockDXDXCC))
-			case "dedxcc":
-				return fmt.Sprintf("DE DXCC: %s\n", formatAllowBlockInts(c.filter.AllDEDXCC, c.filter.BlockAllDEDXCC, c.filter.DEDXCC, c.filter.BlockDEDXCC))
-			}
-		}
-
-		return fmt.Sprintf("Current filters: %s\n", c.filter.String())
-
-	case "pass":
-		if len(parts) < 2 {
-			return passFilterUsageMsg
-		}
-
-		filterType := strings.ToUpper(parts[1])
-		if filterType != "BEACON" && filterType != "WWV" && filterType != "WCY" && filterType != "ANNOUNCE" && filterType != "PC93" && len(parts) < 3 {
-			return passFilterUsageMsg
-		}
-		switch filterType {
-		case "BAND":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return passFilterUsageMsg
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetBands()
-				})
-				c.saveFilter()
-				return "All bands enabled\n"
-			}
-			rawBands := parseBandList(value)
-			if len(rawBands) == 0 {
-				return passFilterUsageMsg
-			}
-			normalizedBands := make([]string, 0, len(rawBands))
-			seen := make(map[string]bool)
-			invalid := make([]string, 0)
-			for _, candidate := range rawBands {
-				norm := spot.NormalizeBand(candidate)
-				if norm == "" || !spot.IsValidBand(norm) {
-					invalid = append(invalid, candidate)
-					continue
-				}
-				if !seen[norm] {
-					normalizedBands = append(normalizedBands, norm)
-					seen[norm] = true
-				}
-			}
-			if len(invalid) > 0 {
-				return fmt.Sprintf("Unknown band: %s\nSupported bands: %s\n", strings.Join(invalid, ", "), strings.Join(spot.SupportedBandNames(), ", "))
-			}
-			if len(normalizedBands) == 0 {
-				return passFilterUsageMsg
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, band := range normalizedBands {
-					f.SetBand(band, true)
-				}
-			})
-			c.saveFilter()
-			if len(normalizedBands) == 1 {
-				return fmt.Sprintf("Filter set: Band %s\n", normalizedBands[0])
-			}
-			return fmt.Sprintf("Filter set: Bands %s\n", strings.Join(normalizedBands, ", "))
-		case "MODE":
-			modeArgs := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if strings.EqualFold(modeArgs, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetModes()
-				})
-				c.saveFilter()
-				return "All modes enabled\n"
-			}
-			modes := parseModeList(modeArgs)
-			if len(modes) == 0 {
-				return "Usage: PASS MODE <mode>[,<mode>...] (comma or space separated)\nType HELP for usage.\n"
-			}
-			invalid := collectInvalidModes(modes)
-			if len(invalid) > 0 {
-				return fmt.Sprintf("Unknown mode: %s\nSupported modes: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedModes, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, mode := range modes {
-					f.SetMode(mode, true)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Filter set: Modes %s\n", strings.Join(modes, ", "))
-		case "SOURCE":
-			value := strings.ToUpper(strings.TrimSpace(strings.Join(parts[2:], " ")))
-			if value == "" {
-				return "Usage: PASS SOURCE <HUMAN|SKIMMER|ALL>\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetSources()
-				})
-				c.saveFilter()
-				return "Source filtering disabled\n"
-			}
-			if !filter.IsSupportedSource(value) {
-				return fmt.Sprintf("Unknown source: %s\nValid sources: %s\n", value, strings.Join(filter.SupportedSources, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				f.SetSource(value, true)
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Filter set: Source %s\n", value)
-		case "DXCALL":
-			value := strings.ToUpper(parts[2])
-			c.updateFilter(func(f *filter.Filter) {
-				f.AddDXCallsignPattern(value)
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Filter set: DX callsign %s\n", value)
-		case "DECALL":
-			value := strings.ToUpper(parts[2])
-			c.updateFilter(func(f *filter.Filter) {
-				f.AddDECallsignPattern(value)
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Filter set: DE callsign %s\n", value)
-		case "CONFIDENCE":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetConfidence()
-				})
-				c.saveFilter()
-				return "All confidence symbols enabled\n"
-			}
-			symbols := parseConfidenceList(value)
-			if len(symbols) == 0 {
-				return "Usage: PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL)\nType HELP for usage.\n"
-			}
-			invalid := collectInvalidConfidenceSymbols(symbols)
-			if len(invalid) > 0 {
-				return fmt.Sprintf("Unknown confidence symbol: %s\nSupported symbols: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedConfidenceSymbols, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, symbol := range symbols {
-					f.SetConfidenceSymbol(symbol, true)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Confidence symbols enabled: %s\n", strings.Join(symbols, ", "))
-		case "BEACON":
-			c.updateFilter(func(f *filter.Filter) {
-				f.SetBeaconEnabled(true)
-			})
-			c.saveFilter()
-			return "Beacon spots enabled\n"
-		case "WWV":
-			c.updateFilter(func(f *filter.Filter) {
-				f.SetWWVEnabled(true)
-			})
-			c.saveFilter()
-			return "WWV bulletins enabled\n"
-		case "WCY":
-			c.updateFilter(func(f *filter.Filter) {
-				f.SetWCYEnabled(true)
-			})
-			c.saveFilter()
-			return "WCY bulletins enabled\n"
-		case "ANNOUNCE", "PC93":
-			c.updateFilter(func(f *filter.Filter) {
-				f.SetAnnounceEnabled(true)
-			})
-			c.saveFilter()
-			return "Announcements enabled\n"
-		case "DXCONT":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: PASS DXCONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDXContinents()
-				})
-				c.saveFilter()
-				return "All DX continents enabled\n"
-			}
-			continents := parseContinentList(value)
-			if len(continents) == 0 {
-				return "Usage: PASS DXCONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\nType HELP for usage.\n"
-			}
-			if invalid := collectInvalidContinents(continents); len(invalid) > 0 {
-				return fmt.Sprintf("Unknown continent: %s\nSupported continents: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedContinents, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, cont := range continents {
-					f.SetDXContinent(cont, true)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Filter set: DX continents %s\n", strings.Join(continents, ", "))
-		case "DECONT":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: PASS DECONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDEContinents()
-				})
-				c.saveFilter()
-				return "All DE continents enabled\n"
-			}
-			continents := parseContinentList(value)
-			if len(continents) == 0 {
-				return "Usage: PASS DECONT <cont>[,<cont>...] (continents: AF, AN, AS, EU, NA, OC, SA, or ALL)\nType HELP for usage.\n"
-			}
-			if invalid := collectInvalidContinents(continents); len(invalid) > 0 {
-				return fmt.Sprintf("Unknown continent: %s\nSupported continents: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedContinents, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, cont := range continents {
-					f.SetDEContinent(cont, true)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Filter set: DE continents %s\n", strings.Join(continents, ", "))
-		case "DXZONE":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: PASS DXZONE <zone>[,<zone>...] (1-40, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDXZones()
-				})
-				c.saveFilter()
-				return "All DX zones enabled\n"
-			}
-			zones := parseZoneList(value)
-			if len(zones) == 0 {
-				return "Usage: PASS DXZONE <zone>[,<zone>...] (1-40, or ALL)\nType HELP for usage.\n"
-			}
-			if invalid := collectInvalidZones(zones); len(invalid) > 0 {
-				return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone())
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, zone := range zones {
-					f.SetDXZone(zone, true)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Filter set: DX zones %s\n", joinZones(zones))
-		case "DEZONE":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: PASS DEZONE <zone>[,<zone>...] (1-40, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDEZones()
-				})
-				c.saveFilter()
-				return "All DE zones enabled\n"
-			}
-			zones := parseZoneList(value)
-			if len(zones) == 0 {
-				return "Usage: PASS DEZONE <zone>[,<zone>...] (1-40, or ALL)\nType HELP for usage.\n"
-			}
-			if invalid := collectInvalidZones(zones); len(invalid) > 0 {
-				return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone())
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, zone := range zones {
-					f.SetDEZone(zone, true)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Filter set: DE zones %s\n", joinZones(zones))
-		case "DXDXCC":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: PASS DXDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDXDXCC()
-				})
-				c.saveFilter()
-				return "All DX DXCCs enabled\n"
-			}
-			codes, invalid := parseDXCCList(value)
-			if len(codes) == 0 {
-				return "Usage: PASS DXDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if len(invalid) > 0 {
-				return fmt.Sprintf("Invalid DXCC code: %s\n", strings.Join(invalid, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, code := range codes {
-					f.SetDXDXCC(code, true)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Filter set: DX DXCC %s\n", joinZones(codes))
-		case "DEDXCC":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: PASS DEDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDEDXCC()
-				})
-				c.saveFilter()
-				return "All DE DXCCs enabled\n"
-			}
-			codes, invalid := parseDXCCList(value)
-			if len(codes) == 0 {
-				return "Usage: PASS DEDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if len(invalid) > 0 {
-				return fmt.Sprintf("Invalid DXCC code: %s\n", strings.Join(invalid, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, code := range codes {
-					f.SetDEDXCC(code, true)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Filter set: DE DXCC %s\n", joinZones(codes))
-		case "DXGRID2":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: PASS DXGRID2 <grid>[,<grid>...] (two characters, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDXGrid2()
-				})
-				c.saveFilter()
-				return "All DX 2-character grids enabled\n"
-			}
-			gridList, invalidTokens := parseGrid2List(value)
-			if len(gridList) == 0 {
-				return "Usage: PASS DXGRID2 <grid>[,<grid>...] (two characters, or ALL)\nType HELP for usage.\n"
-			}
-			if len(invalidTokens) > 0 {
-				return fmt.Sprintf("Unknown 2-character grid: %s\n", strings.Join(invalidTokens, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, grid := range gridList {
-					f.SetDXGrid2Prefix(grid, true)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Filter set: DX 2-character grids %s\n", strings.Join(gridList, ", "))
-		case "DEGRID2":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: PASS DEGRID2 <grid>[,<grid>...] (two characters, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDEGrid2()
-				})
-				c.saveFilter()
-				return "All DE 2-character grids enabled\n"
-			}
-			gridList, invalidTokens := parseGrid2List(value)
-			if len(gridList) == 0 {
-				return "Usage: PASS DEGRID2 <grid>[,<grid>...] (two characters, or ALL)\nType HELP for usage.\n"
-			}
-			if len(invalidTokens) > 0 {
-				return fmt.Sprintf("Unknown 2-character grid: %s\n", strings.Join(invalidTokens, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, grid := range gridList {
-					f.SetDEGrid2Prefix(grid, true)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Filter set: DE 2-character grids %s\n", strings.Join(gridList, ", "))
-		default:
-			return "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
-		}
-
-	case "reject":
-		if len(parts) < 2 {
-			return rejectFilterUsageMsg
-		}
-
-		filterType := strings.ToUpper(parts[1])
-
-		switch filterType {
-		case "ALL":
-			c.updateFilter(func(f *filter.Filter) {
-				f.Reset()
-			})
-			c.saveFilter()
-			return "All filters cleared\n"
-		case "BAND":
-			bandArgs := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if bandArgs == "" {
-				return "Usage: REJECT BAND <band>[,<band>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(bandArgs, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetBands()
-					f.BlockAllBands = true
-					f.AllBands = false
-				})
-				c.saveFilter()
-				return "All bands blocked\n"
-			}
-			bands := parseBandList(bandArgs)
-			if len(bands) == 0 {
-				return "Usage: REJECT BAND <band>[,<band>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			invalid := make([]string, 0)
-			normalized := make([]string, 0, len(bands))
-			seen := make(map[string]bool)
-			for _, b := range bands {
-				norm := spot.NormalizeBand(b)
-				if norm == "" || !spot.IsValidBand(norm) {
-					invalid = append(invalid, b)
-					continue
-				}
-				if !seen[norm] {
-					normalized = append(normalized, norm)
-					seen[norm] = true
-				}
-			}
-			if len(invalid) > 0 {
-				return fmt.Sprintf("Unknown band: %s\nSupported bands: %s\n", strings.Join(invalid, ", "), strings.Join(spot.SupportedBandNames(), ", "))
-			}
-			if len(normalized) == 0 {
-				return "Usage: REJECT BAND <band>[,<band>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, band := range normalized {
-					f.SetBand(band, false)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Band filters disabled: %s\n", strings.Join(normalized, ", "))
-		case "MODE":
-			modeArgs := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if modeArgs == "" {
-				return "Usage: REJECT MODE <mode>[,<mode>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(modeArgs, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetModes()
-					f.BlockAllModes = true
-					f.AllModes = false
-				})
-				c.saveFilter()
-				return "All modes blocked\n"
-			}
-			modes := parseModeList(modeArgs)
-			if len(modes) == 0 {
-				return "Usage: REJECT MODE <mode>[,<mode>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			invalid := collectInvalidModes(modes)
-			if len(invalid) > 0 {
-				return fmt.Sprintf("Unknown mode: %s\nSupported modes: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedModes, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, mode := range modes {
-					f.SetMode(mode, false)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Mode filters disabled: %s\n", strings.Join(modes, ", "))
-		case "SOURCE":
-			value := strings.ToUpper(strings.TrimSpace(strings.Join(parts[2:], " ")))
-			if value == "" {
-				return "Usage: REJECT SOURCE <HUMAN|SKIMMER>\nType HELP for usage.\n"
-			}
-			if !filter.IsSupportedSource(value) {
-				return fmt.Sprintf("Unknown source: %s\nValid sources: %s\n", value, strings.Join(filter.SupportedSources, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				f.SetSource(value, false)
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Source filters disabled: %s\n", value)
-		case "DXCALL":
-			c.updateFilter(func(f *filter.Filter) {
-				f.ClearDXCallsignPatterns()
-			})
-			c.saveFilter()
-			return "DX callsign filters cleared\n"
-		case "DECALL":
-			c.updateFilter(func(f *filter.Filter) {
-				f.ClearDECallsignPatterns()
-			})
-			c.saveFilter()
-			return "DE callsign filters cleared\n"
-		case "CONFIDENCE":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: REJECT CONFIDENCE <symbol>[,<symbol>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetConfidence()
-					f.BlockAllConfidence = true
-					f.AllConfidence = false
-				})
-				c.saveFilter()
-				return "All confidence symbols blocked (non-exempt modes)\n"
-			}
-			symbols := parseConfidenceList(value)
-			if len(symbols) == 0 {
-				return "Usage: REJECT CONFIDENCE <symbol>[,<symbol>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			invalid := collectInvalidConfidenceSymbols(symbols)
-			if len(invalid) > 0 {
-				return fmt.Sprintf("Unknown confidence symbol: %s\nSupported symbols: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedConfidenceSymbols, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, symbol := range symbols {
-					f.SetConfidenceSymbol(symbol, false)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("Confidence symbols disabled: %s\n", strings.Join(symbols, ", "))
-		case "BEACON":
-			c.updateFilter(func(f *filter.Filter) {
-				f.SetBeaconEnabled(false)
-			})
-			c.saveFilter()
-			return "Beacon spots disabled\n"
-		case "WWV":
-			c.updateFilter(func(f *filter.Filter) {
-				f.SetWWVEnabled(false)
-			})
-			c.saveFilter()
-			return "WWV bulletins disabled\n"
-		case "WCY":
-			c.updateFilter(func(f *filter.Filter) {
-				f.SetWCYEnabled(false)
-			})
-			c.saveFilter()
-			return "WCY bulletins disabled\n"
-		case "ANNOUNCE", "PC93":
-			c.updateFilter(func(f *filter.Filter) {
-				f.SetAnnounceEnabled(false)
-			})
-			c.saveFilter()
-			return "Announcements disabled\n"
-		case "DXCONT":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: REJECT DXCONT <cont>[,<cont>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDXContinents()
-					f.BlockAllDXContinents = true
-					f.AllDXContinents = false
-				})
-				c.saveFilter()
-				return "All DX continents blocked\n"
-			}
-			continents := parseContinentList(value)
-			if len(continents) == 0 {
-				return "Usage: REJECT DXCONT <cont>[,<cont>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if invalid := collectInvalidContinents(continents); len(invalid) > 0 {
-				return fmt.Sprintf("Unknown continent: %s\nSupported continents: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedContinents, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, cont := range continents {
-					f.SetDXContinent(cont, false)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("DX continent filters disabled: %s\n", strings.Join(continents, ", "))
-		case "DECONT":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: REJECT DECONT <cont>[,<cont>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDEContinents()
-					f.BlockAllDEContinents = true
-					f.AllDEContinents = false
-				})
-				c.saveFilter()
-				return "All DE continents blocked\n"
-			}
-			continents := parseContinentList(value)
-			if len(continents) == 0 {
-				return "Usage: REJECT DECONT <cont>[,<cont>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if invalid := collectInvalidContinents(continents); len(invalid) > 0 {
-				return fmt.Sprintf("Unknown continent: %s\nSupported continents: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedContinents, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, cont := range continents {
-					f.SetDEContinent(cont, false)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("DE continent filters disabled: %s\n", strings.Join(continents, ", "))
-		case "DXZONE":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: REJECT DXZONE <zone>[,<zone>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDXZones()
-					f.BlockAllDXZones = true
-					f.AllDXZones = false
-				})
-				c.saveFilter()
-				return "All DX zones blocked\n"
-			}
-			zones := parseZoneList(value)
-			if len(zones) == 0 {
-				return "Usage: REJECT DXZONE <zone>[,<zone>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if invalid := collectInvalidZones(zones); len(invalid) > 0 {
-				return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone())
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, zone := range zones {
-					f.SetDXZone(zone, false)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("DX zone filters disabled: %s\n", joinZones(zones))
-		case "DEZONE":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: REJECT DEZONE <zone>[,<zone>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDEZones()
-					f.BlockAllDEZones = true
-					f.AllDEZones = false
-				})
-				c.saveFilter()
-				return "All DE zones blocked\n"
-			}
-			zones := parseZoneList(value)
-			if len(zones) == 0 {
-				return "Usage: REJECT DEZONE <zone>[,<zone>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if invalid := collectInvalidZones(zones); len(invalid) > 0 {
-				return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone())
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, zone := range zones {
-					f.SetDEZone(zone, false)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("DE zone filters disabled: %s\n", joinZones(zones))
-		case "DXDXCC":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: REJECT DXDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDXDXCC()
-					f.BlockAllDXDXCC = true
-					f.AllDXDXCC = false
-				})
-				c.saveFilter()
-				return "All DX DXCCs blocked\n"
-			}
-			codes, invalid := parseDXCCList(value)
-			if len(codes) == 0 {
-				return "Usage: REJECT DXDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if len(invalid) > 0 {
-				return fmt.Sprintf("Invalid DXCC code: %s\n", strings.Join(invalid, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, code := range codes {
-					f.SetDXDXCC(code, false)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("DX DXCC filters disabled: %s\n", joinZones(codes))
-		case "DEDXCC":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: REJECT DEDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDEDXCC()
-					f.BlockAllDEDXCC = true
-					f.AllDEDXCC = false
-				})
-				c.saveFilter()
-				return "All DE DXCCs blocked\n"
-			}
-			codes, invalid := parseDXCCList(value)
-			if len(codes) == 0 {
-				return "Usage: REJECT DEDXCC <code>[,<code>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if len(invalid) > 0 {
-				return fmt.Sprintf("Invalid DXCC code: %s\n", strings.Join(invalid, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, code := range codes {
-					f.SetDEDXCC(code, false)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("DE DXCC filters disabled: %s\n", joinZones(codes))
-		case "DXGRID2":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: REJECT DXGRID2 <grid>[,<grid>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDXGrid2()
-					f.BlockAllDXGrid2 = true
-					f.AllDXGrid2 = false
-				})
-				c.saveFilter()
-				return "All DX 2-character grids blocked\n"
-			}
-			gridList, invalidTokens := parseGrid2List(value)
-			if len(gridList) == 0 {
-				return "Usage: REJECT DXGRID2 <grid>[,<grid>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if len(invalidTokens) > 0 {
-				return fmt.Sprintf("Unknown 2-character grid: %s\n", strings.Join(invalidTokens, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, grid := range gridList {
-					f.SetDXGrid2Prefix(grid, false)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("DX 2-character grid filters disabled: %s\n", strings.Join(gridList, ", "))
-		case "DEGRID2":
-			value := strings.TrimSpace(strings.Join(parts[2:], " "))
-			if value == "" {
-				return "Usage: REJECT DEGRID2 <grid>[,<grid>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if strings.EqualFold(value, "ALL") {
-				c.updateFilter(func(f *filter.Filter) {
-					f.ResetDEGrid2()
-					f.BlockAllDEGrid2 = true
-					f.AllDEGrid2 = false
-				})
-				c.saveFilter()
-				return "All DE 2-character grids blocked\n"
-			}
-			gridList, invalidTokens := parseGrid2List(value)
-			if len(gridList) == 0 {
-				return "Usage: REJECT DEGRID2 <grid>[,<grid>...] (comma or space separated, or ALL)\nType HELP for usage.\n"
-			}
-			if len(invalidTokens) > 0 {
-				return fmt.Sprintf("Unknown 2-character grid: %s\n", strings.Join(invalidTokens, ", "))
-			}
-			c.updateFilter(func(f *filter.Filter) {
-				for _, grid := range gridList {
-					f.SetDEGrid2Prefix(grid, false)
-				}
-			})
-			c.saveFilter()
-			return fmt.Sprintf("DE 2-character grid filters disabled: %s\n", strings.Join(gridList, ", "))
-		default:
-			return "Unknown filter type. Use: ALL, BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
-		}
-
-	default:
-		return "Invalid filter command. Type HELP for usage.\n"
-	}
-}
-
-// parseBandList normalizes user-supplied band lists so SET/UNSET commands
-// share the exact same semantics as their mode counterparts (comma or space
-// delimited input, duplicate suppression happens later).
-func parseBandList(arg string) []string {
-	return splitListValues(arg)
-}
-
-// parseModeList converts user input into normalized mode tokens. Band and mode
-// commands share this list-handling behavior so `ALL`, comma, and space
-// separated values work identically between the two.
-func parseModeList(arg string) []string {
-	values := splitListValues(arg)
-	if len(values) == 0 {
-		return nil
-	}
-	modes := make([]string, 0, len(values))
-	for _, value := range values {
-		mode := strings.ToUpper(strings.TrimSpace(value))
-		if mode == "" {
-			continue
-		}
-		modes = append(modes, mode)
-	}
-	return modes
-}
-
-func parseConfidenceList(arg string) []string {
-	values := splitListValues(arg)
-	if len(values) == 0 {
-		return nil
-	}
-	symbols := make([]string, 0, len(values))
-	for _, value := range values {
-		symbol := strings.ToUpper(strings.TrimSpace(value))
-		if symbol == "" {
-			continue
-		}
-		symbols = append(symbols, symbol)
-	}
-	return symbols
-}
-
-func parseContinentList(arg string) []string {
-	values := splitListValues(arg)
-	if len(values) == 0 {
-		return nil
-	}
-	seen := make(map[string]bool)
-	continents := make([]string, 0, len(values))
-	for _, value := range values {
-		cont := strings.ToUpper(strings.TrimSpace(value))
-		if cont == "" || seen[cont] {
-			continue
-		}
-		continents = append(continents, cont)
-		seen[cont] = true
-	}
-	return continents
-}
-
-func parseZoneList(arg string) []int {
-	values := splitListValues(arg)
-	if len(values) == 0 {
-		return nil
-	}
-	seen := make(map[int]bool)
-	zones := make([]int, 0, len(values))
-	for _, value := range values {
-		v := strings.TrimSpace(value)
-		if v == "" {
-			continue
-		}
-		zone, err := strconv.Atoi(v)
-		if err != nil {
-			return append(zones, -1) // leave invalid marker for the caller to handle uniformly
-		}
-		if seen[zone] {
-			continue
-		}
-		zones = append(zones, zone)
-		seen[zone] = true
-	}
-	return zones
-}
-
-func parseDXCCList(arg string) ([]int, []string) {
-	values := splitListValues(arg)
-	if len(values) == 0 {
-		return nil, nil
-	}
-	seen := make(map[int]bool)
-	codes := make([]int, 0, len(values))
-	invalid := make([]string, 0)
-	for _, value := range values {
-		v := strings.TrimSpace(value)
-		if v == "" {
-			continue
-		}
-		code, err := strconv.Atoi(v)
-		if err != nil || code <= 0 {
-			invalid = append(invalid, value)
-			continue
-		}
-		if seen[code] {
-			continue
-		}
-		codes = append(codes, code)
-		seen[code] = true
-	}
-	return codes, invalid
-}
-
-func collectInvalidConfidenceSymbols(symbols []string) []string {
-	invalid := make([]string, 0)
-	for _, symbol := range symbols {
-		if !filter.IsSupportedConfidenceSymbol(symbol) {
-			invalid = append(invalid, symbol)
-		}
-	}
-	return invalid
-}
-
-func collectInvalidContinents(continents []string) []string {
-	invalid := make([]string, 0)
-	for _, cont := range continents {
-		if !filter.IsSupportedContinent(cont) {
-			invalid = append(invalid, cont)
-		}
-	}
-	return invalid
-}
-
-func collectInvalidZones(zones []int) []int {
-	invalid := make([]int, 0)
-	for _, zone := range zones {
-		if !filter.IsSupportedZone(zone) {
-			invalid = append(invalid, zone)
-		}
-	}
-	return invalid
-}
-
-// splitListValues turns arbitrary comma/space delimited strings into clean
-// tokens. Both band and mode filters rely on this to keep their UX identical.
-func splitListValues(arg string) []string {
-	arg = strings.TrimSpace(arg)
-	if arg == "" {
-		return nil
-	}
-	cleaned := strings.ReplaceAll(arg, ",", " ")
-	values := strings.Fields(cleaned)
-	if len(values) == 0 {
-		return nil
-	}
-	return values
-}
-
-func collectInvalidModes(modes []string) []string {
-	invalid := make([]string, 0)
-	for _, mode := range modes {
-		if !filter.IsSupportedMode(mode) {
-			invalid = append(invalid, mode)
-		}
-	}
-	return invalid
-}
-
-func parseGrid2List(arg string) ([]string, []string) {
-	values := splitListValues(arg)
-	if len(values) == 0 {
-		return nil, nil
-	}
-	seen := make(map[string]bool)
-	grids := make([]string, 0, len(values))
-	invalid := make([]string, 0)
-	for _, value := range values {
-		raw := strings.ToUpper(strings.TrimSpace(value))
-		if raw == "" {
-			continue
-		}
-		if len(raw) > 2 {
-			raw = raw[:2]
-		}
-		if len(raw) != 2 {
-			invalid = append(invalid, value)
-			continue
-		}
-		grid := raw
-		if seen[grid] {
-			continue
-		}
-		grids = append(grids, grid)
-		seen[grid] = true
-	}
-	return grids, invalid
-}
-
-func formatContinentStates(all bool, enabled map[string]bool) string {
-	if all {
-		return "ALL"
-	}
-	var b strings.Builder
-	for i, cont := range filter.SupportedContinents {
-		state := "DISABLED"
-		if enabled[cont] {
-			state = "ENABLED"
-		}
-		b.WriteString(fmt.Sprintf("%s=%s", cont, state))
-		if i < len(filter.SupportedContinents)-1 {
-			b.WriteString(", ")
-		}
-	}
-	return b.String()
-}
-
-func formatZoneStates(all bool, enabled map[int]bool) string {
-	if all {
-		return "ALL"
-	}
-	var b strings.Builder
-	for zone := filter.MinCQZone(); zone <= filter.MaxCQZone(); zone++ {
-		state := "DISABLED"
-		if enabled[zone] {
-			state = "ENABLED"
-		}
-		b.WriteString(fmt.Sprintf("%d=%s", zone, state))
-		if zone < filter.MaxCQZone() {
-			b.WriteString(", ")
-		}
-	}
-	return b.String()
-}
-
-func formatDXCCStates(all bool, enabled map[int]bool) string {
-	if all {
-		return "ALL"
-	}
-	if len(enabled) == 0 {
-		return "NONE"
-	}
-	codes := make([]int, 0, len(enabled))
-	for code := range enabled {
-		codes = append(codes, code)
-	}
-	sort.Ints(codes)
-	parts := make([]string, 0, len(codes))
-	for _, code := range codes {
-		parts = append(parts, fmt.Sprintf("%d", code))
-	}
-	return strings.Join(parts, ", ")
-}
-
-func keysString(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func keysInt(m map[int]bool) []string {
-	vals := make([]int, 0, len(m))
-	for k := range m {
-		vals = append(vals, k)
-	}
-	sort.Ints(vals)
-	out := make([]string, 0, len(vals))
-	for _, v := range vals {
-		out = append(out, fmt.Sprintf("%d", v))
-	}
-	return out
-}
-
-func formatAllowBlockStrings(allowAll, blockAll bool, allow, block map[string]bool) string {
-	if blockAll {
-		return "BLOCK ALL"
-	}
-	allowStr := "ALL"
-	if len(allow) > 0 {
-		allowStr = strings.Join(keysString(allow), ", ")
-	} else if !allowAll {
-		allowStr = "NONE"
-	}
-	blockStr := "NONE"
-	if len(block) > 0 {
-		blockStr = strings.Join(keysString(block), ", ")
-	}
-	return fmt.Sprintf("allow=%s block=%s", allowStr, blockStr)
-}
-
-func formatAllowBlockInts(allowAll, blockAll bool, allow, block map[int]bool) string {
-	if blockAll {
-		return "BLOCK ALL"
-	}
-	allowStr := "ALL"
-	if len(allow) > 0 {
-		allowStr = strings.Join(keysInt(allow), ", ")
-	} else if !allowAll {
-		allowStr = "NONE"
-	}
-	blockStr := "NONE"
-	if len(block) > 0 {
-		blockStr = strings.Join(keysInt(block), ", ")
-	}
-	return fmt.Sprintf("allow=%s block=%s", allowStr, blockStr)
-}
-
-func joinZones(zones []int) string {
-	if len(zones) == 0 {
-		return ""
-	}
-	cp := append([]int(nil), zones...)
-	sort.Ints(cp)
-	parts := make([]string, 0, len(cp))
-	for _, z := range cp {
-		parts = append(parts, fmt.Sprintf("%d", z))
-	}
-	return strings.Join(parts, ", ")
-}
-
-func formatGrid2State(all bool, enabled map[string]bool) string {
-	if all {
-		return "ALL"
-	}
-	parts := make([]string, 0, len(enabled))
-	for grid := range enabled {
-		parts = append(parts, grid)
-	}
-	sort.Strings(parts)
-	if len(parts) == 0 {
-		return "NONE"
-	}
-	return strings.Join(parts, ", ")
-}
-
-var (
-	_ = formatContinentStates
-	_ = formatZoneStates
-	_ = formatDXCCStates
-	_ = formatGrid2State
-)
 
 // formatGreeting replaces placeholders with the client's callsign and the cluster call.
 func formatGreeting(tmpl, call, cluster string) string {

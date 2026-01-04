@@ -52,14 +52,14 @@ func NewProcessor(buf *buffer.RingBuffer, archive archiveReader, spotInput chan<
 // Upstream: Telnet client command loop.
 // Downstream: ProcessCommandForClient.
 func (p *Processor) ProcessCommand(cmd string) string {
-	return p.ProcessCommandForClient(cmd, "", "", nil)
+	return p.ProcessCommandForClient(cmd, "", "", nil, "classic")
 }
 
 // Purpose: Parse a command with client context for DX posting and filtered history.
 // Key aspects: Routes DX commands, SHOW/DX, and SHOW/MYDX with optional filter.
 // Upstream: Telnet client command loop with callsign context.
 // Downstream: handleDX, handleHelp, handleShow.
-func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterIP string, filterFn func(*spot.Spot) bool) string {
+func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterIP string, filterFn func(*spot.Spot) bool, dialect string) string {
 	cmd = strings.TrimSpace(cmd)
 
 	// Empty command
@@ -81,7 +81,7 @@ func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterI
 
 	switch command {
 	case "HELP", "H":
-		return p.handleHelp()
+		return p.handleHelp(dialect)
 	case "SH", "SHOW":
 		if len(parts) < 2 {
 			return "Usage: SHOW/DX [count]\n"
@@ -95,10 +95,12 @@ func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterI
 }
 
 // Purpose: Render the HELP text for users.
-// Key aspects: Includes filter command guidance and supported bands/modes.
+// Key aspects: Includes filter command guidance and supported bands/modes; tailored per dialect.
 // Upstream: ProcessCommandForClient (HELP/H).
 // Downstream: filter.SupportedModes, spot.SupportedBandNames.
-func (p *Processor) handleHelp() string {
+func (p *Processor) handleHelp(dialect string) string {
+	dialect = strings.ToLower(strings.TrimSpace(dialect))
+	filterHelp := filterHelpText(dialect)
 	return fmt.Sprintf(`Available commands:
 HELP                 - Show this help
 DX <freq> <call> [comment] - Post a spot (frequency in kHz)
@@ -106,8 +108,39 @@ SHOW/DX [count]      - Show last N DX spots (default: 10)
 SHOW MYDX [count]    - Show last N DX spots that match your active filters
 SHOW DXCC <prefix|callsign> - Look up DXCC/ADIF and zones for a prefix or callsign
 BYE                  - Disconnect
+DIALECT [name|LIST]  - Show or set the filter command dialect (gocluster, cc)
 
-Filter commands (allow + block, deny wins):
+Current dialect: %s
+
+%s
+Supported modes: %s
+Supported bands: %s
+
+Examples:
+	SHOW/DX            - Show last 10 spots
+	%s
+`, strings.ToUpper(normalizeDialectString(dialect)), filterHelp, strings.Join(filter.SupportedModes, ", "), strings.Join(spot.SupportedBandNames(), ", "), exampleForDialect(dialect))
+}
+
+func filterHelpText(dialect string) string {
+	switch strings.ToLower(strings.TrimSpace(dialect)) {
+	case "cc":
+		return `Filter commands (CC subset):
+	SET/ANN | SET/NOANN      - Enable/disable announcements
+	SET/BEACON | SET/NOBEACON - Enable/disable beacon spots
+	SET/WWV | SET/NOWWV      - Enable/disable WWV bulletins
+	SET/WCY | SET/NOWCY      - Enable/disable WCY bulletins
+	SET/SKIMMER | SET/NOSKIMMER - Allow/block skimmer spots
+	SET/<MODE> | SET/NO<MODE> - Enable/disable mode (CW, FT4, FT8, RTTY)
+	SET/FILTER DXBM/PASS <band>[,...]   - Map CC DXBM bands to allow (bands: 160, 80, 40, 30, 20, 17, 15, 12, 10, 6, 2, 1). Mode suffix ignored; use SET/NO<MODE>. Approximate: per-band only, not band-mode.
+	SET/FILTER DXBM/REJECT <band>[,...] - Map CC DXBM bands to block (same mapping; PASS takes precedence over REJECT in overlaps)
+	SET/NOFILTER             - Reset filters to permissive defaults
+	SET/FILTER <type> [...]  - Allow (BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, DEDXCC, BEACON, WWV, WCY, ANNOUNCE)
+	SET/FILTER <type>/OFF    - Block the specified type (ALL)
+	UNSET/FILTER <type> [...] - Block/clear for the specified type
+	SHOW/FILTER [type]       - Show current filters or detailed state for a type`
+	default:
+		return `Filter commands (allow + block, deny wins):
 	PASS BAND <band>[,<band>...] - Allow specific bands (comma/space). ALL clears blocklist and allows all.
 	PASS MODE <mode>[,<mode>...] - Allow specific modes. ALL clears blocklist and allows all.
 	PASS SOURCE <HUMAN|SKIMMER|ALL> - Filter by spot origin: HUMAN=IsHuman true, SKIMMER=IsHuman false. ALL disables SOURCE filtering.
@@ -144,30 +177,26 @@ Filter commands (allow + block, deny wins):
 	REJECT WWV - Suppress WWV bulletins
 	REJECT WCY - Suppress WCY bulletins
 	REJECT ANNOUNCE - Suppress PC93 announcements
-	SHOW FILTER BANDS             - List supported bands
-	SHOW FILTER MODES             - Show supported modes and enabled state
-	SHOW FILTER DXCONT            - Show supported DX continents and enabled state
-	SHOW FILTER DECONT            - Show supported DE continents and enabled state
-	SHOW FILTER DXZONE            - Show supported DX CQ zones and enabled state
-	SHOW FILTER DEZONE            - Show supported DE CQ zones and enabled state
-	SHOW FILTER DXDXCC            - Show DX ADIF/DXCC filter state
-	SHOW FILTER DEDXCC            - Show DE ADIF/DXCC filter state
-	SHOW FILTER DXGRID2           - Show DX 2-character grid filter state
-	SHOW FILTER DEGRID2           - Show DE 2-character grid filter state
-	SHOW FILTER CONFIDENCE        - Show supported confidence glyphs and enabled state
-	SHOW FILTER BEACON            - Show whether beacon spots are enabled
-	SHOW FILTER WWV               - Show whether WWV bulletins are enabled
-	SHOW FILTER WCY               - Show whether WCY bulletins are enabled
-	SHOW FILTER ANNOUNCE          - Show whether PC93 announcements are enabled
+	SHOW FILTER ...             - Show supported/active state for bands, modes, continents, zones, DXCC, grid2, confidence, beacon, WWV, WCY, announce`
+	}
+}
 
-Supported modes: %s
-Supported bands: %s
+func normalizeDialectString(dialect string) string {
+	switch strings.ToLower(strings.TrimSpace(dialect)) {
+	case "cc":
+		return "cc"
+	default:
+		return "gocluster"
+	}
+}
 
-Examples:
-	SHOW/DX            - Show last 10 spots
-	PASS MODE FT8
-	PASS CONFIDENCE P,V
-`, strings.Join(filter.SupportedModes, ", "), strings.Join(spot.SupportedBandNames(), ", "))
+func exampleForDialect(dialect string) string {
+	switch strings.ToLower(strings.TrimSpace(dialect)) {
+	case "cc":
+		return "SET/FILTER MODE FT8"
+	default:
+		return "PASS MODE FT8"
+	}
 }
 
 // Purpose: Handle the DX command and enqueue a human spot.
