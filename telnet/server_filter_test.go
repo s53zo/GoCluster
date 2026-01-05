@@ -11,7 +11,7 @@ import (
 func newTestClient() *Client {
 	return &Client{
 		filter:  filter.NewFilter(),
-		dialect: DialectGoCluster,
+		dialect: DialectGo,
 	}
 }
 
@@ -405,7 +405,7 @@ func TestDialectSwitchCommand(t *testing.T) {
 	}
 
 	resp, handled = server.handleDialectCommand(client, "DIALECT LIST")
-	if !handled || !strings.Contains(resp, "GOCLUSTER") || !strings.Contains(resp, "CC") || strings.Contains(strings.ToUpper(resp), "LEGACY") {
+	if !handled || !strings.Contains(resp, "GO") || !strings.Contains(resp, "CC") || strings.Contains(strings.ToUpper(resp), "LEGACY") {
 		t.Fatalf("expected dialect list, got handled=%v resp=%q", handled, resp)
 	}
 
@@ -579,15 +579,15 @@ func TestDialectPersistence(t *testing.T) {
 }
 
 func TestLegacyRecordFallsBackToGoCluster(t *testing.T) {
-	if got := normalizeDialectName("legacy"); got != DialectGoCluster {
-		t.Fatalf("expected legacy token to normalize to gocluster, got %s", got)
+	if got := normalizeDialectName("legacy"); got != DialectGo {
+		t.Fatalf("expected legacy token to normalize to go, got %s", got)
 	}
 }
 
 func TestDialectWelcomeLine(t *testing.T) {
-	defaultDialect := DialectGoCluster
-	line := dialectWelcomeLine(DialectGoCluster, true, nil, defaultDialect)
-	if !strings.Contains(line, "GOCLUSTER") || !strings.Contains(strings.ToLower(line), "default") {
+	defaultDialect := DialectGo
+	line := dialectWelcomeLine(DialectGo, true, nil, defaultDialect)
+	if !strings.Contains(line, "GO") || !strings.Contains(strings.ToLower(line), "default") {
 		t.Fatalf("expected default dialect welcome line, got %q", line)
 	}
 	if !strings.Contains(strings.ToUpper(line), "HELP") {

@@ -14,8 +14,8 @@ import (
 type DialectName string
 
 const (
-	// DialectGoCluster is the default PASS/REJECT/SHOW FILTER syntax.
-	DialectGoCluster DialectName = "gocluster"
+	// DialectGo is the default PASS/REJECT/SHOW FILTER syntax.
+	DialectGo DialectName = "go"
 	// DialectCC models a subset of CC Cluster aliases mapped onto existing filter atoms.
 	DialectCC DialectName = "cc"
 )
@@ -63,7 +63,7 @@ func newFilterCommandEngine() *filterCommandEngine {
 		dialects:       make(map[DialectName]*dialectSpec),
 		dialectAliases: make(map[string]DialectName),
 		domains:        make(map[string]*domainHandler),
-		defaultDialect: DialectGoCluster,
+		defaultDialect: DialectGo,
 	}
 	engine.registerDialects()
 	engine.registerDomains()
@@ -71,9 +71,9 @@ func newFilterCommandEngine() *filterCommandEngine {
 }
 
 func (e *filterCommandEngine) registerDialects() {
-	gocluster := &dialectSpec{
-		name:    DialectGoCluster,
-		aliases: []string{"gocluster", "classic", "default"},
+	goDialect := &dialectSpec{
+		name:    DialectGo,
+		aliases: []string{"go", "gocluster", "classic", "default"},
 		parse:   parseClassicDialect,
 	}
 	cc := &dialectSpec{
@@ -81,7 +81,7 @@ func (e *filterCommandEngine) registerDialects() {
 		aliases: []string{"cc"},
 		parse:   parseCCDialect,
 	}
-	for _, d := range []*dialectSpec{gocluster, cc} {
+	for _, d := range []*dialectSpec{goDialect, cc} {
 		e.dialects[d.name] = d
 		for _, alias := range d.aliases {
 			e.dialectAliases[strings.ToLower(alias)] = d.name
@@ -164,10 +164,10 @@ func normalizeDialectName(name string) DialectName {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "cc":
 		return DialectCC
-	case "classic", "default", "gocluster", "":
-		return DialectGoCluster
+	case "classic", "default", "gocluster", "go", "":
+		return DialectGo
 	default:
-		return DialectGoCluster
+		return DialectGo
 	}
 }
 
@@ -212,10 +212,10 @@ func (e *filterCommandEngine) parse(tokens, upper []string, dialect DialectName)
 		return parsedFilterCommand{}, false, ""
 	}
 	parsed, matched, errText := spec.parse(tokens, upper)
-	if !matched && dialect != DialectGoCluster {
-		// Try classic as a safe fallback to preserve current behavior when the
+	if !matched && dialect != DialectGo {
+		// Try go/classic as a safe fallback to preserve current behavior when the
 		// client switches to an unknown dialect.
-		if gc, ok := e.dialects[DialectGoCluster]; ok && gc != nil {
+		if gc, ok := e.dialects[DialectGo]; ok && gc != nil {
 			return gc.parse(tokens, upper)
 		}
 	}

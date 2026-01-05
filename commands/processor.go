@@ -52,7 +52,7 @@ func NewProcessor(buf *buffer.RingBuffer, archive archiveReader, spotInput chan<
 // Upstream: Telnet client command loop.
 // Downstream: ProcessCommandForClient.
 func (p *Processor) ProcessCommand(cmd string) string {
-	return p.ProcessCommandForClient(cmd, "", "", nil, "classic")
+	return p.ProcessCommandForClient(cmd, "", "", nil, "go")
 }
 
 // Purpose: Parse a command with client context for DX posting and filtered history.
@@ -108,7 +108,7 @@ SHOW/DX [count]      - Show last N DX spots (default: 10)
 SHOW MYDX [count]    - Show last N DX spots that match your active filters
 SHOW DXCC <prefix|callsign> - Look up DXCC/ADIF and zones for a prefix or callsign
 BYE                  - Disconnect
-DIALECT [name|LIST]  - Show or set the filter command dialect (gocluster, cc)
+DIALECT [name|LIST]  - Show or set the filter command dialect (go, cc)
 
 Current dialect: %s
 
@@ -186,7 +186,7 @@ func normalizeDialectString(dialect string) string {
 	case "cc":
 		return "cc"
 	default:
-		return "gocluster"
+		return "go"
 	}
 }
 

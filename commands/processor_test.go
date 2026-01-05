@@ -163,7 +163,7 @@ func TestHelpPerDialect(t *testing.T) {
 	p := NewProcessor(nil, nil, nil, nil)
 
 	classic := p.ProcessCommandForClient("HELP", "", "", nil, "classic")
-	if !strings.Contains(classic, "PASS BAND") || !strings.Contains(classic, "Current dialect: GOCLUSTER") {
+	if !strings.Contains(classic, "PASS BAND") || !strings.Contains(classic, "Current dialect: GO") {
 		t.Fatalf("classic help missing expected content: %q", classic)
 	}
 

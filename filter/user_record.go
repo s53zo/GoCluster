@@ -42,7 +42,7 @@ func LoadUserRecord(callsign string) (*UserRecord, error) {
 	record.Filter.normalizeDefaults()
 	record.RecentIPs = trimRecentIPs(record.RecentIPs, maxRecentIPs)
 	if strings.TrimSpace(record.Dialect) == "" {
-		record.Dialect = "classic"
+		record.Dialect = "go"
 	}
 	return &record, nil
 }
@@ -56,7 +56,7 @@ func TouchUserRecordIP(callsign, ip string) (*UserRecord, bool, error) {
 	created := false
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			record = &UserRecord{Filter: *NewFilter(), Dialect: "classic"}
+			record = &UserRecord{Filter: *NewFilter(), Dialect: "go"}
 			created = true
 		} else {
 			return nil, false, err

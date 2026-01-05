@@ -17,8 +17,8 @@ New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 $envVars = @{
     DXC_CONFIG_PATH = $configDir
     DXC_PPROF_ADDR  = $pprofAddr
-    # Uncomment to enable periodic heap logging (optional):
-    # DXC_HEAP_LOG_INTERVAL = "60s"
+    # Enable periodic heap logging to match the CPU profiling cadence:
+    DXC_HEAP_LOG_INTERVAL = "60s"
 }
 
 # Start the cluster in a new window so the console UI stays visible.
@@ -52,6 +52,12 @@ function Get-CPUProfile {
     Invoke-WebRequest -Uri $url -OutFile $destPath -TimeoutSec ($seconds + 10) -UseBasicParsing
 }
 
+function Get-HeapProfile {
+    param($destPath, $addr)
+    $url = "http://$addr/debug/pprof/heap"
+    Invoke-WebRequest -Uri $url -OutFile $destPath -TimeoutSec 30 -UseBasicParsing
+}
+
 # Periodic capture loop (stops when the process exits)
 while (-not $proc.HasExited) {
     $ts = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -60,8 +66,17 @@ while (-not $proc.HasExited) {
         Get-CPUProfile -seconds $profileSeconds -destPath $dest -addr $pprofAddr
         Write-Host "Captured CPU profile -> $dest"
     } catch {
-        Write-Warning "Profile capture failed at ${ts}: $($_)"
+        Write-Warning "CPU profile capture failed at ${ts}: $($_)"
     }
+
+    $heapDest = Join-Path $logsDir ("heap-$ts.pprof")
+    try {
+        Get-HeapProfile -destPath $heapDest -addr $pprofAddr
+        Write-Host "Captured heap profile -> $heapDest"
+    } catch {
+        Write-Warning "Heap profile capture failed at ${ts}: $($_)"
+    }
+
     # Sleep, but break early if the process exits
     for ($i=0; $i -lt $intervalSeconds -and -not $proc.HasExited; $i++) {
         Start-Sleep -Seconds 1
