@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	pprof "runtime/pprof"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ import (
 	"dxcluster/peer"
 	"dxcluster/pskreporter"
 	"dxcluster/rbn"
+	"dxcluster/reputation"
 	"dxcluster/skew"
 	"dxcluster/spot"
 	"dxcluster/stats"
@@ -542,6 +544,19 @@ func main() {
 	statsTracker := stats.NewTracker()
 	unlicensedReporter := makeUnlicensedReporter(ui, statsTracker)
 
+	var repGate *reputation.Gate
+	var repDropReporter func(reputation.DropEvent)
+	if cfg.Reputation.Enabled {
+		gate, err := reputation.NewGate(cfg.Reputation, ctyLookup)
+		if err != nil {
+			log.Printf("Warning: reputation gate disabled: %v", err)
+		} else {
+			repGate = gate
+			repGate.Start(ctx)
+			repDropReporter = makeReputationDropReporter(ui, statsTracker, cfg.Reputation)
+		}
+	}
+
 	capacity := cfg.Buffer.Capacity
 	if capacity <= 0 {
 		capacity = 300000
@@ -757,7 +772,7 @@ func main() {
 	}
 
 	// Create command processor (SHOW/DX reads from archive when available, otherwise ring buffer)
-	processor := commands.NewProcessor(spotBuffer, archiveWriter, ingestInput, ctyLookup)
+	processor := commands.NewProcessor(spotBuffer, archiveWriter, ingestInput, ctyLookup, repGate, repDropReporter)
 
 	// Create and start telnet server
 	telnetServer := telnet.NewServer(telnet.ServerOptions{
@@ -777,6 +792,7 @@ func main() {
 		SkipHandshake:          cfg.Telnet.SkipHandshake,
 		LoginLineLimit:         cfg.Telnet.LoginLineLimit,
 		CommandLineLimit:       cfg.Telnet.CommandLineLimit,
+		ReputationGate:         repGate,
 	}, processor)
 
 	err = telnetServer.Start()
@@ -1038,6 +1054,145 @@ func makeUnlicensedReporter(dash uiSurface, tracker *stats.Tracker) func(source,
 	}
 }
 
+// Purpose: Build a reporter for reputation gate drops.
+// Key aspects: Updates counters and optionally appends to the system pane.
+// Upstream: Reputation gate in telnet command path.
+// Downstream: stats tracker and UI/system logs.
+func makeReputationDropReporter(dash uiSurface, tracker *stats.Tracker, cfg config.ReputationConfig) func(reputation.DropEvent) {
+	if tracker == nil {
+		return nil
+	}
+	sampleEvery := sampleEveryN(cfg.DropLogSampleRate)
+	var counter atomic.Uint64
+	return func(ev reputation.DropEvent) {
+		tracker.IncrementReputationDrop(string(ev.Reason))
+		if !cfg.ConsoleDropDisplay || sampleEvery == 0 {
+			return
+		}
+		if sampleEvery > 1 {
+			if counter.Add(1)%uint64(sampleEvery) != 0 {
+				return
+			}
+		}
+		line := formatReputationDropLine(ev)
+		if dash != nil {
+			dash.AppendSystem(line)
+			return
+		}
+		log.Print(line)
+	}
+}
+
+func formatReputationDropLine(ev reputation.DropEvent) string {
+	call := strings.TrimSpace(ev.Call)
+	if max := spot.MaxCallsignLength(); max > 0 && len(call) > max {
+		call = call[:max]
+	}
+	band := spot.NormalizeBand(ev.Band)
+	if band == "" {
+		band = "???"
+	}
+	reason := string(ev.Reason)
+	if reason == "" {
+		reason = "unknown"
+	}
+	flags := formatPenaltyFlags(ev.Flags)
+	asn := strings.TrimSpace(ev.ASN)
+	country := strings.TrimSpace(ev.CountryCode)
+	if country == "" {
+		country = strings.TrimSpace(ev.CountryName)
+	}
+	prefix := strings.TrimSpace(ev.Prefix)
+	if prefix == "" {
+		prefix = "unknown"
+	}
+	return fmt.Sprintf("Reputation drop: %s band=%s reason=%s ip=%s asn=%s country=%s flags=%s",
+		call, band, reason, prefix, emptyOr(asn, "unknown"), emptyOr(country, "unknown"), flags)
+}
+
+func formatPenaltyFlags(flags reputation.PenaltyFlags) string {
+	if flags == 0 {
+		return "none"
+	}
+	out := make([]string, 0, 4)
+	if flags.Has(reputation.PenaltyCountryMismatch) {
+		out = append(out, "mismatch")
+	}
+	if flags.Has(reputation.PenaltyASNReset) {
+		out = append(out, "asn_new")
+	}
+	if flags.Has(reputation.PenaltyGeoFlip) {
+		out = append(out, "geo_flip")
+	}
+	if flags.Has(reputation.PenaltyDisagreement) {
+		out = append(out, "disagree")
+	}
+	if flags.Has(reputation.PenaltyUnknown) {
+		out = append(out, "unknown")
+	}
+	return strings.Join(out, ",")
+}
+
+func sampleEveryN(rate float64) int {
+	if rate <= 0 {
+		return 0
+	}
+	if rate >= 1 {
+		return 1
+	}
+	n := int(1.0 / rate)
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+func emptyOr(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func formatReputationDropSummary(total uint64, reasons map[string]uint64) string {
+	if total == 0 {
+		return "Reputation drops: 0"
+	}
+	type pair struct {
+		key   string
+		count uint64
+	}
+	items := make([]pair, 0, len(reasons))
+	for key, count := range reasons {
+		items = append(items, pair{key: key, count: count})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].count == items[j].count {
+			return items[i].key < items[j].key
+		}
+		return items[i].count > items[j].count
+	})
+	limit := 4
+	if len(items) < limit {
+		limit = len(items)
+	}
+	var b strings.Builder
+	b.WriteString("Reputation drops: ")
+	b.WriteString(humanize.Comma(int64(total)))
+	if limit == 0 {
+		return b.String()
+	}
+	b.WriteString(" (")
+	for i := 0; i < limit; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%s=%d", items[i].key, items[i].count)
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
 // Purpose: Periodically emit stats with FCC metadata refresh.
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
@@ -1080,6 +1235,8 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 		totalUnlicensed := tracker.UnlicensedDrops()
 		totalFreqCorrections := tracker.FrequencyCorrections()
 		totalHarmonics := tracker.HarmonicSuppressions()
+		reputationTotal := tracker.ReputationDrops()
+		reputationReasons := tracker.ReputationDropReasons()
 
 		ingestTotal := uint64(0)
 		if ingestStats != nil {
@@ -1151,8 +1308,9 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 				humanize.Comma(int64(pskMSK144)),
 			), // 6
 			fmt.Sprintf("Corrected calls: %d (C) / %d (U) / %d (F) / %d (H)", totalCorrections, totalUnlicensed, totalFreqCorrections, totalHarmonics), // 7
-			pipelineLine, // 8
-			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C)", clientCount, queueDrops, clientDrops), // 9
+			formatReputationDropSummary(reputationTotal, reputationReasons),                                                                            // 8
+			pipelineLine, // 9
+			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C)", clientCount, queueDrops, clientDrops), // 10
 		}
 
 		prevSourceCounts = sourceTotals

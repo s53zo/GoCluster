@@ -87,6 +87,7 @@ type Config struct {
 	FCCULS              FCCULSConfig         `yaml:"fcc_uls"`
 	KnownCalls          KnownCallsConfig     `yaml:"known_calls"`
 	Peering             PeeringConfig        `yaml:"peering"`
+	Reputation          ReputationConfig     `yaml:"reputation"`
 	GridDBPath          string               `yaml:"grid_db"`
 	GridFlushSec        int                  `yaml:"grid_flush_seconds"`
 	GridCacheSize       int                  `yaml:"grid_cache_size"`
@@ -144,6 +145,63 @@ type TelnetConfig struct {
 	// CommandLineLimit bounds how many bytes post-login commands may include.
 	// Raising this can help workflows that need larger filter strings.
 	CommandLineLimit int `yaml:"command_line_limit"`
+}
+
+// ReputationConfig controls the passwordless telnet reputation gate.
+type ReputationConfig struct {
+	Enabled bool `yaml:"enabled"`
+
+	// IPinfo Lite snapshot paths and download settings.
+	IPInfoSnapshotPath      string `yaml:"ipinfo_snapshot_path"`
+	IPInfoDownloadPath      string `yaml:"ipinfo_download_path"`
+	IPInfoDownloadURL       string `yaml:"ipinfo_download_url"`
+	IPInfoDownloadToken     string `yaml:"ipinfo_download_token"`
+	IPInfoRefreshUTC        string `yaml:"ipinfo_refresh_utc"`
+	IPInfoDownloadTimeoutMS int    `yaml:"ipinfo_download_timeout_ms"`
+	SnapshotMaxAgeSeconds   int    `yaml:"snapshot_max_age_seconds"`
+
+	// Cymru DNS fallback settings.
+	FallbackTeamCymru       bool `yaml:"fallback_team_cymru"`
+	CymruLookupTimeoutMS    int  `yaml:"cymru_lookup_timeout_ms"`
+	CymruCacheTTLSeconds    int  `yaml:"cymru_cache_ttl_seconds"`
+	CymruNegativeTTLSeconds int  `yaml:"cymru_negative_ttl_seconds"`
+	CymruWorkers            int  `yaml:"cymru_workers"`
+
+	// Reputation gate thresholds.
+	InitialWaitSeconds              int    `yaml:"initial_wait_seconds"`
+	RampWindowSeconds               int    `yaml:"ramp_window_seconds"`
+	PerBandStart                    int    `yaml:"per_band_start"`
+	PerBandCap                      int    `yaml:"per_band_cap"`
+	TotalCapStart                   int    `yaml:"total_cap_start"`
+	TotalCapPostRamp                int    `yaml:"total_cap_post_ramp"`
+	TotalCapRampDelaySeconds        int    `yaml:"total_cap_ramp_delay_seconds"`
+	CountryMismatchExtraWaitSeconds int    `yaml:"country_mismatch_extra_wait_seconds"`
+	DisagreementPenaltySeconds      int    `yaml:"disagreement_penalty_seconds"`
+	UnknownPenaltySeconds           int    `yaml:"unknown_penalty_seconds"`
+	DisagreementResetOnNew          bool   `yaml:"disagreement_reset_on_new"`
+	ResetOnNewASN                   bool   `yaml:"reset_on_new_asn"`
+	CountryFlipScope                string `yaml:"country_flip_scope"`
+
+	// Bounded state and cache settings.
+	MaxASNHistory         int `yaml:"max_asn_history"`
+	MaxCountryHistory     int `yaml:"max_country_history"`
+	StateTTLSeconds       int `yaml:"state_ttl_seconds"`
+	StateMaxEntries       int `yaml:"state_max_entries"`
+	PrefixTTLSeconds      int `yaml:"prefix_ttl_seconds"`
+	PrefixMaxEntries      int `yaml:"prefix_max_entries"`
+	LookupCacheTTLSeconds int `yaml:"lookup_cache_ttl_seconds"`
+	LookupCacheMaxEntries int `yaml:"lookup_cache_max_entries"`
+
+	// Prefix token bucket limits.
+	IPv4BucketSize         int `yaml:"ipv4_bucket_size"`
+	IPv4BucketRefillPerSec int `yaml:"ipv4_bucket_refill_per_sec"`
+	IPv6BucketSize         int `yaml:"ipv6_bucket_size"`
+	IPv6BucketRefillPerSec int `yaml:"ipv6_bucket_refill_per_sec"`
+
+	// Observability and storage.
+	ConsoleDropDisplay bool    `yaml:"console_drop_display"`
+	DropLogSampleRate  float64 `yaml:"drop_log_sample_rate"`
+	ReputationDir      string  `yaml:"reputation_dir"`
 }
 
 // UIConfig controls the optional local console UI. The legacy TUI uses tview;
@@ -1370,6 +1428,125 @@ func Load(path string) (*Config, error) {
 	if _, err := time.Parse("15:04", cfg.Skew.RefreshUTC); err != nil {
 		return nil, fmt.Errorf("invalid skew refresh time %q: %w", cfg.Skew.RefreshUTC, err)
 	}
+
+	if cfg.Reputation.Enabled {
+		if strings.TrimSpace(cfg.Reputation.IPInfoSnapshotPath) == "" {
+			cfg.Reputation.IPInfoSnapshotPath = "data/ipinfo/location.csv"
+		}
+		if strings.TrimSpace(cfg.Reputation.IPInfoDownloadPath) == "" {
+			cfg.Reputation.IPInfoDownloadPath = "data/ipinfo/location.csv.gz"
+		}
+		if strings.TrimSpace(cfg.Reputation.IPInfoDownloadURL) == "" {
+			cfg.Reputation.IPInfoDownloadURL = "https://ipinfo.io/data/location.csv.gz?token=$TOKEN"
+		}
+		if strings.TrimSpace(cfg.Reputation.IPInfoDownloadToken) == "" {
+			cfg.Reputation.IPInfoDownloadToken = "8a74cd36c1905b"
+		}
+		if strings.TrimSpace(cfg.Reputation.IPInfoRefreshUTC) == "" {
+			cfg.Reputation.IPInfoRefreshUTC = "03:00"
+		}
+		if cfg.Reputation.IPInfoDownloadTimeoutMS <= 0 {
+			cfg.Reputation.IPInfoDownloadTimeoutMS = 15000
+		}
+		if cfg.Reputation.SnapshotMaxAgeSeconds <= 0 {
+			cfg.Reputation.SnapshotMaxAgeSeconds = 26 * 3600
+		}
+		if cfg.Reputation.CymruLookupTimeoutMS <= 0 {
+			cfg.Reputation.CymruLookupTimeoutMS = 250
+		}
+		if cfg.Reputation.CymruCacheTTLSeconds <= 0 {
+			cfg.Reputation.CymruCacheTTLSeconds = 3600
+		}
+		if cfg.Reputation.CymruNegativeTTLSeconds <= 0 {
+			cfg.Reputation.CymruNegativeTTLSeconds = 300
+		}
+		if cfg.Reputation.CymruWorkers <= 0 {
+			cfg.Reputation.CymruWorkers = 2
+		}
+		if cfg.Reputation.InitialWaitSeconds <= 0 {
+			cfg.Reputation.InitialWaitSeconds = 60
+		}
+		if cfg.Reputation.RampWindowSeconds <= 0 {
+			cfg.Reputation.RampWindowSeconds = 60
+		}
+		if cfg.Reputation.PerBandStart <= 0 {
+			cfg.Reputation.PerBandStart = 1
+		}
+		if cfg.Reputation.PerBandCap <= 0 {
+			cfg.Reputation.PerBandCap = 5
+		}
+		if cfg.Reputation.TotalCapStart <= 0 {
+			cfg.Reputation.TotalCapStart = 5
+		}
+		if cfg.Reputation.TotalCapPostRamp <= 0 {
+			cfg.Reputation.TotalCapPostRamp = 10
+		}
+		if cfg.Reputation.TotalCapRampDelaySeconds < 0 {
+			cfg.Reputation.TotalCapRampDelaySeconds = 0
+		}
+		if cfg.Reputation.CountryMismatchExtraWaitSeconds <= 0 {
+			cfg.Reputation.CountryMismatchExtraWaitSeconds = 60
+		}
+		if cfg.Reputation.DisagreementPenaltySeconds <= 0 {
+			cfg.Reputation.DisagreementPenaltySeconds = 60
+		}
+		if cfg.Reputation.UnknownPenaltySeconds <= 0 {
+			cfg.Reputation.UnknownPenaltySeconds = 60
+		}
+		if !cfg.Reputation.ResetOnNewASN {
+			cfg.Reputation.ResetOnNewASN = true
+		}
+		if !cfg.Reputation.DisagreementResetOnNew {
+			cfg.Reputation.DisagreementResetOnNew = true
+		}
+		if strings.TrimSpace(cfg.Reputation.CountryFlipScope) == "" {
+			cfg.Reputation.CountryFlipScope = "country"
+		}
+		if cfg.Reputation.MaxASNHistory <= 0 {
+			cfg.Reputation.MaxASNHistory = 5
+		}
+		if cfg.Reputation.MaxCountryHistory <= 0 {
+			cfg.Reputation.MaxCountryHistory = 5
+		}
+		if cfg.Reputation.StateTTLSeconds <= 0 {
+			cfg.Reputation.StateTTLSeconds = 7200
+		}
+		if cfg.Reputation.StateMaxEntries <= 0 {
+			cfg.Reputation.StateMaxEntries = 100000
+		}
+		if cfg.Reputation.PrefixTTLSeconds <= 0 {
+			cfg.Reputation.PrefixTTLSeconds = 3600
+		}
+		if cfg.Reputation.PrefixMaxEntries <= 0 {
+			cfg.Reputation.PrefixMaxEntries = 200000
+		}
+		if cfg.Reputation.LookupCacheTTLSeconds <= 0 {
+			cfg.Reputation.LookupCacheTTLSeconds = 3600
+		}
+		if cfg.Reputation.LookupCacheMaxEntries <= 0 {
+			cfg.Reputation.LookupCacheMaxEntries = 200000
+		}
+		if cfg.Reputation.IPv4BucketSize <= 0 {
+			cfg.Reputation.IPv4BucketSize = 64
+		}
+		if cfg.Reputation.IPv4BucketRefillPerSec <= 0 {
+			cfg.Reputation.IPv4BucketRefillPerSec = 8
+		}
+		if cfg.Reputation.IPv6BucketSize <= 0 {
+			cfg.Reputation.IPv6BucketSize = 32
+		}
+		if cfg.Reputation.IPv6BucketRefillPerSec <= 0 {
+			cfg.Reputation.IPv6BucketRefillPerSec = 4
+		}
+		if cfg.Reputation.DropLogSampleRate <= 0 {
+			cfg.Reputation.DropLogSampleRate = 1
+		} else if cfg.Reputation.DropLogSampleRate > 1 {
+			cfg.Reputation.DropLogSampleRate = 1
+		}
+		if strings.TrimSpace(cfg.Reputation.ReputationDir) == "" {
+			cfg.Reputation.ReputationDir = "data/reputation"
+		}
+	}
 	return &cfg, nil
 }
 
@@ -1455,6 +1632,21 @@ func (c *Config) Print() {
 		c.Telnet.WorkerQueue,
 		c.Telnet.ClientBuffer,
 		c.Telnet.SkipHandshake)
+	if c.Reputation.Enabled {
+		fmt.Printf("Reputation: enabled (ipinfo=%s cymru=%t wait=%ds ramp=%ds per_band=%d..%d total=%d..%d prefix4=%d@%d/s prefix6=%d@%d/s)\n",
+			c.Reputation.IPInfoSnapshotPath,
+			c.Reputation.FallbackTeamCymru,
+			c.Reputation.InitialWaitSeconds,
+			c.Reputation.RampWindowSeconds,
+			c.Reputation.PerBandStart,
+			c.Reputation.PerBandCap,
+			c.Reputation.TotalCapStart,
+			c.Reputation.TotalCapPostRamp,
+			c.Reputation.IPv4BucketSize,
+			c.Reputation.IPv4BucketRefillPerSec,
+			c.Reputation.IPv6BucketSize,
+			c.Reputation.IPv6BucketRefillPerSec)
+	}
 	fmt.Printf("UI: mode=%s refresh=%dms color=%t clear_screen=%t panes(stats=%d calls=%d unlicensed=%d harm=%d system=%d)\n",
 		c.UI.Mode,
 		c.UI.RefreshMS,

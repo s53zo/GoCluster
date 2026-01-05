@@ -219,6 +219,25 @@ Confidence indicator legend in telnet output:
 - `B` - Correction was suggested but CTY validation failed (call left unchanged)
 - `C` - Callsign was corrected and CTY-validated
 
+### Telnet Reputation Gate
+
+The passwordless reputation gate throttles telnet `DX` commands based on call history, ASN/geo consistency, and prefix pressure. It is designed to slow down new or suspicious senders while keeping known-good calls flowing. Drops are silent to clients, but surfaced in the console stats and system pane.
+
+Core behavior:
+- New calls wait an initial probation window before any spots are accepted.
+- Per-band limits ramp by one each window up to a cap; total cap increases after ramp completion.
+- Country mismatch (IP vs CTY) or IPinfo/Cymru disagreement adds an extra delay before ramping.
+- New ASN or geo flips reset the call to probation.
+- Prefix token buckets (/24, /48) shed load before per-call limits.
+
+Data sources:
+- IPinfo Lite daily snapshot (local CSV, zero-latency lookup) is the primary source.
+- Team Cymru DNS is an optional fallback on snapshot misses or staleness.
+  - The snapshot downloader uses `curl` with the configured token and unzips to `ipinfo_snapshot_path`.
+
+Configuration:
+- See the `reputation` section in `config.yaml` (or `data/config/*.yaml`) for all thresholds, download paths, and observability knobs.
+
 Use `PASS CONFIDENCE` with the glyphs above to whitelist the consensus levels you want to see (for example, `PASS CONFIDENCE P,V` keeps strong/very strong reports while dropping `?`/`S`/`B` entries).
 
 Use `REJECT BEACON` to suppress DX beacons when you only want live operator traffic; `PASS BEACON` re-enables them, and `SHOW FILTER BEACON` reports the current state. Regardless of delivery, `/B` spots are excluded from call-correction, frequency-averaging, and harmonic checks.

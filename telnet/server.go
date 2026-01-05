@@ -45,6 +45,7 @@ import (
 
 	"dxcluster/commands"
 	"dxcluster/filter"
+	"dxcluster/reputation"
 	"dxcluster/spot"
 	ztelnet "github.com/ziutek/telnet"
 )
@@ -99,6 +100,7 @@ type Server struct {
 	loginLineLimit    int                  // Maximum bytes accepted for login/callsign input
 	commandLineLimit  int                  // Maximum bytes accepted for post-login commands
 	filterEngine      *filterCommandEngine // Table-driven filter command parser/executor
+	reputationGate    *reputation.Gate     // Optional reputation gate for login metadata
 }
 
 // Client represents a connected telnet client session.
@@ -331,6 +333,7 @@ type ServerOptions struct {
 	EchoMode               string
 	LoginLineLimit         int
 	CommandLineLimit       int
+	ReputationGate         *reputation.Gate
 }
 
 // NewServer creates a new telnet server
@@ -361,6 +364,7 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		loginLineLimit:    config.LoginLineLimit,
 		commandLineLimit:  config.CommandLineLimit,
 		filterEngine:      newFilterCommandEngine(),
+		reputationGate:    opts.ReputationGate,
 	}
 }
 
@@ -896,12 +900,22 @@ func (s *Server) handleClient(conn net.Conn) {
 			client.Send("Enter your callsign:\r\n")
 			continue
 		}
-		callsign = line
+		normalized := spot.NormalizeCallsign(line)
+		if !spot.IsValidNormalizedCallsign(normalized) {
+			client.Send("Invalid callsign. Please try again.\n")
+			client.Send("Enter your callsign:\r\n")
+			continue
+		}
+		callsign = normalized
 		break
 	}
 
 	client.callsign = callsign
 	log.Printf("Client %s logged in as %s", address, client.callsign)
+
+	if s.reputationGate != nil {
+		s.reputationGate.RecordLogin(client.callsign, spotterIP(client.address), time.Now().UTC())
+	}
 
 	// Capture the client's IP immediately after login so it is persisted before
 	// any other session state mutates.

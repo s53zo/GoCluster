@@ -21,6 +21,8 @@ type Tracker struct {
 	frequencyCorrections atomic.Uint64
 	harmonicSuppressions atomic.Uint64
 	unlicensedDrops      atomic.Uint64
+	reputationDrops      atomic.Uint64
+	reputationReasons    sync.Map // string -> *atomic.Uint64
 }
 
 // Purpose: Create a new stats tracker with a start timestamp.
@@ -217,6 +219,36 @@ func (t *Tracker) HarmonicSuppressions() uint64 {
 // Downstream: atomic counter.
 func (t *Tracker) UnlicensedDrops() uint64 {
 	return t.unlicensedDrops.Load()
+}
+
+// Purpose: Increment reputation drop counters by reason.
+// Key aspects: Tracks total drops plus reason-specific buckets.
+// Upstream: Telnet reputation gate.
+// Downstream: atomic counters and sync.Map.
+func (t *Tracker) IncrementReputationDrop(reason string) {
+	t.reputationDrops.Add(1)
+	incrementCounter(&t.reputationReasons, reason)
+}
+
+// Purpose: Return total reputation drop count.
+// Key aspects: Atomic load.
+// Upstream: Dashboard/metrics.
+// Downstream: atomic counter.
+func (t *Tracker) ReputationDrops() uint64 {
+	return t.reputationDrops.Load()
+}
+
+// Purpose: Return a copy of reputation drop reasons.
+// Key aspects: Iterates sync.Map and reads atomics.
+// Upstream: Dashboard/metrics rendering.
+// Downstream: atomic loads.
+func (t *Tracker) ReputationDropReasons() map[string]uint64 {
+	reasons := make(map[string]uint64)
+	t.reputationReasons.Range(func(key, value any) bool {
+		reasons[key.(string)] = value.(*atomic.Uint64).Load()
+		return true
+	})
+	return reasons
 }
 
 // Purpose: Format a sync.Map of counters into a "label: key=value" string.

@@ -10,10 +10,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"dxcluster/buffer"
 	"dxcluster/cty"
 	"dxcluster/filter"
+	"dxcluster/reputation"
 	"dxcluster/spot"
 )
 
@@ -31,19 +33,23 @@ type Processor struct {
 	spotInput  chan<- *spot.Spot
 	ctyLookup  func() *cty.CTYDatabase
 	prefixIdx  *prefixIndex
+	repGate    *reputation.Gate
+	repReport  func(reputation.DropEvent)
 }
 
 // Purpose: Construct a command processor bound to shared spot state.
 // Key aspects: SHOW/DX prefers archive when present; DX commands can enqueue spots.
 // Upstream: Telnet server initialization.
 // Downstream: Processor methods (ProcessCommand, handleShowDX, handleDX).
-func NewProcessor(buf *buffer.RingBuffer, archive archiveReader, spotInput chan<- *spot.Spot, ctyLookup func() *cty.CTYDatabase) *Processor {
+func NewProcessor(buf *buffer.RingBuffer, archive archiveReader, spotInput chan<- *spot.Spot, ctyLookup func() *cty.CTYDatabase, repGate *reputation.Gate, repReport func(reputation.DropEvent)) *Processor {
 	return &Processor{
 		spotBuffer: buf,
 		archive:    archive,
 		spotInput:  spotInput,
 		ctyLookup:  ctyLookup,
 		prefixIdx:  &prefixIndex{},
+		repGate:    repGate,
+		repReport:  repReport,
 	}
 }
 
@@ -229,6 +235,34 @@ func (p *Processor) handleDX(fields []string, spotter string, spotterIP string) 
 			if _, ok := db.LookupCallsignPortable(dx); !ok {
 				return "Unknown DX callsign (not in CTY database).\n"
 			}
+		}
+	}
+	if p.repGate != nil {
+		now := time.Now().UTC()
+		band := spot.FreqToBand(freq)
+		decision := p.repGate.Check(reputation.Request{
+			Call: spotterNorm,
+			Band: band,
+			IP:   spotterIP,
+			Now:  now,
+		})
+		if decision.Drop {
+			if p.repReport != nil {
+				p.repReport(reputation.DropEvent{
+					Call:        spotterNorm,
+					Band:        band,
+					IP:          spotterIP,
+					Prefix:      decision.Prefix,
+					Reason:      decision.Reason,
+					Flags:       decision.Flags,
+					ASN:         decision.ASN,
+					CountryCode: decision.CountryCode,
+					CountryName: decision.CountryName,
+					Source:      decision.Source,
+					When:        now,
+				})
+			}
+			return ""
 		}
 	}
 	comment := ""

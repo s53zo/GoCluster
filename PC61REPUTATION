@@ -1,0 +1,16 @@
+Long-term infrastructure to enable PC61 reputation analysis
+
+- Event capture: Emit structured PC61 ingest events at acceptance time (pre-broadcast) with normalized callsign, DXCC/CTY result, band/mode, confidence, spotter IP/ASN/country (truncated IP/prefix only), client type, timestamps (recv/parse/enqueue), and a stable event id (hash of call+freq+time bucket) for dedup and joins.
+- State stores (bounded/sharded):
+  - Per-callsign timelines: rolling window counters (e.g., 5/30/1440 minutes) for volume per band/mode, distinct DX calls, confidence mix, dup rate, drop/reject reasons.
+  - Per-prefix (/24, /48) and ASN counters: same windows for volume and distinct calls.
+  - Per-spot signature cache: detect replay/dup storms with TTL + cap.
+- Enrichment caches: Daily IPinfo Lite snapshot loader (atomic swap, versioned) for IP→ASN/country; reuse CTY cache for DXCC lookups. TTL and size caps; record snapshot age/version on events.
+- Processing pipeline:
+  - Streaming path: on each PC61, update counters and emit derived signals (z-scores, rate thresholds, novelty of DX targets, ASN/geo flips for the spotter) for immediate policy or later analysis.
+  - Batch/offline path: periodic jobs to recompute heavier features (entropy of DX targets, diurnal patterns, long-term reputation score) from retained events.
+- Storage/retention: Append-only compact log (or SQLite/Pebble table) for PC61 events with configurable retention and downsampling (full detail for N days, sampled beyond). Index on time, callsign, ASN, prefix for fast aggregates.
+- Observability: Counters for ingest/parse failures, enrichment hits/misses, dedup hits, drops by reason; latency histograms for enrichment/pipeline stages. Sampled structured logs with redaction; no client-facing messages.
+- Policy hooks: Side channel so future reputation modules can pull current per-call/prefix/ASN features and return decisions (allow/drop/flag). Versioned/minimal interfaces to swap heuristics without telnet changes.
+- Safety/bounds: Shard all maps, enforce max entries + TTL sweeps, rate-limit external fallbacks, stop timers/goroutines on shutdown. Use monotonic time for windows to avoid clock skew issues.
+- Evaluation harness: Replay PC61 logs through the pipeline in “shadow” mode to compare decisions vs actual outcomes; capture false-positive/false-negative metrics before enforcement.

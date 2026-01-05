@@ -294,6 +294,50 @@ telnet:
   login_line_limit: 32            # Max bytes accepted for the initial login prompt (DoS guardrail)
   command_line_limit: 128         # Max bytes accepted for post-login commands (filters, etc.)
 
+# Telnet reputation gate (passwordless flood defense)
+reputation:
+  enabled: true
+  ipinfo_snapshot_path: "data/ipinfo/location.csv"
+  ipinfo_download_path: "data/ipinfo/location.csv.gz"
+  ipinfo_download_url: "https://ipinfo.io/data/location.csv.gz?token=$TOKEN"
+  ipinfo_download_token: "8a74cd36c1905b"
+  ipinfo_refresh_utc: "03:00"
+  ipinfo_download_timeout_ms: 15000
+  snapshot_max_age_seconds: 93600          # 26 hours
+  fallback_team_cymru: true
+  cymru_lookup_timeout_ms: 250
+  cymru_cache_ttl_seconds: 3600
+  cymru_negative_ttl_seconds: 300
+  cymru_workers: 2
+  initial_wait_seconds: 60
+  ramp_window_seconds: 60
+  per_band_start: 1
+  per_band_cap: 5
+  total_cap_start: 5
+  total_cap_post_ramp: 10
+  total_cap_ramp_delay_seconds: 0
+  country_mismatch_extra_wait_seconds: 60
+  disagreement_penalty_seconds: 60
+  unknown_penalty_seconds: 60
+  disagreement_reset_on_new: true
+  reset_on_new_asn: true
+  country_flip_scope: "country"
+  max_asn_history: 5
+  max_country_history: 5
+  state_ttl_seconds: 7200
+  state_max_entries: 100000
+  prefix_ttl_seconds: 3600
+  prefix_max_entries: 200000
+  lookup_cache_ttl_seconds: 3600
+  lookup_cache_max_entries: 200000
+  ipv4_bucket_size: 64
+  ipv4_bucket_refill_per_sec: 8
+  ipv6_bucket_size: 32
+  ipv6_bucket_refill_per_sec: 4
+  console_drop_display: true
+  drop_log_sample_rate: 1.0
+  reputation_dir: "data/reputation"
+
 # Default filters applied to new users
 filter:
   default_modes:

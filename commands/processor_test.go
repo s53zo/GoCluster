@@ -13,7 +13,7 @@ import (
 
 func TestDXCommandQueuesSpot(t *testing.T) {
 	input := make(chan *spot.Spot, 1)
-	p := NewProcessor(nil, nil, input, nil)
+	p := NewProcessor(nil, nil, input, nil, nil, nil)
 
 	resp := p.ProcessCommandForClient("DX 7001 K8ZB Testing...1...2...3", "N2WQ", "203.0.113.5", nil, "classic")
 	if !strings.Contains(resp, "Spot queued") {
@@ -47,7 +47,7 @@ func TestDXCommandQueuesSpot(t *testing.T) {
 
 func TestDXCommandValidation(t *testing.T) {
 	input := make(chan *spot.Spot, 1)
-	p := NewProcessor(nil, nil, input, nil)
+	p := NewProcessor(nil, nil, input, nil, nil, nil)
 
 	resp := p.ProcessCommandForClient("DX 7001 K8ZB", "N2WQ", "", nil, "classic")
 	if strings.Contains(resp, "Usage: DX") {
@@ -72,7 +72,7 @@ func TestDXCommandCTYValidation(t *testing.T) {
 	ctyDB := loadTestCTY(t)
 	ctyLookup := func() *cty.CTYDatabase { return ctyDB }
 	input := make(chan *spot.Spot, 1)
-	p := NewProcessor(nil, nil, input, ctyLookup)
+	p := NewProcessor(nil, nil, input, ctyLookup, nil, nil)
 
 	resp := p.ProcessCommandForClient("DX 7001 K8ZB Test", "N2WQ", "", nil, "classic")
 	if strings.Contains(resp, "Unknown DX callsign") {
@@ -93,7 +93,7 @@ func TestDXCommandCTYValidation(t *testing.T) {
 func TestShowDXCCPrefixAndSiblings(t *testing.T) {
 	ctyDB := loadTestCTY(t)
 	ctyLookup := func() *cty.CTYDatabase { return ctyDB }
-	p := NewProcessor(nil, nil, nil, ctyLookup)
+	p := NewProcessor(nil, nil, nil, ctyLookup, nil, nil)
 
 	resp := p.ProcessCommand("SHOW DXCC IT9")
 	expected := "IT9 -> ADIF 248 | Sicily (EU) | Prefix: IT9 | CQ 15 | ITU 28 | Other: I"
@@ -105,7 +105,7 @@ func TestShowDXCCPrefixAndSiblings(t *testing.T) {
 func TestShowDXCCPortableCall(t *testing.T) {
 	ctyDB := loadTestCTY(t)
 	ctyLookup := func() *cty.CTYDatabase { return ctyDB }
-	p := NewProcessor(nil, nil, nil, ctyLookup)
+	p := NewProcessor(nil, nil, nil, ctyLookup, nil, nil)
 
 	resp := p.ProcessCommand("SHOW DXCC W6/LZ5VV")
 	expected := "W6/LZ5VV -> ADIF 291 | United States (NA) | Prefix: K | CQ 3 | ITU 6"
@@ -120,7 +120,7 @@ func TestShowDXCCPortableCall(t *testing.T) {
 func TestShowDXCCMobileSuffix(t *testing.T) {
 	ctyDB := loadTestCTY(t)
 	ctyLookup := func() *cty.CTYDatabase { return ctyDB }
-	p := NewProcessor(nil, nil, nil, ctyLookup)
+	p := NewProcessor(nil, nil, nil, ctyLookup, nil, nil)
 
 	resp := p.ProcessCommand("SHOW DXCC W6/LZ5VV/M")
 	expected := "W6/LZ5VV -> ADIF 291 | United States (NA) | Prefix: K | CQ 3 | ITU 6"
@@ -130,7 +130,7 @@ func TestShowDXCCMobileSuffix(t *testing.T) {
 }
 
 func TestShowMYDXRequiresFilter(t *testing.T) {
-	p := NewProcessor(nil, nil, nil, nil)
+	p := NewProcessor(nil, nil, nil, nil, nil, nil)
 	resp := p.ProcessCommandForClient("SHOW MYDX 5", "N2WQ", "", nil, "classic")
 	if !strings.Contains(resp, "SHOW MYDX requires a logged-in session") {
 		t.Fatalf("expected filter requirement message, got %q", resp)
@@ -146,7 +146,7 @@ func TestShowMYDXFiltersResults(t *testing.T) {
 	rb.Add(spotOld)
 	rb.Add(spotNew)
 
-	p := NewProcessor(rb, nil, nil, nil)
+	p := NewProcessor(rb, nil, nil, nil, nil, nil)
 	filterFn := func(s *spot.Spot) bool {
 		return s != nil && s.DXCall == "DXBBB"
 	}
@@ -160,7 +160,7 @@ func TestShowMYDXFiltersResults(t *testing.T) {
 }
 
 func TestHelpPerDialect(t *testing.T) {
-	p := NewProcessor(nil, nil, nil, nil)
+	p := NewProcessor(nil, nil, nil, nil, nil, nil)
 
 	classic := p.ProcessCommandForClient("HELP", "", "", nil, "classic")
 	if !strings.Contains(classic, "PASS BAND") || !strings.Contains(classic, "Current dialect: GO") {
