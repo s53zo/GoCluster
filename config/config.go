@@ -362,25 +362,15 @@ type PeeringACL struct {
 }
 
 // Purpose: Build MQTT subscription topics based on configured modes.
-// Key aspects: Falls back to configured Topic or default when modes are empty.
+// Key aspects: Always uses a single catch-all subscription unless a custom topic is provided.
 // Upstream: PSKReporter client setup.
 // Downstream: None.
 func (c *PSKReporterConfig) SubscriptionTopics() []string {
-	topics := make([]string, 0, len(c.Modes))
-	for _, mode := range c.Modes {
-		mode = strings.TrimSpace(strings.ToUpper(mode))
-		if mode == "" {
-			continue
-		}
-		topics = append(topics, fmt.Sprintf("pskr/filter/v2/+/%s/#", mode))
+	if c.Topic != "" {
+		return []string{c.Topic}
 	}
-	if len(topics) == 0 {
-		if c.Topic != "" {
-			return []string{c.Topic}
-		}
-		return []string{defaultPSKReporterTopic}
-	}
-	return topics
+	// Single catch-all subscription; mode filtering happens downstream.
+	return []string{defaultPSKReporterTopic}
 }
 
 // DedupConfig contains deduplication settings. The cluster-wide window controls how
@@ -486,11 +476,6 @@ type CallCorrectionConfig struct {
 	Distance3ExtraReports    int `yaml:"distance3_extra_reports"`    // additional unique reporters required
 	Distance3ExtraAdvantage  int `yaml:"distance3_extra_advantage"`  // additional advantage over subject required
 	Distance3ExtraConfidence int `yaml:"distance3_extra_confidence"` // additional confidence percentage points required
-	// DistanceCache* control memoization of string distance calculations across the
-	// consensus window. A small cache reduces CPU churn when the same candidates
-	// are compared repeatedly during bursts.
-	DistanceCacheSize       int `yaml:"distance_cache_size"`
-	DistanceCacheTTLSeconds int `yaml:"distance_cache_ttl_seconds"`
 	// Cooldown gate to avoid flipping away from a call that already has recent, diverse
 	// support. Applies only to corrections away from the subject; corrections toward it
 	// still proceed. Bypass allows a decisively stronger alternate to override the cooldown.
@@ -983,9 +968,6 @@ func Load(path string) (*Config, error) {
 	if cfg.CallCorrection.MinSpotterReliability < 0 {
 		cfg.CallCorrection.MinSpotterReliability = 0
 	}
-	if cfg.CallCorrection.DistanceCacheSize <= 0 {
-		cfg.CallCorrection.DistanceCacheSize = 5000
-	}
 	if cfg.CallCorrection.MorseWeights.Insert <= 0 {
 		cfg.CallCorrection.MorseWeights.Insert = 1
 	}
@@ -1066,12 +1048,6 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.CallCorrection.BaudotWeights.Scale <= 0 {
 		cfg.CallCorrection.BaudotWeights.Scale = 2
-	}
-	if cfg.CallCorrection.DistanceCacheTTLSeconds <= 0 {
-		cfg.CallCorrection.DistanceCacheTTLSeconds = cfg.CallCorrection.RecencySeconds
-		if cfg.CallCorrection.DistanceCacheTTLSeconds <= 0 {
-			cfg.CallCorrection.DistanceCacheTTLSeconds = 120
-		}
 	}
 	if cfg.CallCorrection.CooldownBinHz <= 0 {
 		cfg.CallCorrection.CooldownBinHz = cfg.CallCorrection.QualityBinHz
@@ -1759,9 +1735,6 @@ func (c *Config) Print() {
 		c.CallCorrection.VoiceFrequencyToleranceHz,
 		c.CallCorrection.VoiceCandidateWindowKHz,
 		c.CallCorrection.MinSNRVoice)
-	fmt.Printf("Call correction cache: size=%d ttl=%ds\n",
-		c.CallCorrection.DistanceCacheSize,
-		c.CallCorrection.DistanceCacheTTLSeconds)
 
 	harmonicStatus := "disabled"
 	if c.Harmonics.Enabled {

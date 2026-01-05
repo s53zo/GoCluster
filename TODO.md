@@ -11,9 +11,6 @@
 
 CPU-reduction recommendations and status
 
-Done:
-- Call-correction distance memoization (spot/correction.go): added size/TTL-bound cache for call distance calculations. Knobs in call_correction: distance_cache_size (default 5000) and distance_cache_ttl_seconds (default recency window). Tests still use legacy callDistance wrapper.
-
 Remaining opportunities:
 - Telnet filter matching (telnet.Client.filter.Matches):
   * Fast-path when filters are "all enabled" to bypass per-spot checks.

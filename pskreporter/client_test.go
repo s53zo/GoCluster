@@ -1,6 +1,7 @@
 package pskreporter
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func TestDecorateSpotterCall(t *testing.T) {
 }
 
 func TestConvertToSpotOmitsCommentAndCarriesGrids(t *testing.T) {
-	client := NewClient("localhost", 1883, nil, "", 1, nil, false, 16, 0)
+	client := NewClient("localhost", 1883, nil, nil, "", 1, nil, false, 16, 0)
 
 	msg := &PSKRMessage{
 		SequenceNumber:  1,
@@ -72,7 +73,7 @@ func (m testMessage) Payload() []byte { return m.payload }
 func (m testMessage) Ack()            {}
 
 func TestMessageHandlerDropsOversizePayload(t *testing.T) {
-	client := NewClient("localhost", 1883, nil, "", 1, nil, false, 16, 4)
+	client := NewClient("localhost", 1883, nil, nil, "", 1, nil, false, 16, 4)
 	client.processing = make(chan []byte, 1)
 
 	client.messageHandler(nil, testMessage{payload: make([]byte, 10)})
@@ -81,5 +82,39 @@ func TestMessageHandlerDropsOversizePayload(t *testing.T) {
 	case <-client.processing:
 		t.Fatalf("expected oversized payload to be dropped")
 	default:
+	}
+}
+
+func TestHandlePayloadFiltersModes(t *testing.T) {
+	// Allow only FT8.
+	client := NewClient("localhost", 1883, nil, []string{"FT8"}, "", 1, nil, false, 2, 0)
+	allowed := PSKRMessage{
+		Frequency:    14074000,
+		Mode:         "FT8",
+		Timestamp:    time.Now().Unix(),
+		SenderCall:   "K1ABC",
+		ReceiverCall: "N0CALL",
+	}
+	blocked := allowed
+	blocked.Mode = "FT4"
+
+	allowedPayload, _ := json.Marshal(allowed)
+	blockedPayload, _ := json.Marshal(blocked)
+
+	// Blocked mode should not reach spotChan.
+	client.handlePayload(blockedPayload)
+	select {
+	case <-client.spotChan:
+		t.Fatalf("expected blocked mode to be dropped")
+	default:
+	}
+
+	// Allowed mode should enqueue a spot.
+	client.handlePayload(allowedPayload)
+	select {
+	case <-client.spotChan:
+		// ok
+	default:
+		t.Fatalf("expected allowed mode to enqueue a spot")
 	}
 }

@@ -71,11 +71,6 @@ type CorrectionSettings struct {
 	Distance3ExtraReports    int
 	Distance3ExtraAdvantage  int
 	Distance3ExtraConfidence int
-	// DistanceCache* control memoization of string distance calculations. This
-	// lowers CPU when the same candidate set is evaluated repeatedly during
-	// bursts. Disable by setting size<=0 or ttl<=0.
-	DistanceCacheSize int
-	DistanceCacheTTL  time.Duration
 	// Spotter reliability weights (0..1). Reporters below MinSpotterReliability are ignored
 	// when counting corroborators.
 	SpotterReliability    SpotterReliability
@@ -141,142 +136,6 @@ func IsCallCorrectionCandidate(mode string) bool {
 // so we allow a half-kilohertz wiggle room to absorb rounding differences between
 // data sources.
 var frequencyToleranceKHz = 0.5
-
-// distanceCacheEntry stores a computed distance with expiry.
-type distanceCacheEntry struct {
-	distance int
-	expires  time.Time
-}
-
-// distanceCache is a size- and TTL-bound memoization map for call distances.
-type distanceCache struct {
-	mu      sync.Mutex
-	entries map[string]distanceCacheEntry
-	order   []string // insertion order for eviction
-	max     int
-	ttl     time.Duration
-}
-
-func (dc *distanceCache) configure(max int, ttl time.Duration) {
-	// Purpose: Configure cache capacity and TTL for distance memoization.
-	// Key aspects: Disables cache when max/ttl are non-positive.
-	// Upstream: normalizeCorrectionSettings.
-	// Downstream: map allocation and resets.
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-	if max <= 0 || ttl <= 0 {
-		dc.max = 0
-		dc.entries = nil
-		dc.order = nil
-		dc.ttl = 0
-		return
-	}
-	if dc.max != max || dc.ttl != ttl || dc.entries == nil {
-		dc.max = max
-		dc.ttl = ttl
-		dc.entries = make(map[string]distanceCacheEntry, max)
-		dc.order = dc.order[:0]
-	}
-}
-
-func (dc *distanceCache) get(key string, now time.Time) (int, bool) {
-	// Purpose: Retrieve a cached distance value.
-	// Key aspects: Enforces TTL expiration and returns (value, ok).
-	// Upstream: cachedCallDistance.
-	// Downstream: map lookup under lock.
-	if dc.max <= 0 || dc.ttl <= 0 {
-		return 0, false
-	}
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-	entry, ok := dc.entries[key]
-	if !ok {
-		return 0, false
-	}
-	if now.After(entry.expires) {
-		delete(dc.entries, key)
-		return 0, false
-	}
-	return entry.distance, true
-}
-
-func (dc *distanceCache) put(key string, distance int, now time.Time) {
-	// Purpose: Store a distance value and manage eviction order.
-	// Key aspects: Keeps order slice bounded and evicts when over capacity.
-	// Upstream: cachedCallDistance.
-	// Downstream: evictOldest and condenseOrderLocked.
-	if dc.max <= 0 || dc.ttl <= 0 {
-		return
-	}
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-	if dc.entries == nil {
-		dc.entries = make(map[string]distanceCacheEntry, dc.max)
-	}
-	_, exists := dc.entries[key]
-	dc.entries[key] = distanceCacheEntry{
-		distance: distance,
-		expires:  now.Add(dc.ttl),
-	}
-	// Track insertion order only for new keys so hot keys don't bloat the order slice.
-	if !exists {
-		dc.order = append(dc.order, key)
-		if len(dc.order) > dc.max*2 {
-			dc.condenseOrderLocked()
-		}
-	}
-	if len(dc.entries) > dc.max {
-		dc.evictOldest()
-	}
-}
-
-func (dc *distanceCache) evictOldest() {
-	// Purpose: Evict oldest cache entries to stay within max.
-	// Key aspects: Deletes from entries and trims order slice.
-	// Upstream: distanceCache.put.
-	// Downstream: map delete and condenseOrderLocked.
-	// Drop oldest entries until we're within the max bound.
-	for len(dc.entries) > dc.max && len(dc.order) > 0 {
-		k := dc.order[0]
-		dc.order = dc.order[1:]
-		delete(dc.entries, k)
-	}
-	// Trim runaway order slice if it has grown much larger than the cache.
-	if len(dc.order) > dc.max*2 {
-		dc.condenseOrderLocked()
-	}
-}
-
-// Purpose: Rebuild the eviction order to remove duplicates.
-// Key aspects: Keeps latest occurrences and trims order size.
-// Upstream: distanceCache.put and evictOldest.
-// Downstream: map lookups and slice rebuild.
-// condenseOrderLocked rebuilds the order slice to contain unique keys in their latest order,
-// keeping memory bounded even when the same key is updated frequently.
-func (dc *distanceCache) condenseOrderLocked() {
-	if len(dc.order) == 0 {
-		return
-	}
-	seen := make(map[string]bool, len(dc.entries))
-	tmp := make([]string, 0, len(dc.entries))
-	// Walk from newest to oldest, keep first occurrence, then reverse to restore order.
-	for i := len(dc.order) - 1; i >= 0; i-- {
-		k := dc.order[i]
-		if seen[k] {
-			continue
-		}
-		if _, exists := dc.entries[k]; !exists {
-			continue
-		}
-		seen[k] = true
-		tmp = append(tmp, k)
-	}
-	// Reverse tmp into order (oldest to newest).
-	for i, j := 0, len(tmp)-1; i < j; i, j = i+1, j-1 {
-		tmp[i], tmp[j] = tmp[j], tmp[i]
-	}
-	dc.order = tmp
-}
 
 // Purpose: Set the global frequency tolerance for correction clustering.
 // Key aspects: Normalizes non-positive values to default.
@@ -510,12 +369,6 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 		return "", 0, 0, 0, 0, false
 	}
 
-	cacheCfg := distanceCacheConfig{
-		size: cfg.DistanceCacheSize,
-		ttl:  cfg.DistanceCacheTTL,
-	}
-	localCache := &distanceCache{}
-	localCache.configure(cacheCfg.size, cacheCfg.ttl)
 	freqHz := subject.Frequency * 1000.0
 
 	if cfg.Cooldown != nil && subjectAgg != nil {
@@ -568,7 +421,7 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 			if totalReporters > 0 {
 				anchorConfidence = anchorSupport * 100 / totalReporters
 			}
-			anchorDistance := cachedCallDistance(subjectCall, anchor, subject.Mode, cfg.DistanceModelCW, cfg.DistanceModelRTTY, cacheCfg, localCache, now)
+			anchorDistance := callDistance(subjectCall, anchor, subject.Mode, cfg.DistanceModelCW, cfg.DistanceModelRTTY)
 			anchorRunner := 0
 			for call, agg := range callStats {
 				if call == anchor || agg == nil {
@@ -622,7 +475,7 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 		return "", 0, 0, subjectConfidence, totalReporters, false
 	}
 
-	centerDistance := cachedCallDistance(subjectCall, bestCall, subject.Mode, cfg.DistanceModelCW, cfg.DistanceModelRTTY, cacheCfg, localCache, now)
+	centerDistance := callDistance(subjectCall, bestCall, subject.Mode, cfg.DistanceModelCW, cfg.DistanceModelRTTY)
 	trace.Distance = centerDistance
 	trace.WinnerCall = strings.ToUpper(bestCall)
 	trace.WinnerSupport = bestCount
@@ -774,7 +627,7 @@ func logCorrectionTrace(cfg CorrectionSettings, tr CorrectionTrace, votes []band
 // Purpose: Normalize correction settings with defaults.
 // Key aspects: Applies minimums and standardizes strategy names.
 // Upstream: SuggestCallCorrection.
-// Downstream: distance cache configuration and string normalization.
+// Downstream: string normalization.
 // normalizeCorrectionSettings fills in safe defaults so callers can omit config
 // while unit tests can deliberately pass tiny values.
 func normalizeCorrectionSettings(settings CorrectionSettings) CorrectionSettings {
@@ -837,18 +690,8 @@ func normalizeCorrectionSettings(settings CorrectionSettings) CorrectionSettings
 	if cfg.Distance3ExtraConfidence < 0 {
 		cfg.Distance3ExtraConfidence = 0
 	}
-	if cfg.DistanceCacheSize <= 0 {
-		cfg.DistanceCacheSize = 5000
-	}
 	cfg.DistanceModelCW = normalizeCWDistanceModel(cfg.DistanceModelCW)
 	cfg.DistanceModelRTTY = normalizeRTTYDistanceModel(cfg.DistanceModelRTTY)
-	if cfg.DistanceCacheTTL <= 0 {
-		// Default TTL tracks the recency window so cached distances expire alongside supporting data.
-		cfg.DistanceCacheTTL = cfg.RecencyWindow
-		if cfg.DistanceCacheTTL <= 0 {
-			cfg.DistanceCacheTTL = 2 * time.Minute
-		}
-	}
 	if cfg.MinSpotterReliability < 0 {
 		cfg.MinSpotterReliability = 0
 	}
@@ -1126,14 +969,9 @@ const (
 	distanceModelBaudot = "baudot"
 )
 
-type distanceCacheConfig struct {
-	size int
-	ttl  time.Duration
-}
-
 // Purpose: Normalize CW distance model selection.
 // Key aspects: Defaults to plain when unknown.
-// Upstream: normalizeCorrectionSettings and cachedCallDistance.
+// Upstream: normalizeCorrectionSettings and callDistance.
 // Downstream: strings.ToLower.
 func normalizeCWDistanceModel(model string) string {
 	switch strings.ToLower(strings.TrimSpace(model)) {
@@ -1146,7 +984,7 @@ func normalizeCWDistanceModel(model string) string {
 
 // Purpose: Normalize RTTY distance model selection.
 // Key aspects: Defaults to plain when unknown.
-// Upstream: normalizeCorrectionSettings and cachedCallDistance.
+// Upstream: normalizeCorrectionSettings and callDistance.
 // Downstream: strings.ToLower.
 func normalizeRTTYDistanceModel(model string) string {
 	switch strings.ToLower(strings.TrimSpace(model)) {
@@ -1157,54 +995,10 @@ func normalizeRTTYDistanceModel(model string) string {
 	}
 }
 
-// Purpose: Compute call distance with optional memoization.
-// Key aspects: Uses cache when configured, falls back to core distance.
-// Upstream: SuggestCallCorrection and findAnchorForCall.
-// Downstream: distanceCacheKey, distanceCache.get/put, callDistanceCore.
-// cachedCallDistance wraps callDistanceCore with an optional memoization layer.
-// A preconfigured cache is supplied by the caller so we avoid reconfiguring
-// shared state on every distance call.
-func cachedCallDistance(subject, candidate, mode, cwModel, rttyModel string, cacheCfg distanceCacheConfig, cache *distanceCache, now time.Time) int {
-	modeKey := strings.ToUpper(strings.TrimSpace(mode))
-	cwModelNorm := normalizeCWDistanceModel(cwModel)
-	rttyModelNorm := normalizeRTTYDistanceModel(rttyModel)
-
-	if cacheCfg.size > 0 && cacheCfg.ttl > 0 && cache != nil {
-		key := distanceCacheKey(subject, candidate, modeKey, cwModelNorm, rttyModelNorm)
-		if dist, ok := cache.get(key, now); ok {
-			return dist
-		}
-		dist := callDistanceCore(subject, candidate, modeKey, cwModelNorm, rttyModelNorm)
-		cache.put(key, dist, now)
-		return dist
-	}
-	return callDistanceCore(subject, candidate, modeKey, cwModelNorm, rttyModelNorm)
-}
-
-// Purpose: Build a stable cache key for distance calculations.
-// Key aspects: Concatenates subject/candidate/mode/model identifiers.
-// Upstream: cachedCallDistance.
-// Downstream: strings.TrimSpace/ToUpper.
-func distanceCacheKey(subject, candidate, mode, cwModel, rttyModel string) string {
-	var b strings.Builder
-	// Estimated capacity: calls (2x12) + 4 delimiters + modes/models (~4*5) + slack.
-	b.Grow(48)
-	b.WriteString(strings.ToUpper(subject))
-	b.WriteByte('|')
-	b.WriteString(strings.ToUpper(candidate))
-	b.WriteByte('|')
-	b.WriteString(mode)
-	b.WriteByte('|')
-	b.WriteString(cwModel)
-	b.WriteByte('|')
-	b.WriteString(rttyModel)
-	return b.String()
-}
-
 // callDistanceCore picks the distance function based on mode/model without caching.
 // Purpose: Compute mode-aware call distance without caching.
 // Key aspects: Routes to CW/RTTY-specific models or plain Levenshtein.
-// Upstream: cachedCallDistance and callDistance.
+// Upstream: callDistance.
 // Downstream: cwCallDistance, rttyCallDistance, lev.Distance.
 func callDistanceCore(subject, candidate, mode, cwModel, rttyModel string) int {
 	switch mode {
@@ -1220,11 +1014,10 @@ func callDistanceCore(subject, candidate, mode, cwModel, rttyModel string) int {
 	return lev.ComputeDistance(subject, candidate)
 }
 
-// callDistance is retained for tests; it routes to the core distance function
-// after normalizing mode/model inputs (no caching).
+// callDistance normalizes mode/model inputs before routing to the core distance function.
 // Purpose: Compute mode-aware call distance with normalized models.
 // Key aspects: Normalizes model strings before calling core.
-// Upstream: findAnchorForCall.
+// Upstream: SuggestCallCorrection and findAnchorForCall.
 // Downstream: callDistanceCore and normalizeCW/RTTYDistanceModel.
 func callDistance(subject, candidate, mode, cwModel, rttyModel string) int {
 	modeKey := strings.ToUpper(strings.TrimSpace(mode))

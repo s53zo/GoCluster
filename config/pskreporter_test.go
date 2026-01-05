@@ -8,7 +8,7 @@ import (
 func TestPSKReporterSubscriptionTopicsWithModes(t *testing.T) {
 	cfg := PSKReporterConfig{Modes: []string{"FT8", "ft4", "  "}}
 	got := cfg.SubscriptionTopics()
-	want := []string{"pskr/filter/v2/+/FT8/#", "pskr/filter/v2/+/FT4/#"}
+	want := []string{defaultPSKReporterTopic}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("SubscriptionTopics() = %v, want %v", got, want)
 	}

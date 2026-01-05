@@ -55,7 +55,7 @@ pskreporter:
   name: "PSKReporter"
   broker: "mqtt.pskreporter.info"
   port: 1883
-  modes: ["FT8", "FT4", "CW", "RTTY", "MSK144"]  # List of MQTT modes to subscribe to
+  modes: ["FT8", "FT4", "CW", "RTTY", "MSK144"]  # Modes to accept after subscription (filter applied downstream)
   workers: 0                           # 0 means automatic (uses all CPU cores, minimum 4)
   append_spotter_ssid: true            # Append "-#" to receiver calls lacking an SSID for dedup
 
@@ -103,8 +103,6 @@ call_correction:
   distance3_extra_reports: 0      # Extra unique supporters required when suggested call is distance 3
   distance3_extra_advantage: 0    # Extra advantage over the subject required when distance 3
   distance3_extra_confidence: 5   # Extra confidence percentage points required when distance 3
-  distance_cache_size: 256        # Memoize call distance calculations (entries)
-  distance_cache_ttl_seconds: 120 # Expire cached distances after this many seconds (tie to recency window)
   morse_weights:
     insert: 1                     # Cost to insert a dot/dash in Morse patterns
     delete: 1                     # Cost to delete a dot/dash in Morse patterns

@@ -51,6 +51,9 @@ type Client struct {
 	payloadTooLargeCounter rateCounter
 	spotDropCounter        rateCounter
 	parseErrorCounter      rateCounter
+
+	allowAllModes bool
+	allowedModes  map[string]struct{}
 }
 
 var (
@@ -105,7 +108,7 @@ func ConfigureCallCache(size int, ttl time.Duration) {
 // Key aspects: Initializes channels, caches, and worker settings.
 // Upstream: main.go startup.
 // Downstream: Client.Connect, worker pool.
-func NewClient(broker string, port int, topics []string, name string, workers int, skewStore *skew.Store, appendSSID bool, spotBuffer int, maxPayloadBytes int) *Client {
+func NewClient(broker string, port int, topics []string, allowedModes []string, name string, workers int, skewStore *skew.Store, appendSSID bool, spotBuffer int, maxPayloadBytes int) *Client {
 	if spotBuffer <= 0 {
 		spotBuffer = defaultSpotBuffer
 	}
@@ -113,10 +116,21 @@ func NewClient(broker string, port int, topics []string, name string, workers in
 		maxPayloadBytes = defaultMaxPayloadBytes
 	}
 	logInterval := defaultDropLogInterval
+	modeSet := make(map[string]struct{}, len(allowedModes))
+	for _, m := range allowedModes {
+		m = strings.ToUpper(strings.TrimSpace(m))
+		if m == "" {
+			continue
+		}
+		modeSet[m] = struct{}{}
+	}
+	allowAll := len(modeSet) == 0
 	return &Client{
 		broker:          broker,
 		port:            port,
 		topics:          append([]string{}, topics...),
+		allowedModes:    modeSet,
+		allowAllModes:   allowAll,
 		name:            name,
 		spotChan:        make(chan *spot.Spot, spotBuffer), // Buffered ingest to absorb bursts
 		shutdown:        make(chan struct{}),
@@ -310,6 +324,15 @@ func (c *Client) handlePayload(payload []byte) {
 			if count, ok := c.parseErrorCounter.Inc(); ok {
 				log.Printf("PSKReporter: Failed to parse message (total=%d): %v", count, errCompat)
 			}
+			return
+		}
+	}
+	modeUpper := strings.ToUpper(strings.TrimSpace(pskrMsg.Mode))
+	if !c.allowAllModes {
+		if modeUpper == "" {
+			return
+		}
+		if _, ok := c.allowedModes[modeUpper]; !ok {
 			return
 		}
 	}

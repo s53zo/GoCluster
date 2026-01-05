@@ -913,7 +913,7 @@ func main() {
 	)
 	if cfg.PSKReporter.Enabled {
 		pskrTopics = cfg.PSKReporter.SubscriptionTopics()
-		pskrClient = pskreporter.NewClient(cfg.PSKReporter.Broker, cfg.PSKReporter.Port, pskrTopics, cfg.PSKReporter.Name, cfg.PSKReporter.Workers, skewStore, cfg.PSKReporter.AppendSpotterSSID, cfg.PSKReporter.SpotChannelSize, cfg.PSKReporter.MaxPayloadBytes)
+		pskrClient = pskreporter.NewClient(cfg.PSKReporter.Broker, cfg.PSKReporter.Port, pskrTopics, cfg.PSKReporter.Modes, cfg.PSKReporter.Name, cfg.PSKReporter.Workers, skewStore, cfg.PSKReporter.AppendSpotterSSID, cfg.PSKReporter.SpotChannelSize, cfg.PSKReporter.MaxPayloadBytes)
 		err = pskrClient.Connect()
 		if err != nil {
 			log.Printf("Warning: Failed to connect to PSKReporter: %v", err)
@@ -2059,8 +2059,6 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 		Distance3ExtraReports:    cfg.Distance3ExtraReports,
 		Distance3ExtraAdvantage:  cfg.Distance3ExtraAdvantage,
 		Distance3ExtraConfidence: cfg.Distance3ExtraConfidence,
-		DistanceCacheSize:        cfg.DistanceCacheSize,
-		DistanceCacheTTL:         time.Duration(cfg.DistanceCacheTTLSeconds) * time.Second,
 		DebugLog:                 cfg.DebugLog,
 		TraceLogger:              traceLogger,
 		FrequencyToleranceHz:     freqToleranceHz,
