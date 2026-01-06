@@ -1,4 +1,5 @@
 # Launch gocluster with pprof enabled and capture 1m CPU profiles every 15m.
+# Captures heap (inuse) and allocs (alloc_space) profiles as well.
 # Usage: run this script from PowerShell; it will start the cluster in a new window
 # and keep collecting profiles until the process exits.
 
@@ -58,6 +59,12 @@ function Get-HeapProfile {
     Invoke-WebRequest -Uri $url -OutFile $destPath -TimeoutSec 30 -UseBasicParsing
 }
 
+function Get-AllocsProfile {
+    param($destPath, $addr)
+    $url = "http://$addr/debug/pprof/allocs"
+    Invoke-WebRequest -Uri $url -OutFile $destPath -TimeoutSec 30 -UseBasicParsing
+}
+
 # Periodic capture loop (stops when the process exits)
 while (-not $proc.HasExited) {
     $ts = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -75,6 +82,14 @@ while (-not $proc.HasExited) {
         Write-Host "Captured heap profile -> $heapDest"
     } catch {
         Write-Warning "Heap profile capture failed at ${ts}: $($_)"
+    }
+
+    $allocsDest = Join-Path $logsDir ("allocs-$ts.pprof")
+    try {
+        Get-AllocsProfile -destPath $allocsDest -addr $pprofAddr
+        Write-Host "Captured allocs profile -> $allocsDest"
+    } catch {
+        Write-Warning "Allocs profile capture failed at ${ts}: $($_)"
     }
 
     # Sleep, but break early if the process exits

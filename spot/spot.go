@@ -63,6 +63,9 @@ type Spot struct {
 	DEGridNorm      string
 	DXGrid2         string
 	DEGrid2         string
+	// Broadcast-only overrides (telnet/archive view); canonical calls remain raw.
+	DECallStripped     string
+	DECallNormStripped string
 }
 
 // CallMetadata stores geographic metadata for a callsign
@@ -267,6 +270,9 @@ func (s *Spot) EnsureNormalized() {
 	if s.DECallNorm == "" && s.DECall != "" {
 		s.DECallNorm = NormalizeCallsign(s.DECall)
 	}
+	if s.DECallNormStripped == "" && s.DECallStripped != "" {
+		s.DECallNormStripped = NormalizeCallsign(s.DECallStripped)
+	}
 	if s.DXContinentNorm == "" && s.DXMetadata.Continent != "" {
 		s.DXContinentNorm = strings.ToUpper(strings.TrimSpace(s.DXMetadata.Continent))
 	}
@@ -401,6 +407,9 @@ func (s *Spot) FormatDXCluster() string {
 		// Keep the left side stable by truncating overly-long spotter calls so
 		// frequency and subsequent fields stay aligned.
 		deCall := s.DECall
+		if s.DECallStripped != "" {
+			deCall = s.DECallStripped
+		}
 		maxPrefixLen := freqFieldWidthToEnd - len(freqStr) // prefix + spacesToFreq
 		maxDELen := maxPrefixLen - len("DX de ") - len(":")
 		if maxDELen < 1 {

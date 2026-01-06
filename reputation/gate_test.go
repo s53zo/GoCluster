@@ -1,6 +1,7 @@
 package reputation
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,15 +13,26 @@ import (
 
 func TestGateProbationAndRamp(t *testing.T) {
 	tmp := t.TempDir()
-	snapshot := filepath.Join(tmp, "location.csv")
-	writeSnapshot(t, snapshot, []string{
+	csvPath := filepath.Join(tmp, "location.csv")
+	writeSnapshot(t, csvPath, []string{
 		"start_ip,end_ip,country_code,country,continent_code,asn",
 		"203.0.113.0,203.0.113.255,US,United States,NA,AS64500",
 	})
+	pebbleRoot := filepath.Join(tmp, "ipinfo_pebble")
+	dbPath, err := buildIPInfoPebble(context.Background(), csvPath, pebbleRoot, false)
+	if err != nil {
+		t.Fatalf("buildIPInfoPebble failed: %v", err)
+	}
+	if err := updateIPInfoPebbleCurrent(pebbleRoot, dbPath); err != nil {
+		t.Fatalf("updateIPInfoPebbleCurrent failed: %v", err)
+	}
 
 	cfg := config.ReputationConfig{
 		Enabled:                  true,
-		IPInfoSnapshotPath:       snapshot,
+		IPInfoPebblePath:         pebbleRoot,
+		IPInfoPebbleLoadIPv4:     true,
+		FallbackTeamCymru:        false,
+		IPInfoAPIEnabled:         false,
 		ReputationDir:            tmp,
 		InitialWaitSeconds:       10,
 		RampWindowSeconds:        10,
@@ -48,8 +60,9 @@ func TestGateProbationAndRamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGate failed: %v", err)
 	}
-	if err := gate.LoadSnapshot(); err != nil {
-		t.Fatalf("LoadSnapshot failed: %v", err)
+	defer gate.Close()
+	if err := gate.LoadStore(); err != nil {
+		t.Fatalf("LoadStore failed: %v", err)
 	}
 
 	call := "K1ABC"
@@ -98,15 +111,26 @@ func TestGateProbationAndRamp(t *testing.T) {
 
 func TestPrefixLimiterDrop(t *testing.T) {
 	tmp := t.TempDir()
-	snapshot := filepath.Join(tmp, "location.csv")
-	writeSnapshot(t, snapshot, []string{
+	csvPath := filepath.Join(tmp, "location.csv")
+	writeSnapshot(t, csvPath, []string{
 		"start_ip,end_ip,country_code,country,continent_code,asn",
 		"203.0.113.0,203.0.113.255,US,United States,NA,AS64500",
 	})
+	pebbleRoot := filepath.Join(tmp, "ipinfo_pebble")
+	dbPath, err := buildIPInfoPebble(context.Background(), csvPath, pebbleRoot, false)
+	if err != nil {
+		t.Fatalf("buildIPInfoPebble failed: %v", err)
+	}
+	if err := updateIPInfoPebbleCurrent(pebbleRoot, dbPath); err != nil {
+		t.Fatalf("updateIPInfoPebbleCurrent failed: %v", err)
+	}
 
 	cfg := config.ReputationConfig{
 		Enabled:                true,
-		IPInfoSnapshotPath:     snapshot,
+		IPInfoPebblePath:       pebbleRoot,
+		IPInfoPebbleLoadIPv4:   true,
+		FallbackTeamCymru:      false,
+		IPInfoAPIEnabled:       false,
 		ReputationDir:          tmp,
 		InitialWaitSeconds:     1,
 		RampWindowSeconds:      10,
@@ -131,8 +155,9 @@ func TestPrefixLimiterDrop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGate failed: %v", err)
 	}
-	if err := gate.LoadSnapshot(); err != nil {
-		t.Fatalf("LoadSnapshot failed: %v", err)
+	defer gate.Close()
+	if err := gate.LoadStore(); err != nil {
+		t.Fatalf("LoadStore failed: %v", err)
 	}
 
 	call := "K1ABC"

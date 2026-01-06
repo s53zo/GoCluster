@@ -90,6 +90,25 @@ func TestFormatDXClusterUsesGridAndConfidence(t *testing.T) {
 	}
 }
 
+func TestFormatDXClusterUsesStrippedDECall(t *testing.T) {
+	s := &Spot{
+		DXCall:         "K1ABC",
+		DECall:         "W1XYZ-1",
+		DECallStripped: "W1XYZ",
+		Frequency:      14074.0,
+		Mode:           "FT8",
+		Time:           time.Date(2025, time.November, 22, 4, 54, 0, 0, time.UTC),
+	}
+
+	got := s.FormatDXCluster()
+	if strings.Contains(got, "W1XYZ-1") {
+		t.Fatalf("expected stripped DE call, got %q", got)
+	}
+	if !strings.Contains(got, "DX de W1XYZ:") {
+		t.Fatalf("expected stripped DE call prefix, got %q", got)
+	}
+}
+
 func TestFormatDXClusterDXCallDisplayTruncatesAndStripsSuffix(t *testing.T) {
 	s := &Spot{
 		DXCall:    "HB9/TA1EYE/P",

@@ -48,6 +48,19 @@ func TestBandAllowListNormalizesTokens(t *testing.T) {
 	}
 }
 
+func TestDECallsignPatternUsesStrippedCall(t *testing.T) {
+	f := NewFilter()
+	f.DECallsigns = []string{"W1XYZ"}
+
+	s := spot.NewSpot("K1ABC", "W1XYZ-1", 14074.0, "CW")
+	s.DECallStripped = "W1XYZ"
+	s.DECallNormStripped = "W1XYZ"
+
+	if !f.Matches(s) {
+		t.Fatalf("expected stripped DE call to satisfy pattern")
+	}
+}
+
 func TestContinentFilters(t *testing.T) {
 	f := NewFilter()
 	f.SetDXContinent("EU", true)

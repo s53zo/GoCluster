@@ -1129,10 +1129,14 @@ func (f *Filter) Matches(s *spot.Spot) bool {
 	}
 
 	// Check DE callsign patterns (if any are set)
+	deCall := s.DECall
+	if s.DECallStripped != "" {
+		deCall = s.DECallStripped
+	}
 	if len(f.DECallsigns) > 0 {
 		matched := false
 		for _, pattern := range f.DECallsigns {
-			if matchesCallsignPattern(s.DECall, pattern) {
+			if matchesCallsignPattern(deCall, pattern) {
 				matched = true
 				break // At least one pattern matched (OR logic)
 			}

@@ -27,13 +27,14 @@ const (
 var spotPrefixBytes = []byte(spotPrefix)
 
 const (
-	recordVersion         = 1
+	recordVersion         = 2
 	recordFixedHeaderSize = 28
 )
 
 const (
 	fieldDXCall = iota
 	fieldDECall
+	fieldDECallStripped
 	fieldMode
 	fieldComment
 	fieldSource
@@ -518,27 +519,28 @@ func (w *Writer) RecentFiltered(limit int, match func(*spot.Spot) bool) ([]*spot
 }
 
 type archiveRecord struct {
-	dxCall     string
-	deCall     string
-	mode       string
-	comment    string
-	source     string
-	sourceNode string
-	confidence string
-	band       string
-	dxGrid     string
-	deGrid     string
-	dxCont     string
-	deCont     string
-	freq       float64
-	report     int
-	hasReport  bool
-	isHuman    bool
-	ttl        uint8
-	dxCQZone   int
-	deCQZone   int
-	dxADIF     int
-	deADIF     int
+	dxCall         string
+	deCall         string
+	deCallStripped string
+	mode           string
+	comment        string
+	source         string
+	sourceNode     string
+	confidence     string
+	band           string
+	dxGrid         string
+	deGrid         string
+	dxCont         string
+	deCont         string
+	freq           float64
+	report         int
+	hasReport      bool
+	isHuman        bool
+	ttl            uint8
+	dxCQZone       int
+	deCQZone       int
+	dxADIF         int
+	deADIF         int
 }
 
 func encodeRecord(s *spot.Spot) []byte {
@@ -549,6 +551,10 @@ func encodeRecord(s *spot.Spot) []byte {
 	deCall := strings.TrimSpace(s.DECallNorm)
 	if deCall == "" {
 		deCall = strings.TrimSpace(s.DECall)
+	}
+	deCallStripped := strings.TrimSpace(s.DECallNormStripped)
+	if deCallStripped == "" {
+		deCallStripped = strings.TrimSpace(s.DECallStripped)
 	}
 	mode := strings.TrimSpace(s.ModeNorm)
 	if mode == "" {
@@ -577,6 +583,7 @@ func encodeRecord(s *spot.Spot) []byte {
 	lengths := [fieldCount]int{
 		len(dxCall),
 		len(deCall),
+		len(deCallStripped),
 		len(mode),
 		len(comment),
 		len(source),
@@ -626,6 +633,7 @@ func encodeRecord(s *spot.Spot) []byte {
 	}
 	writeString(dxCall)
 	writeString(deCall)
+	writeString(deCallStripped)
 	writeString(mode)
 	writeString(comment)
 	writeString(source)
@@ -679,27 +687,28 @@ func decodeRecord(raw []byte) (archiveRecord, error) {
 	}
 
 	return archiveRecord{
-		dxCall:     fields[fieldDXCall],
-		deCall:     fields[fieldDECall],
-		mode:       fields[fieldMode],
-		comment:    fields[fieldComment],
-		source:     fields[fieldSource],
-		sourceNode: fields[fieldSourceNode],
-		confidence: fields[fieldConfidence],
-		band:       fields[fieldBand],
-		dxGrid:     fields[fieldDXGrid],
-		deGrid:     fields[fieldDEGrid],
-		dxCont:     fields[fieldDXCont],
-		deCont:     fields[fieldDECont],
-		freq:       freq,
-		report:     int(report),
-		hasReport:  flags&flagHasReport != 0,
-		isHuman:    flags&flagIsHuman != 0,
-		ttl:        ttl,
-		dxCQZone:   dxCQ,
-		deCQZone:   deCQ,
-		dxADIF:     dxADIF,
-		deADIF:     deADIF,
+		dxCall:         fields[fieldDXCall],
+		deCall:         fields[fieldDECall],
+		deCallStripped: fields[fieldDECallStripped],
+		mode:           fields[fieldMode],
+		comment:        fields[fieldComment],
+		source:         fields[fieldSource],
+		sourceNode:     fields[fieldSourceNode],
+		confidence:     fields[fieldConfidence],
+		band:           fields[fieldBand],
+		dxGrid:         fields[fieldDXGrid],
+		deGrid:         fields[fieldDEGrid],
+		dxCont:         fields[fieldDXCont],
+		deCont:         fields[fieldDECont],
+		freq:           freq,
+		report:         int(report),
+		hasReport:      flags&flagHasReport != 0,
+		isHuman:        flags&flagIsHuman != 0,
+		ttl:            ttl,
+		dxCQZone:       dxCQ,
+		deCQZone:       deCQ,
+		dxADIF:         dxADIF,
+		deADIF:         deADIF,
 	}, nil
 }
 
@@ -713,20 +722,24 @@ func decodeSpot(ts int64, raw []byte) (*spot.Spot, error) {
 		band = spot.FreqToBand(rec.freq)
 	}
 	s := &spot.Spot{
-		DXCall:     rec.dxCall,
-		DECall:     rec.deCall,
-		Frequency:  rec.freq,
-		Mode:       rec.mode,
-		Report:     rec.report,
-		Time:       time.Unix(0, ts).UTC(),
-		Comment:    rec.comment,
-		SourceType: spot.SourceType(rec.source),
-		SourceNode: rec.sourceNode,
-		TTL:        rec.ttl,
-		IsHuman:    rec.isHuman,
-		HasReport:  rec.hasReport,
-		Confidence: rec.confidence,
-		Band:       band,
+		DXCall:         rec.dxCall,
+		DECall:         rec.deCall,
+		DECallStripped: rec.deCallStripped,
+		Frequency:      rec.freq,
+		Mode:           rec.mode,
+		Report:         rec.report,
+		Time:           time.Unix(0, ts).UTC(),
+		Comment:        rec.comment,
+		SourceType:     spot.SourceType(rec.source),
+		SourceNode:     rec.sourceNode,
+		TTL:            rec.ttl,
+		IsHuman:        rec.isHuman,
+		HasReport:      rec.hasReport,
+		Confidence:     rec.confidence,
+		Band:           band,
+	}
+	if rec.deCallStripped != "" {
+		s.DECallNormStripped = rec.deCallStripped
 	}
 	s.DXMetadata = spot.CallMetadata{
 		Grid:      rec.dxGrid,

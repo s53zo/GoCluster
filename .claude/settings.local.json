@@ -15,7 +15,10 @@
       "Bash(git show:*)",
       "Bash(dir:*)",
       "Bash(go test:*)",
-      "Bash(go doc:*)"
+      "Bash(go doc:*)",
+      "Bash(ls:*)",
+      "Bash(file:*)",
+      "Bash(stat:*)"
     ],
     "deny": [],
     "ask": []

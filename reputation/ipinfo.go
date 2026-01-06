@@ -18,21 +18,17 @@ const (
 )
 
 type ipRange4 struct {
-	start         uint32
-	end           uint32
-	asn           string
-	countryCode   string
-	countryName   string
-	continentCode string
+	start       uint32
+	end         uint32
+	asn         string
+	countryCode string
 }
 
 type ipRange6 struct {
-	start         [16]byte
-	end           [16]byte
-	asn           string
-	countryCode   string
-	countryName   string
-	continentCode string
+	start       [16]byte
+	end         [16]byte
+	asn         string
+	countryCode string
 }
 
 type ipinfoIndex struct {
@@ -75,8 +71,6 @@ func LoadIPInfoSnapshot(path string) (*ipinfoIndex, error) {
 	cidrIdx := findHeaderIndex(header, "cidr", "network", "ip_range", "prefix")
 	ipIdx := findHeaderIndex(header, "ip", "address")
 	countryCodeIdx := findHeaderIndex(header, "country_code", "countrycode", "country")
-	countryNameIdx := findHeaderIndex(header, "country_name", "country")
-	continentIdx := findHeaderIndex(header, "continent_code", "continent")
 	asnIdx := findHeaderIndex(header, "asn", "as_number", "as", "as_number")
 
 	if startIdx < 0 && cidrIdx < 0 && ipIdx < 0 {
@@ -103,35 +97,27 @@ func LoadIPInfoSnapshot(path string) (*ipinfoIndex, error) {
 		}
 		asn := normalizeASN(fieldAt(row, asnIdx))
 		countryCode := strings.ToUpper(strings.TrimSpace(fieldAt(row, countryCodeIdx)))
-		countryName := strings.TrimSpace(fieldAt(row, countryNameIdx))
-		continentCode := strings.ToUpper(strings.TrimSpace(fieldAt(row, continentIdx)))
 		asn = internString(stringPool, asn)
 		countryCode = internString(stringPool, countryCode)
-		countryName = internString(stringPool, countryName)
-		continentCode = internString(stringPool, continentCode)
 
 		if start.Is4() {
 			start4 := start.As4()
 			end4 := end.As4()
 			index.v4 = append(index.v4, ipRange4{
-				start:         ip4ToUint32(start4),
-				end:           ip4ToUint32(end4),
-				asn:           asn,
-				countryCode:   countryCode,
-				countryName:   countryName,
-				continentCode: continentCode,
+				start:       ip4ToUint32(start4),
+				end:         ip4ToUint32(end4),
+				asn:         asn,
+				countryCode: countryCode,
 			})
 			continue
 		}
 		start16 := start.As16()
 		end16 := end.As16()
 		index.v6 = append(index.v6, ipRange6{
-			start:         start16,
-			end:           end16,
-			asn:           asn,
-			countryCode:   countryCode,
-			countryName:   countryName,
-			continentCode: continentCode,
+			start:       start16,
+			end:         end16,
+			asn:         asn,
+			countryCode: countryCode,
 		})
 	}
 
@@ -156,12 +142,10 @@ func (idx *ipinfoIndex) lookup(addr netip.Addr) (LookupResult, bool) {
 			return LookupResult{}, false
 		}
 		return LookupResult{
-			ASN:           r.asn,
-			CountryCode:   r.countryCode,
-			CountryName:   r.countryName,
-			ContinentCode: r.continentCode,
-			Source:        ipinfoSource,
-			FetchedAt:     idx.loadedAt,
+			ASN:         r.asn,
+			CountryCode: r.countryCode,
+			Source:      ipinfoSource,
+			FetchedAt:   idx.loadedAt,
 		}, true
 	}
 	ip6 := addr.As16()
@@ -174,12 +158,10 @@ func (idx *ipinfoIndex) lookup(addr netip.Addr) (LookupResult, bool) {
 		return LookupResult{}, false
 	}
 	return LookupResult{
-		ASN:           r.asn,
-		CountryCode:   r.countryCode,
-		CountryName:   r.countryName,
-		ContinentCode: r.continentCode,
-		Source:        ipinfoSource,
-		FetchedAt:     idx.loadedAt,
+		ASN:         r.asn,
+		CountryCode: r.countryCode,
+		Source:      ipinfoSource,
+		FetchedAt:   idx.loadedAt,
 	}, true
 }
 

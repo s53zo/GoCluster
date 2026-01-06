@@ -151,14 +151,32 @@ type TelnetConfig struct {
 type ReputationConfig struct {
 	Enabled bool `yaml:"enabled"`
 
-	// IPinfo Lite snapshot paths and download settings.
-	IPInfoSnapshotPath      string `yaml:"ipinfo_snapshot_path"`
-	IPInfoDownloadPath      string `yaml:"ipinfo_download_path"`
-	IPInfoDownloadURL       string `yaml:"ipinfo_download_url"`
-	IPInfoDownloadToken     string `yaml:"ipinfo_download_token"`
-	IPInfoRefreshUTC        string `yaml:"ipinfo_refresh_utc"`
-	IPInfoDownloadTimeoutMS int    `yaml:"ipinfo_download_timeout_ms"`
-	SnapshotMaxAgeSeconds   int    `yaml:"snapshot_max_age_seconds"`
+	// IPinfo Lite snapshot paths and download settings (optional; can be disabled when
+	// using live API only).
+	IPInfoSnapshotPath         string `yaml:"ipinfo_snapshot_path"`
+	IPInfoDownloadPath         string `yaml:"ipinfo_download_path"`
+	IPInfoDownloadURL          string `yaml:"ipinfo_download_url"`
+	IPInfoDownloadToken        string `yaml:"ipinfo_download_token"`
+	IPInfoRefreshUTC           string `yaml:"ipinfo_refresh_utc"`
+	IPInfoDownloadTimeoutMS    int    `yaml:"ipinfo_download_timeout_ms"`
+	IPInfoImportTimeoutMS      int    `yaml:"ipinfo_import_timeout_ms"`
+	SnapshotMaxAgeSeconds      int    `yaml:"snapshot_max_age_seconds"`
+	IPInfoDownloadEnabled      bool   `yaml:"ipinfo_download_enabled"`
+	IPInfoDeleteCSVAfterImport bool   `yaml:"ipinfo_delete_csv_after_import"`
+	IPInfoKeepGzip             bool   `yaml:"ipinfo_keep_gzip"`
+
+	// IPinfo Pebble store (on-disk index).
+	IPInfoPebblePath     string `yaml:"ipinfo_pebble_path"`
+	IPInfoPebbleCacheMB  int    `yaml:"ipinfo_pebble_cache_mb"`
+	IPInfoPebbleLoadIPv4 bool   `yaml:"ipinfo_pebble_load_ipv4"`
+	IPInfoPebbleCleanup  bool   `yaml:"ipinfo_pebble_cleanup"`
+	IPInfoPebbleCompact  bool   `yaml:"ipinfo_pebble_compact"`
+
+	// IPinfo live API fallback.
+	IPInfoAPIEnabled   bool   `yaml:"ipinfo_api_enabled"`
+	IPInfoAPIToken     string `yaml:"ipinfo_api_token"`
+	IPInfoAPIBaseURL   string `yaml:"ipinfo_api_base_url"`
+	IPInfoAPITimeoutMS int    `yaml:"ipinfo_api_timeout_ms"`
 
 	// Cymru DNS fallback settings.
 	FallbackTeamCymru       bool `yaml:"fallback_team_cymru"`
@@ -241,7 +259,7 @@ type RBNConfig struct {
 	Name     string `yaml:"name"`
 	// TelnetTransport selects the telnet parser/negotiation backend ("native" or "ziutek").
 	TelnetTransport string `yaml:"telnet_transport"`
-	KeepSSIDSuffix  bool   `yaml:"keep_ssid_suffix"`  // when true, retain -# SSIDs for dedup/call-correction
+	KeepSSIDSuffix  bool   `yaml:"keep_ssid_suffix"`  // when false, compute stripped DE calls for telnet/archive/filters
 	SlotBuffer      int    `yaml:"slot_buffer"`       // size of ingest slot buffer between telnet reader and pipeline
 	KeepaliveSec    int    `yaml:"keepalive_seconds"` // optional periodic CRLF to keep idle sessions alive (0 disables)
 }
@@ -1409,11 +1427,14 @@ func Load(path string) (*Config, error) {
 		if strings.TrimSpace(cfg.Reputation.IPInfoSnapshotPath) == "" {
 			cfg.Reputation.IPInfoSnapshotPath = "data/ipinfo/location.csv"
 		}
+		if strings.TrimSpace(cfg.Reputation.IPInfoAPIBaseURL) == "" {
+			cfg.Reputation.IPInfoAPIBaseURL = "https://ipinfo.io"
+		}
 		if strings.TrimSpace(cfg.Reputation.IPInfoDownloadPath) == "" {
-			cfg.Reputation.IPInfoDownloadPath = "data/ipinfo/location.csv.gz"
+			cfg.Reputation.IPInfoDownloadPath = "data/ipinfo/ipinfo_lite.csv.gz"
 		}
 		if strings.TrimSpace(cfg.Reputation.IPInfoDownloadURL) == "" {
-			cfg.Reputation.IPInfoDownloadURL = "https://ipinfo.io/data/location.csv.gz?token=$TOKEN"
+			cfg.Reputation.IPInfoDownloadURL = "https://ipinfo.io/data/ipinfo_lite.csv.gz?token=$TOKEN"
 		}
 		if strings.TrimSpace(cfg.Reputation.IPInfoDownloadToken) == "" {
 			cfg.Reputation.IPInfoDownloadToken = "8a74cd36c1905b"
@@ -1424,14 +1445,41 @@ func Load(path string) (*Config, error) {
 		if cfg.Reputation.IPInfoDownloadTimeoutMS <= 0 {
 			cfg.Reputation.IPInfoDownloadTimeoutMS = 15000
 		}
+		if cfg.Reputation.IPInfoImportTimeoutMS <= 0 {
+			cfg.Reputation.IPInfoImportTimeoutMS = 600000
+		}
 		if cfg.Reputation.SnapshotMaxAgeSeconds <= 0 {
 			cfg.Reputation.SnapshotMaxAgeSeconds = 26 * 3600
+		}
+		if strings.TrimSpace(cfg.Reputation.IPInfoPebblePath) == "" {
+			cfg.Reputation.IPInfoPebblePath = "data/ipinfo/pebble"
+		}
+		if cfg.Reputation.IPInfoPebbleCacheMB <= 0 {
+			cfg.Reputation.IPInfoPebbleCacheMB = 64
+		}
+		if !yamlKeyPresent(raw, "reputation", "ipinfo_pebble_load_ipv4") {
+			cfg.Reputation.IPInfoPebbleLoadIPv4 = true
+		}
+		if !yamlKeyPresent(raw, "reputation", "ipinfo_delete_csv_after_import") {
+			cfg.Reputation.IPInfoDeleteCSVAfterImport = true
+		}
+		if !yamlKeyPresent(raw, "reputation", "ipinfo_keep_gzip") {
+			cfg.Reputation.IPInfoKeepGzip = true
+		}
+		if !yamlKeyPresent(raw, "reputation", "ipinfo_pebble_cleanup") {
+			cfg.Reputation.IPInfoPebbleCleanup = true
+		}
+		if !yamlKeyPresent(raw, "reputation", "ipinfo_pebble_compact") {
+			cfg.Reputation.IPInfoPebbleCompact = true
+		}
+		if cfg.Reputation.IPInfoAPITimeoutMS <= 0 {
+			cfg.Reputation.IPInfoAPITimeoutMS = 250
 		}
 		if cfg.Reputation.CymruLookupTimeoutMS <= 0 {
 			cfg.Reputation.CymruLookupTimeoutMS = 250
 		}
 		if cfg.Reputation.CymruCacheTTLSeconds <= 0 {
-			cfg.Reputation.CymruCacheTTLSeconds = 3600
+			cfg.Reputation.CymruCacheTTLSeconds = 86400
 		}
 		if cfg.Reputation.CymruNegativeTTLSeconds <= 0 {
 			cfg.Reputation.CymruNegativeTTLSeconds = 300
@@ -1497,7 +1545,7 @@ func Load(path string) (*Config, error) {
 			cfg.Reputation.PrefixMaxEntries = 200000
 		}
 		if cfg.Reputation.LookupCacheTTLSeconds <= 0 {
-			cfg.Reputation.LookupCacheTTLSeconds = 3600
+			cfg.Reputation.LookupCacheTTLSeconds = 86400
 		}
 		if cfg.Reputation.LookupCacheMaxEntries <= 0 {
 			cfg.Reputation.LookupCacheMaxEntries = 200000
@@ -1609,9 +1657,11 @@ func (c *Config) Print() {
 		c.Telnet.ClientBuffer,
 		c.Telnet.SkipHandshake)
 	if c.Reputation.Enabled {
-		fmt.Printf("Reputation: enabled (ipinfo=%s cymru=%t wait=%ds ramp=%ds per_band=%d..%d total=%d..%d prefix4=%d@%d/s prefix6=%d@%d/s)\n",
-			c.Reputation.IPInfoSnapshotPath,
+		fmt.Printf("Reputation: enabled (cymru=%t api=%t pebble=%s v4_mem=%t wait=%ds ramp=%ds per_band=%d..%d total=%d..%d prefix4=%d@%d/s prefix6=%d@%d/s)\n",
 			c.Reputation.FallbackTeamCymru,
+			c.Reputation.IPInfoAPIEnabled,
+			c.Reputation.IPInfoPebblePath,
+			c.Reputation.IPInfoPebbleLoadIPv4,
 			c.Reputation.InitialWaitSeconds,
 			c.Reputation.RampWindowSeconds,
 			c.Reputation.PerBandStart,

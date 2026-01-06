@@ -1612,6 +1612,16 @@ func processOutputSpots(
 			if gridUpdate != nil {
 			}
 
+			if !broadcastKeepSSID {
+				base := s.DECallNorm
+				if base == "" {
+					base = s.DECall
+				}
+				stripped := collapseSSIDForBroadcast(base)
+				s.DECallStripped = stripped
+				s.DECallNormStripped = stripped
+			}
+
 			buf.Add(s)
 
 			// Ensure DE metadata is populated before secondary dedupe. Upstream CTY lookups
@@ -1691,14 +1701,7 @@ func processOutputSpots(
 			}
 
 			if telnet != nil {
-				toSend := s
-				if !broadcastKeepSSID && s != nil {
-					toSend = cloneSpotForBroadcast(s)
-					collapsed := collapseSSIDForBroadcast(s.DECall)
-					toSend.DECall = collapsed
-					toSend.DECallNorm = collapsed
-				}
-				telnet.BroadcastSpot(toSend)
+				telnet.BroadcastSpot(s)
 			}
 			if peerManager != nil && s.SourceType != spot.SourceUpstream && s.SourceType != spot.SourcePeer {
 				peerSpot := cloneSpotForPeerPublish(s)
@@ -1775,7 +1778,7 @@ func startPipelineHealthMonitor(ctx context.Context, dedup *dedup.Deduplicator, 
 // It preserves non-numeric suffixes.
 // Purpose: Normalize spotter SSIDs before telnet broadcast.
 // Key aspects: Collapses numeric suffixes while preserving non-numeric tokens.
-// Upstream: cloneSpotForBroadcast.
+// Upstream: processOutputSpots.
 // Downstream: stripNumericSSID.
 func collapseSSIDForBroadcast(call string) string {
 	call = strings.TrimSpace(call)
@@ -1807,47 +1810,6 @@ func stripNumericSSID(call string) string {
 	return call[:idx]
 }
 
-// Purpose: Clone a spot prior to broadcast to avoid mutating shared state.
-// Key aspects: Copies fields that downstream may alter (SSID collapse).
-// Upstream: processOutputSpots broadcast path.
-// Downstream: spot.Clone and manual field copies.
-func cloneSpotForBroadcast(src *spot.Spot) *spot.Spot {
-	if src == nil {
-		return nil
-	}
-	return &spot.Spot{
-		ID:              src.ID,
-		DXCall:          src.DXCall,
-		DECall:          src.DECall,
-		Frequency:       src.Frequency,
-		Band:            src.Band,
-		Mode:            src.Mode,
-		Report:          src.Report,
-		HasReport:       src.HasReport,
-		Time:            src.Time,
-		Comment:         src.Comment,
-		SourceType:      src.SourceType,
-		SourceNode:      src.SourceNode,
-		SpotterIP:       src.SpotterIP,
-		TTL:             src.TTL,
-		IsHuman:         src.IsHuman,
-		IsBeacon:        src.IsBeacon,
-		DXMetadata:      src.DXMetadata,
-		DEMetadata:      src.DEMetadata,
-		Confidence:      src.Confidence,
-		ModeNorm:        src.ModeNorm,
-		BandNorm:        src.BandNorm,
-		DXCallNorm:      src.DXCallNorm,
-		DECallNorm:      src.DECallNorm,
-		DXContinentNorm: src.DXContinentNorm,
-		DEContinentNorm: src.DEContinentNorm,
-		DXGridNorm:      src.DXGridNorm,
-		DEGridNorm:      src.DEGridNorm,
-		DXGrid2:         src.DXGrid2,
-		DEGrid2:         src.DEGrid2,
-	}
-}
-
 // cloneSpotForPeerPublish ensures manual spots carry an inferred mode to peers
 // even when the user omitted a comment. Peers only see the comment field in
 // PC61/PC11 frames, so we fall back to the inferred mode when the comment is
@@ -1866,7 +1828,39 @@ func cloneSpotForPeerPublish(src *spot.Spot) *spot.Spot {
 	if mode == "" {
 		return src
 	}
-	clone := cloneSpotForBroadcast(src)
+	clone := &spot.Spot{
+		ID:                 src.ID,
+		DXCall:             src.DXCall,
+		DECall:             src.DECall,
+		Frequency:          src.Frequency,
+		Band:               src.Band,
+		Mode:               src.Mode,
+		Report:             src.Report,
+		HasReport:          src.HasReport,
+		Time:               src.Time,
+		Comment:            src.Comment,
+		SourceType:         src.SourceType,
+		SourceNode:         src.SourceNode,
+		SpotterIP:          src.SpotterIP,
+		TTL:                src.TTL,
+		IsHuman:            src.IsHuman,
+		IsBeacon:           src.IsBeacon,
+		DXMetadata:         src.DXMetadata,
+		DEMetadata:         src.DEMetadata,
+		Confidence:         src.Confidence,
+		ModeNorm:           src.ModeNorm,
+		BandNorm:           src.BandNorm,
+		DXCallNorm:         src.DXCallNorm,
+		DECallNorm:         src.DECallNorm,
+		DXContinentNorm:    src.DXContinentNorm,
+		DEContinentNorm:    src.DEContinentNorm,
+		DXGridNorm:         src.DXGridNorm,
+		DEGridNorm:         src.DEGridNorm,
+		DXGrid2:            src.DXGrid2,
+		DEGrid2:            src.DEGrid2,
+		DECallStripped:     src.DECallStripped,
+		DECallNormStripped: src.DECallNormStripped,
+	}
 	clone.Comment = mode
 	return clone
 }
