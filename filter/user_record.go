@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,6 +19,8 @@ type UserRecord struct {
 	Filter    `yaml:",inline"`
 	RecentIPs []string `yaml:"recent_ips,omitempty"`
 	Dialect   string   `yaml:"dialect,omitempty"`
+	// LastLoginUTC records the timestamp of the previous successful login (UTC).
+	LastLoginUTC time.Time `yaml:"last_login_utc,omitempty"`
 }
 
 // Purpose: Load a persisted user record by callsign.
@@ -67,6 +70,36 @@ func TouchUserRecordIP(callsign, ip string) (*UserRecord, bool, error) {
 		return nil, created, err
 	}
 	return record, created, nil
+}
+
+// Purpose: Update login metadata (timestamp + IP) while returning the prior values.
+// Key aspects: Persists the new state and provides previous login/IP for templates.
+// Upstream: Telnet login handling.
+// Downstream: SaveUserRecord.
+func TouchUserRecordLogin(callsign, ip string, loginTime time.Time) (record *UserRecord, created bool, prevLogin time.Time, prevIP string, err error) {
+	callsign = strings.TrimSpace(callsign)
+	if callsign == "" {
+		return nil, false, time.Time{}, "", errors.New("empty callsign")
+	}
+	record, err = LoadUserRecord(callsign)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			record = &UserRecord{Filter: *NewFilter(), Dialect: "go"}
+			created = true
+		} else {
+			return nil, false, time.Time{}, "", err
+		}
+	}
+	if len(record.RecentIPs) > 0 {
+		prevIP = strings.TrimSpace(record.RecentIPs[0])
+	}
+	prevLogin = record.LastLoginUTC
+	record.RecentIPs = UpdateRecentIPs(record.RecentIPs, ip)
+	record.LastLoginUTC = loginTime
+	if err := SaveUserRecord(callsign, record); err != nil {
+		return nil, created, time.Time{}, "", err
+	}
+	return record, created, prevLogin, prevIP, nil
 }
 
 // Purpose: Persist a user record to disk.

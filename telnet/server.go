@@ -37,6 +37,7 @@ import (
 	"log"
 	"net"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -101,6 +102,7 @@ type Server struct {
 	commandLineLimit  int                  // Maximum bytes accepted for post-login commands
 	filterEngine      *filterCommandEngine // Table-driven filter command parser/executor
 	reputationGate    *reputation.Gate     // Optional reputation gate for login metadata
+	startTime         time.Time            // Process start time for uptime tokens
 }
 
 // Client represents a connected telnet client session.
@@ -365,6 +367,7 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		commandLineLimit:  config.CommandLineLimit,
 		filterEngine:      newFilterCommandEngine(),
 		reputationGate:    opts.ReputationGate,
+		startTime:         time.Now().UTC(),
 	}
 }
 
@@ -871,9 +874,9 @@ func (s *Server) handleClient(conn net.Conn) {
 
 	s.negotiateTelnet(client)
 
-	// Send welcome message
-	now := time.Now().UTC()
-	client.Send(applyWelcomeTokens(s.welcomeMessage, now))
+	// Send welcome message with template tokens (uptime, user count, etc.).
+	loginTime := time.Now().UTC()
+	client.Send(applyTemplateTokens(s.welcomeMessage, s.preLoginTemplateData(loginTime)))
 	client.Send("\r\nEnter your callsign:\r\n")
 
 	var callsign string
@@ -919,7 +922,7 @@ func (s *Server) handleClient(conn net.Conn) {
 
 	// Capture the client's IP immediately after login so it is persisted before
 	// any other session state mutates.
-	record, created, err := filter.TouchUserRecordIP(client.callsign, spotterIP(client.address))
+	record, created, prevLogin, prevIP, err := filter.TouchUserRecordLogin(client.callsign, spotterIP(client.address), loginTime)
 	if err == nil {
 		client.filter = &record.Filter
 		client.recentIPs = record.RecentIPs
@@ -944,7 +947,7 @@ func (s *Server) handleClient(conn net.Conn) {
 	defer s.unregisterClient(client)
 
 	// Send login confirmation
-	greeting := formatGreeting(s.greetingTemplate, client.callsign, s.clusterCall)
+	greeting := formatGreeting(s.greetingTemplate, s.postLoginTemplateData(loginTime, client, prevLogin, prevIP))
 	if strings.TrimSpace(greeting) == "" {
 		greeting = fmt.Sprintf("Hello %s, you are now connected.", client.callsign)
 	}
@@ -1064,35 +1067,131 @@ func sendTelnetOption(conn net.Conn, command, option byte) {
 	_ = conn.SetWriteDeadline(time.Time{})
 }
 
-// formatGreeting replaces placeholders with the client's callsign and the cluster call.
-func formatGreeting(tmpl, call, cluster string) string {
+// templateData holds contextual values that can be substituted into operator-configured templates.
+type templateData struct {
+	now       time.Time
+	startTime time.Time
+	userCount int
+	callsign  string
+	cluster   string
+	lastLogin time.Time
+	lastIP    string
+}
+
+// formatGreeting replaces placeholders using the provided template data.
+func formatGreeting(tmpl string, data templateData) string {
 	if tmpl == "" {
 		return ""
 	}
-	out := strings.ReplaceAll(tmpl, "<CALL>", call)
-	out = strings.ReplaceAll(out, "<CLUSTER>", cluster)
-	// Allow date/time tokens in the greeting as well.
-	return applyWelcomeTokens(out, time.Now().UTC())
+	return applyTemplateTokens(tmpl, data)
 }
 
-// applyWelcomeTokens replaces simple time/date placeholders in the welcome message.
+// applyWelcomeTokens remains for compatibility; it now delegates to the full token replacer.
+func applyWelcomeTokens(msg string, now time.Time) string {
+	return applyTemplateTokens(msg, templateData{now: now})
+}
+
+// applyTemplateTokens replaces supported placeholders in operator-provided templates.
 // Tokens:
 //
-//	<DATE>      -> YYYY-MM-DD (UTC)
-//	<TIME>      -> HH:MM:SS (UTC)
-//	<DATETIME>  -> YYYY-MM-DD HH:MM:SS UTC
-func applyWelcomeTokens(msg string, now time.Time) string {
+//	<CALL>        -> client callsign
+//	<CLUSTER>     -> cluster/node ID
+//	<DATE>        -> DD-Mon-YYYY (UTC)
+//	<TIME>        -> HH:MM:SS (UTC)
+//	<DATETIME>    -> DD-Mon-YYYY HH:MM:SS UTC
+//	<UPTIME>      -> uptime since server start (e.g., 3d 04:18:22 or 00:03:05)
+//	<USER_COUNT>  -> current connected user count
+//	<LAST_LOGIN>  -> previous login timestamp or "(first login)"
+//	<LAST_IP>     -> previous login IP or "(unknown)"
+func applyTemplateTokens(msg string, data templateData) string {
 	if msg == "" {
 		return msg
+	}
+	now := data.now
+	if now.IsZero() {
+		now = time.Now().UTC()
 	}
 	date := now.Format("02-Jan-2006")
 	tm := now.Format("15:04:05")
 	datetime := now.Format("02-Jan-2006 15:04:05 UTC")
 
-	msg = strings.ReplaceAll(msg, "<DATETIME>", datetime)
-	msg = strings.ReplaceAll(msg, "<DATE>", date)
-	msg = strings.ReplaceAll(msg, "<TIME>", tm)
-	return msg
+	uptime := formatUptime(now, data.startTime)
+	if uptime == "" {
+		uptime = "unknown"
+	}
+	userCount := "0"
+	if data.userCount > 0 {
+		userCount = strconv.Itoa(data.userCount)
+	}
+	lastLogin := "(first login)"
+	if !data.lastLogin.IsZero() {
+		lastLogin = data.lastLogin.UTC().Format("02-Jan-2006 15:04:05 UTC")
+	}
+	lastIP := strings.TrimSpace(data.lastIP)
+	if lastIP == "" {
+		lastIP = "(unknown)"
+	}
+
+	replacer := strings.NewReplacer(
+		"<CALL>", data.callsign,
+		"<CLUSTER>", data.cluster,
+		"<DATETIME>", datetime,
+		"<DATE>", date,
+		"<TIME>", tm,
+		"<UPTIME>", uptime,
+		"<USER_COUNT>", userCount,
+		"<LAST_LOGIN>", lastLogin,
+		"<LAST_IP>", lastIP,
+	)
+	return replacer.Replace(msg)
+}
+
+func formatUptime(now, start time.Time) string {
+	if start.IsZero() || now.Before(start) {
+		return ""
+	}
+	dur := now.Sub(start).Round(time.Second)
+	days := dur / (24 * time.Hour)
+	dur -= days * 24 * time.Hour
+	hours := dur / time.Hour
+	dur -= hours * time.Hour
+	minutes := dur / time.Minute
+	dur -= minutes * time.Minute
+	seconds := dur / time.Second
+	if days > 0 {
+		return fmt.Sprintf("%dd %02d:%02d:%02d", days, hours, minutes, seconds)
+	}
+	return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
+}
+
+func (s *Server) preLoginTemplateData(now time.Time) templateData {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return templateData{
+		now:       now,
+		startTime: s.startTime,
+		userCount: s.GetClientCount(),
+	}
+}
+
+func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin time.Time, prevIP string) templateData {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	callsign := ""
+	if client != nil {
+		callsign = client.callsign
+	}
+	return templateData{
+		now:       now,
+		startTime: s.startTime,
+		userCount: s.GetClientCount(),
+		callsign:  callsign,
+		cluster:   s.clusterCall,
+		lastLogin: prevLogin,
+		lastIP:    prevIP,
+	}
 }
 
 // spotSender sends spots and bulletins to the client from their buffered channels.

@@ -121,9 +121,11 @@ type TelnetConfig struct {
 	Port              int    `yaml:"port"`
 	TLSEnabled        bool   `yaml:"tls_enabled"`
 	MaxConnections    int    `yaml:"max_connections"`
-	WelcomeMessage    string `yaml:"welcome_message"`
+	// WelcomeMessage is sent before login; supports <DATE>, <TIME>, <DATETIME>, <UPTIME>, and <USER_COUNT>.
+	WelcomeMessage string `yaml:"welcome_message"`
 	DuplicateLoginMsg string `yaml:"duplicate_login_message"`
-	LoginGreeting     string `yaml:"login_greeting"` // Supports <CALL> and <CLUSTER> substitution
+	// LoginGreeting is sent after successful login; supports <CALL>, <CLUSTER>, <DATE>, <TIME>, <DATETIME>, <UPTIME>, <USER_COUNT>, <LAST_LOGIN>, and <LAST_IP>.
+	LoginGreeting string `yaml:"login_greeting"`
 	// Transport selects the telnet parser/negotiation backend ("native" or "ziutek").
 	Transport string `yaml:"transport"`
 	// EchoMode controls whether the server echoes input or requests local echo.

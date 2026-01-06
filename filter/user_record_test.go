@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -65,6 +66,53 @@ func TestTouchUserRecordIP(t *testing.T) {
 	}
 	if created {
 		t.Fatalf("expected existing record to be reused")
+	}
+	want := []string{"198.51.100.10", "203.0.113.9"}
+	if !reflect.DeepEqual(record.RecentIPs, want) {
+		t.Fatalf("expected %v, got %v", want, record.RecentIPs)
+	}
+}
+
+func TestTouchUserRecordLogin(t *testing.T) {
+	tmp := t.TempDir()
+	orig := UserDataDir
+	UserDataDir = tmp
+	t.Cleanup(func() { UserDataDir = orig })
+
+	firstLogin := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	record, created, prevLogin, prevIP, err := TouchUserRecordLogin("k3to", "203.0.113.9", firstLogin)
+	if err != nil {
+		t.Fatalf("TouchUserRecordLogin failed: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected new record to be created")
+	}
+	if !record.LastLoginUTC.Equal(firstLogin) {
+		t.Fatalf("expected last login %v, got %v", firstLogin, record.LastLoginUTC)
+	}
+	if !prevLogin.IsZero() {
+		t.Fatalf("expected zero previous login, got %v", prevLogin)
+	}
+	if prevIP != "" {
+		t.Fatalf("expected empty previous IP, got %q", prevIP)
+	}
+
+	secondLogin := firstLogin.Add(2 * time.Hour)
+	record, created, prevLogin, prevIP, err = TouchUserRecordLogin("k3to", "198.51.100.10", secondLogin)
+	if err != nil {
+		t.Fatalf("TouchUserRecordLogin failed: %v", err)
+	}
+	if created {
+		t.Fatalf("expected existing record to be reused")
+	}
+	if !record.LastLoginUTC.Equal(secondLogin) {
+		t.Fatalf("expected last login %v, got %v", secondLogin, record.LastLoginUTC)
+	}
+	if !prevLogin.Equal(firstLogin) {
+		t.Fatalf("expected previous login %v, got %v", firstLogin, prevLogin)
+	}
+	if prevIP != "203.0.113.9" {
+		t.Fatalf("expected previous IP %q, got %q", "203.0.113.9", prevIP)
 	}
 	want := []string{"198.51.100.10", "203.0.113.9"}
 	if !reflect.DeepEqual(record.RecentIPs, want) {
