@@ -2,6 +2,7 @@ package main
 
 import (
 	"container/list"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ type ingestValidator struct {
 	dedupInput         chan<- *spot.Spot
 	ctyLookup          func() *cty.CTYDatabase
 	unlicensedReporter func(source, role, call, mode string, freq float64)
+	dropReporter       func(line string)
 	isLicensedUS       func(call string) bool
 	ctyCache           *ctyInfoCache
 	ctyDropDXCounter   rateCounter
@@ -39,6 +41,7 @@ func newIngestValidator(
 	ctyLookup func() *cty.CTYDatabase,
 	dedupInput chan<- *spot.Spot,
 	unlicensedReporter func(source, role, call, mode string, freq float64),
+	dropReporter func(line string),
 	cacheSize int,
 	cacheTTL time.Duration,
 ) *ingestValidator {
@@ -51,6 +54,7 @@ func newIngestValidator(
 		dedupInput:         dedupInput,
 		ctyLookup:          ctyLookup,
 		unlicensedReporter: unlicensedReporter,
+		dropReporter:       dropReporter,
 		isLicensedUS:       uls.IsLicensedUS,
 		ctyCache:           newCTYInfoCache(cacheSize, cacheTTL),
 		ctyDropDXCounter:   newRateCounter(defaultIngestCTYLogInterval),
@@ -202,7 +206,12 @@ func (v *ingestValidator) logCTYDrop(role, call string, s *spot.Spot) {
 		counter = &v.ctyDropDECounter
 	}
 	if count, ok := counter.Inc(); ok {
-		log.Printf("CTY drop: unknown %s %s at %.1f kHz (source=%s total=%d)", role, call, s.Frequency, ingestSourceLabel(s), count)
+		line := fmt.Sprintf("CTY drop: unknown %s %s at %.1f kHz (source=%s total=%d)", role, call, s.Frequency, ingestSourceLabel(s), count)
+		if v.dropReporter != nil {
+			v.dropReporter(line)
+			return
+		}
+		log.Print(line)
 	}
 }
 

@@ -542,6 +542,7 @@ func main() {
 
 	// Create stats tracker
 	statsTracker := stats.NewTracker()
+	dropReporter := makeDroppedReporter(ui)
 	unlicensedReporter := makeUnlicensedReporter(ui, statsTracker)
 
 	var repGate *reputation.Gate
@@ -553,7 +554,7 @@ func main() {
 		} else {
 			repGate = gate
 			repGate.Start(ctx)
-			repDropReporter = makeReputationDropReporter(ui, statsTracker, cfg.Reputation)
+			repDropReporter = makeReputationDropReporter(dropReporter, statsTracker, cfg.Reputation)
 		}
 	}
 
@@ -706,7 +707,7 @@ func main() {
 	}
 
 	dedupInput := deduplicator.GetInputChannel()
-	ingestValidator := newIngestValidator(ctyLookup, dedupInput, unlicensedReporter, cfg.PSKReporter.CTYCacheSize, ingestCTYCacheTTL)
+	ingestValidator := newIngestValidator(ctyLookup, dedupInput, unlicensedReporter, dropReporter, cfg.PSKReporter.CTYCacheSize, ingestCTYCacheTTL)
 	ingestValidator.Start()
 	ingestInput := ingestValidator.Input()
 
@@ -747,7 +748,7 @@ func main() {
 	// Start peering manager (DXSpider PC protocol) if enabled.
 	var peerManager *peer.Manager
 	if cfg.Peering.Enabled {
-		pm, err := peer.NewManager(cfg.Peering, cfg.Peering.LocalCallsign, ingestInput, cfg.SpotPolicy.MaxAgeSeconds)
+		pm, err := peer.NewManager(cfg.Peering, cfg.Peering.LocalCallsign, ingestInput, cfg.SpotPolicy.MaxAgeSeconds, dropReporter)
 		if err != nil {
 			log.Fatalf("Failed to init peering manager: %v", err)
 		}
@@ -1054,11 +1055,28 @@ func makeUnlicensedReporter(dash uiSurface, tracker *stats.Tracker) func(source,
 	}
 }
 
+// Purpose: Build a reporter callback for dropped events.
+// Key aspects: Routes to dropped pane when UI is active, otherwise logs.
+// Upstream: CTY/PC61/reputation drop paths.
+// Downstream: dash.AppendDropped and log.Print.
+func makeDroppedReporter(dash uiSurface) func(line string) {
+	return func(line string) {
+		if line == "" {
+			return
+		}
+		if dash != nil {
+			dash.AppendDropped(line)
+			return
+		}
+		log.Print(line)
+	}
+}
+
 // Purpose: Build a reporter for reputation gate drops.
-// Key aspects: Updates counters and optionally appends to the system pane.
+// Key aspects: Updates counters and routes to the dropped pane or logs.
 // Upstream: Reputation gate in telnet command path.
-// Downstream: stats tracker and UI/system logs.
-func makeReputationDropReporter(dash uiSurface, tracker *stats.Tracker, cfg config.ReputationConfig) func(reputation.DropEvent) {
+// Downstream: stats tracker and dropped/system logs.
+func makeReputationDropReporter(dropReporter func(string), tracker *stats.Tracker, cfg config.ReputationConfig) func(reputation.DropEvent) {
 	if tracker == nil {
 		return nil
 	}
@@ -1075,8 +1093,8 @@ func makeReputationDropReporter(dash uiSurface, tracker *stats.Tracker, cfg conf
 			}
 		}
 		line := formatReputationDropLine(ev)
-		if dash != nil {
-			dash.AppendSystem(line)
+		if dropReporter != nil {
+			dropReporter(line)
 			return
 		}
 		log.Print(line)

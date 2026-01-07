@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +37,7 @@ type Manager struct {
 	directMessage     func(to, line string)
 	reconnects        atomic.Uint64
 	userCountFn       func() int
+	dropReporter      func(line string)
 }
 
 // pc92Work wraps an inbound PC92 frame with the time it was observed so topology
@@ -56,7 +58,7 @@ const (
 	defaultLegacyQueue = 64
 )
 
-func NewManager(cfg config.PeeringConfig, localCall string, ingest chan<- *spot.Spot, maxAgeSeconds int) (*Manager, error) {
+func NewManager(cfg config.PeeringConfig, localCall string, ingest chan<- *spot.Spot, maxAgeSeconds int, dropReporter func(string)) (*Manager, error) {
 	if strings.TrimSpace(localCall) == "" {
 		return nil, fmt.Errorf("peering local callsign is empty")
 	}
@@ -95,6 +97,7 @@ func NewManager(cfg config.PeeringConfig, localCall string, ingest chan<- *spot.
 		allowIPs:      allowIPs,
 		allowCalls:    allowCalls,
 		dedupe:        newDedupeCache(10 * time.Minute),
+		dropReporter:  dropReporter,
 	}, nil
 }
 
@@ -212,6 +215,10 @@ func (m *Manager) HandleFrame(frame *Frame, sess *session) {
 	case "PC26", "PC11", "PC61":
 		spotEntry, err := parseSpotFromFrame(frame, sess.remoteCall)
 		if err != nil {
+			if frame.Type == "PC61" {
+				m.reportDrop(formatPC61DropLine(frame, sess, err))
+				return
+			}
 			log.Printf("Peering: parse %s from %s failed: %v", frame.Type, sessionLabel(sess), err)
 			return
 		}
@@ -257,6 +264,87 @@ func (m *Manager) ingestSpot(s *spot.Spot) {
 	case m.ingest <- s:
 	default:
 		log.Printf("Peering: ingest queue full, dropping spot from %s", s.SourceNode)
+	}
+}
+
+// Purpose: Route a drop line to the UI reporter or logs.
+// Key aspects: Uses the optional dropReporter to avoid system log duplication.
+// Upstream: PC61 parse failures.
+// Downstream: dropReporter or log.Print.
+func (m *Manager) reportDrop(line string) {
+	if line == "" {
+		return
+	}
+	if m != nil && m.dropReporter != nil {
+		m.dropReporter(line)
+		return
+	}
+	log.Print(line)
+}
+
+// Purpose: Format a standardized PC61 drop line for the dropped pane.
+// Key aspects: Best-effort extraction of fields; reason is stable for parsing.
+// Upstream: HandleFrame parse errors.
+// Downstream: spot.FreqToBand and spot.NormalizeBand.
+func formatPC61DropLine(frame *Frame, sess *session, err error) string {
+	reason := pc61DropReason(err)
+	dx := "unknown"
+	de := "unknown"
+	freq := 0.0
+	band := "unknown"
+	source := sessionLabel(sess)
+	if frame != nil {
+		fields := frame.payloadFields()
+		if len(fields) > 0 {
+			if parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(fields[0]), 64); parseErr == nil {
+				freq = parsed
+				band = spot.NormalizeBand(spot.FreqToBand(parsed))
+				if band == "" {
+					band = "unknown"
+				}
+			}
+		}
+		if len(fields) > 1 {
+			dx = strings.ToUpper(strings.TrimSpace(fields[1]))
+			if dx == "" {
+				dx = "unknown"
+			}
+		}
+		if len(fields) > 5 {
+			de = strings.ToUpper(strings.TrimSpace(fields[5]))
+			if de == "" {
+				de = "unknown"
+			}
+		}
+		if len(fields) > 6 {
+			origin := strings.TrimSpace(fields[6])
+			if origin != "" {
+				source = origin
+			}
+		}
+	}
+	if source == "" {
+		source = "unknown"
+	}
+	return fmt.Sprintf("PC61 drop: reason=%s de=%s dx=%s band=%s freq=%.1f source=%s", reason, de, dx, band, freq, source)
+}
+
+func pc61DropReason(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "insufficient fields"):
+		return "insufficient_fields"
+	case strings.Contains(msg, "freq parse"):
+		return "freq_parse"
+	case strings.Contains(msg, "invalid dx"):
+		return "invalid_dx"
+	case strings.Contains(msg, "invalid de"):
+		return "invalid_de"
+	default:
+		return "parse_error"
 	}
 }
 

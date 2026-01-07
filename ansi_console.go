@@ -6,34 +6,64 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"dxcluster/config"
+
+	"golang.org/x/term"
 )
 
-// ansiConsole is a lightweight, fixed-buffer console renderer that uses ANSI
-// escape codes. It is selected solely via ui.mode=ansi in the YAML config.
+const (
+	ansiWidth      = 90
+	ansiStatsLines = 12
+	ansiPaneLines  = 10
+	ansiPaneCount  = 5
+	ansiGapLines   = 1
+	ansiTotalRows  = ansiStatsLines + ansiGapLines + (1+ansiPaneLines) + (ansiPaneCount-1)*(1+1+ansiPaneLines)
+	ansiMinRefresh = 16 * time.Millisecond
+)
+
+// ansiConsole is a fixed-layout ANSI renderer for the local console.
+// It is selected solely via ui.mode=ansi in the YAML config.
 type ansiConsole struct {
-	mu        sync.Mutex
-	stats     []string
-	calls     ringPane
-	unlic     ringPane
-	harm      ringPane
-	system    ringPane
-	refresh   time.Duration
-	quit      chan struct{}
-	writer    *ansiWriter
-	isTTY     bool
-	color     bool
-	clear     bool
-	renderBuf bytes.Buffer
-	snapCalls []string
-	snapUnlic []string
-	snapHarm  []string
-	snapSys   []string
-	stopOnce  sync.Once
+	mu      sync.Mutex
+	stats   []string
+	dropped ringPane
+	calls   ringPane
+	unlic   ringPane
+	harm    ringPane
+	system  ringPane
+	refresh time.Duration
+	quit    chan struct{}
+	writer  *ansiWriter
+	isTTY   bool
+	color   bool
+
+	renderCh chan struct{}
+	stopOnce sync.Once
+	disabled atomic.Bool
+
+	snapStats   []string
+	snapDropped []string
+	snapCalls   []string
+	snapUnlic   []string
+	snapHarm    []string
+	snapSys     []string
+	frame       []string
+	lastFrame   []string
+	blankLine   string
+	headerDrop  string
+	headerCall  string
+	headerUnlic string
+	headerHarm  string
+	headerSys   string
+	lastWidth   int
+	lastHeight  int
 }
 
 type ringPane struct {
@@ -43,9 +73,9 @@ type ringPane struct {
 }
 
 // Purpose: Construct the ANSI console renderer when UI output is allowed.
-// Key aspects: Computes pane sizes, clamps refresh interval, and optionally starts refresh loop.
+// Key aspects: Fixed layout, size check, and event-driven render loop.
 // Upstream: main UI selection based on config.
-// Downstream: applyANSIMarkup, new ansiWriter, and refreshLoop goroutine.
+// Downstream: ansiWriter and refreshLoop goroutine.
 func newANSIConsole(uiCfg config.UIConfig, allowRender bool) uiSurface {
 	if !allowRender {
 		return nil
@@ -55,58 +85,65 @@ func newANSIConsole(uiCfg config.UIConfig, allowRender bool) uiSurface {
 	if refresh < 0 {
 		refresh = 0
 	}
-	const minRefresh = 16 * time.Millisecond
-	if refresh > 0 && refresh < minRefresh {
-		log.Printf("UI: clamping refresh interval to %dms (requested %dms too low)", minRefresh/time.Millisecond, refresh/time.Millisecond)
-		refresh = minRefresh
+	if refresh > 0 && refresh < ansiMinRefresh {
+		log.Printf("UI: clamping refresh interval to %dms (requested %dms too low)", ansiMinRefresh/time.Millisecond, refresh/time.Millisecond)
+		refresh = ansiMinRefresh
 	}
 
-	statsLines := uiCfg.PaneLines.Stats
-	if statsLines <= 0 {
-		statsLines = 1
+	width, height, ok := termSize()
+	if !ok {
+		log.Printf("UI: ANSI disabled (terminal size unavailable)")
+		return nil
 	}
-	callsLines := uiCfg.PaneLines.Calls
-	if callsLines <= 0 {
-		callsLines = 1
-	}
-	unlicensedLines := uiCfg.PaneLines.Unlicensed
-	if unlicensedLines <= 0 {
-		unlicensedLines = 1
-	}
-	harmonicLines := uiCfg.PaneLines.Harmonics
-	if harmonicLines <= 0 {
-		harmonicLines = 1
-	}
-	systemLines := uiCfg.PaneLines.System
-	if systemLines <= 0 {
-		systemLines = 1
+	if width < ansiWidth || height < ansiTotalRows {
+		log.Printf("UI: ANSI disabled (terminal too small: %dx%d, need %dx%d)", width, height, ansiWidth, ansiTotalRows)
+		return nil
 	}
 
 	c := &ansiConsole{
-		stats:     make([]string, statsLines),
-		calls:     ringPane{lines: make([]string, callsLines)},
-		unlic:     ringPane{lines: make([]string, unlicensedLines)},
-		harm:      ringPane{lines: make([]string, harmonicLines)},
-		system:    ringPane{lines: make([]string, systemLines)},
-		refresh:   refresh,
-		quit:      make(chan struct{}),
-		isTTY:     true, // caller only constructs when rendering is permitted
-		color:     uiCfg.Color,
-		clear:     uiCfg.ClearScreen,
-		snapCalls: make([]string, callsLines),
-		snapUnlic: make([]string, unlicensedLines),
-		snapHarm:  make([]string, harmonicLines),
-		snapSys:   make([]string, systemLines),
+		stats:       make([]string, ansiStatsLines),
+		dropped:     ringPane{lines: make([]string, ansiPaneLines)},
+		calls:       ringPane{lines: make([]string, ansiPaneLines)},
+		unlic:       ringPane{lines: make([]string, ansiPaneLines)},
+		harm:        ringPane{lines: make([]string, ansiPaneLines)},
+		system:      ringPane{lines: make([]string, ansiPaneLines)},
+		refresh:     refresh,
+		quit:        make(chan struct{}),
+		isTTY:       true, // caller only constructs when rendering is permitted
+		color:       uiCfg.Color,
+		renderCh:    make(chan struct{}, 1),
+		snapStats:   make([]string, ansiStatsLines),
+		snapDropped: make([]string, ansiPaneLines),
+		snapCalls:   make([]string, ansiPaneLines),
+		snapUnlic:   make([]string, ansiPaneLines),
+		snapHarm:    make([]string, ansiPaneLines),
+		snapSys:     make([]string, ansiPaneLines),
+		frame:       make([]string, ansiTotalRows),
+		lastFrame:   make([]string, ansiTotalRows),
+		lastWidth:   width,
+		lastHeight:  height,
 	}
-	c.writer = &ansiWriter{append: c.AppendSystem, color: uiCfg.Color}
 
-	// Only render when a TTY is present and refresh is positive.
-	if c.isTTY && c.refresh > 0 {
+	c.blankLine = formatLine("", ansiWidth, false)
+	c.headerDrop = formatLine("<<<<<<<<<< Dropped >>>>>>>>>>", ansiWidth, false)
+	c.headerCall = formatLine("<<<<<<<<<< Corrected >>>>>>>>>>", ansiWidth, false)
+	c.headerUnlic = formatLine("<<<<<<<<<< Unlicensed >>>>>>>>>>", ansiWidth, false)
+	c.headerHarm = formatLine("<<<<<<<<<< Harmonics >>>>>>>>>>", ansiWidth, false)
+	c.headerSys = formatLine("<<<<<<<<<< System Log >>>>>>>>>>", ansiWidth, false)
+	for i := range c.stats {
+		c.stats[i] = c.blankLine
+	}
+
+	c.writer = &ansiWriter{append: c.AppendSystem}
+
+	// Only render when a TTY is present.
+	if c.isTTY {
 		// Purpose: Run periodic ANSI renders on the configured cadence.
 		// Key aspects: Detached goroutine; exits when Stop closes quit.
 		// Upstream: newANSIConsole.
 		// Downstream: refreshLoop.
 		go c.refreshLoop()
+		c.signalRender()
 	}
 
 	return c
@@ -132,11 +169,14 @@ func (c *ansiConsole) Stop() {
 }
 
 // Purpose: Replace the current stats pane contents.
-// Key aspects: Bounds copy to pane size and clears unused slots.
+// Key aspects: Bounds copy to fixed pane size and pads blank lines.
 // Upstream: stats ticker in main.
-// Downstream: None (mutates in-memory buffers).
+// Downstream: formatLine and render signal.
 func (c *ansiConsole) SetStats(lines []string) {
 	if c == nil {
+		return
+	}
+	if c.disabled.Load() {
 		return
 	}
 	c.mu.Lock()
@@ -144,33 +184,45 @@ func (c *ansiConsole) SetStats(lines []string) {
 	if limit > len(c.stats) {
 		limit = len(c.stats)
 	}
-	copy(c.stats, lines[:limit])
+	for i := 0; i < limit; i++ {
+		c.stats[i] = formatLine(lines[i], ansiWidth, c.color)
+	}
 	for i := limit; i < len(c.stats); i++ {
-		c.stats[i] = ""
+		c.stats[i] = c.blankLine
 	}
 	c.mu.Unlock()
+	c.signalRender()
 }
+
+// Purpose: Append a drop line to the dropped pane.
+// Key aspects: Delegates to the shared ring-buffer append logic.
+// Upstream: drop reporters.
+// Downstream: c.append.
+func (c *ansiConsole) AppendDropped(line string) { c.append(&c.dropped, line) }
 
 // Purpose: Append a call-correction line to the calls pane.
 // Key aspects: Delegates to the shared ring-buffer append logic.
 // Upstream: dashboard/system log writers.
 // Downstream: c.append.
-func (c *ansiConsole) AppendCall(line string)       { c.append(&c.calls, line) }
+func (c *ansiConsole) AppendCall(line string) { c.append(&c.calls, line) }
+
 // Purpose: Append an unlicensed call line to the unlicensed pane.
 // Key aspects: Delegates to the shared ring-buffer append logic.
 // Upstream: unlicensed reporter path.
 // Downstream: c.append.
 func (c *ansiConsole) AppendUnlicensed(line string) { c.append(&c.unlic, line) }
+
 // Purpose: Append a harmonic suppression line to the harmonic pane.
 // Key aspects: Delegates to the shared ring-buffer append logic.
 // Upstream: harmonic suppression path.
 // Downstream: c.append.
-func (c *ansiConsole) AppendHarmonic(line string)   { c.append(&c.harm, line) }
+func (c *ansiConsole) AppendHarmonic(line string) { c.append(&c.harm, line) }
+
 // Purpose: Append a system log line to the system pane.
 // Key aspects: Delegates to the shared ring-buffer append logic.
 // Upstream: log routing for UI mode.
 // Downstream: c.append.
-func (c *ansiConsole) AppendSystem(line string)     { c.append(&c.system, line) }
+func (c *ansiConsole) AppendSystem(line string) { c.append(&c.system, line) }
 
 // Purpose: Provide an io.Writer for system log output.
 // Key aspects: Returns the ANSI writer wrapper or nil when inactive.
@@ -185,42 +237,86 @@ func (c *ansiConsole) SystemWriter() io.Writer {
 
 // Purpose: Append a line to a specific ring pane.
 // Key aspects: Applies markup, wraps index, and caps count.
-// Upstream: AppendCall/AppendUnlicensed/AppendHarmonic/AppendSystem.
-// Downstream: applyANSIMarkup.
+// Upstream: AppendDropped/AppendCall/AppendUnlicensed/AppendHarmonic/AppendSystem.
+// Downstream: formatLine and render signal.
 func (c *ansiConsole) append(pane *ringPane, line string) {
 	if c == nil || pane == nil {
 		return
 	}
-	line = applyANSIMarkup(line, c.color)
+	if c.disabled.Load() {
+		c.writeFallback(line)
+		return
+	}
+	formatted := formatLine(line, ansiWidth, c.color)
 	c.mu.Lock()
 	if len(pane.lines) == 0 {
 		c.mu.Unlock()
 		return
 	}
-	pane.lines[pane.idx] = line
+	pane.lines[pane.idx] = formatted
 	pane.idx = (pane.idx + 1) % len(pane.lines)
 	if pane.count < len(pane.lines) {
 		pane.count++
 	}
 	c.mu.Unlock()
+	c.signalRender()
+}
+
+// Purpose: Signal the render loop to refresh the screen.
+// Key aspects: Non-blocking coalesced notification.
+// Upstream: SetStats and append paths.
+// Downstream: refreshLoop.
+func (c *ansiConsole) signalRender() {
+	if c == nil || !c.isTTY || c.disabled.Load() {
+		return
+	}
+	select {
+	case c.renderCh <- struct{}{}:
+	default:
+	}
 }
 
 // Purpose: Periodic render loop for ANSI console output.
-// Key aspects: Recovers panics, ticks at refresh interval, exits on quit.
+// Key aspects: Coalesces events and enforces min refresh spacing.
 // Upstream: goroutine started in newANSIConsole.
-// Downstream: time.NewTicker and c.render.
+// Downstream: time.NewTimer and c.render.
 func (c *ansiConsole) refreshLoop() {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintf(os.Stderr, "ANSI console panic: %v\n", r)
 		}
 	}()
-	ticker := time.NewTicker(c.refresh)
-	defer ticker.Stop()
+	timer := time.NewTimer(0)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	var pending bool
+	var lastRender time.Time
 	for {
 		select {
-		case <-ticker.C:
+		case <-c.renderCh:
+			if c.refresh <= 0 {
+				c.render()
+				lastRender = time.Now()
+				pending = false
+				continue
+			}
+			now := time.Now()
+			if lastRender.IsZero() || now.Sub(lastRender) >= c.refresh {
+				c.render()
+				lastRender = time.Now()
+				pending = false
+				continue
+			}
+			if !pending {
+				delay := c.refresh - now.Sub(lastRender)
+				timer.Reset(delay)
+				pending = true
+			}
+		case <-timer.C:
+			pending = false
 			c.render()
+			lastRender = time.Now()
 		case <-c.quit:
 			return
 		}
@@ -228,62 +324,161 @@ func (c *ansiConsole) refreshLoop() {
 }
 
 // Purpose: Render the current snapshot to stdout.
-// Key aspects: Copies panes under lock, optionally clears screen, writes panes.
-// Upstream: refreshLoop (and any direct callers).
-// Downstream: snapshotPane, writePane, renderBuf.WriteTo.
+// Key aspects: Copies panes under lock and emits row-diff updates.
+// Upstream: refreshLoop.
+// Downstream: snapshotPane, fillFrame, and output writes.
 func (c *ansiConsole) render() {
-	if c == nil || !c.isTTY {
+	if c == nil || !c.isTTY || c.disabled.Load() {
 		return
 	}
 
+	width, height, ok := termSize()
+	if !ok || width < ansiWidth || height < ansiTotalRows {
+		c.disable(fmt.Sprintf("terminal too small (%dx%d, need %dx%d)", width, height, ansiWidth, ansiTotalRows))
+		return
+	}
+	forceFull := false
+	if width != c.lastWidth || height != c.lastHeight {
+		c.lastWidth = width
+		c.lastHeight = height
+		forceFull = true
+	}
+
 	c.mu.Lock()
-	stats := make([]string, len(c.stats))
-	copy(stats, c.stats[:])
+	copy(c.snapStats, c.stats)
+	dropped := snapshotPane(&c.dropped, c.snapDropped)
 	calls := snapshotPane(&c.calls, c.snapCalls)
 	unlic := snapshotPane(&c.unlic, c.snapUnlic)
 	harm := snapshotPane(&c.harm, c.snapHarm)
 	system := snapshotPane(&c.system, c.snapSys)
 	c.mu.Unlock()
 
-	c.renderBuf.Reset()
-	// Clear screen + home cursor.
-	if c.clear {
-		c.renderBuf.WriteString("\x1b[2J\x1b[H")
-	}
+	c.fillFrame(c.frame, c.snapStats, dropped, calls, unlic, harm, system)
 
-	for _, line := range stats {
-		if line != "" {
-			c.renderBuf.WriteString(line)
+	var buf bytes.Buffer
+	if forceFull {
+		writeFullFrame(&buf, c.frame)
+	} else {
+		writeDiffFrame(&buf, c.frame, c.lastFrame)
+	}
+	_, _ = buf.WriteTo(os.Stdout)
+	copy(c.lastFrame, c.frame)
+}
+
+// Purpose: Disable the ANSI UI and fall back to plain logging.
+// Key aspects: Stops render loop and emits a single warning to stdout.
+// Upstream: render size checks.
+// Downstream: stopOnce and writeFallback.
+func (c *ansiConsole) disable(reason string) {
+	if c == nil {
+		return
+	}
+	if !c.disabled.CompareAndSwap(false, true) {
+		return
+	}
+	c.writeFallback("ANSI UI disabled: " + reason)
+	c.Stop()
+}
+
+// Purpose: Write a fallback log line to stdout when ANSI is disabled.
+// Key aspects: Strips markup and appends a newline.
+// Upstream: append paths and disable.
+// Downstream: os.Stdout.Write.
+func (c *ansiConsole) writeFallback(line string) {
+	clean := stripANSIMarkup(line)
+	if clean == "" {
+		return
+	}
+	_, _ = os.Stdout.Write([]byte(clean + "\n"))
+}
+
+func (c *ansiConsole) fillFrame(dst, stats, dropped, calls, unlic, harm, system []string) {
+	idx := 0
+	for i := 0; i < ansiStatsLines; i++ {
+		dst[idx] = stats[i]
+		idx++
+	}
+	dst[idx] = c.blankLine
+	idx++
+	dst[idx] = c.headerDrop
+	idx++
+	idx = fillPaneLines(dst, idx, dropped, c.blankLine)
+	dst[idx] = c.blankLine
+	idx++
+	dst[idx] = c.headerCall
+	idx++
+	idx = fillPaneLines(dst, idx, calls, c.blankLine)
+	dst[idx] = c.blankLine
+	idx++
+	dst[idx] = c.headerUnlic
+	idx++
+	idx = fillPaneLines(dst, idx, unlic, c.blankLine)
+	dst[idx] = c.blankLine
+	idx++
+	dst[idx] = c.headerHarm
+	idx++
+	idx = fillPaneLines(dst, idx, harm, c.blankLine)
+	dst[idx] = c.blankLine
+	idx++
+	dst[idx] = c.headerSys
+	idx++
+	fillPaneLines(dst, idx, system, c.blankLine)
+}
+
+func fillPaneLines(dst []string, idx int, lines []string, blank string) int {
+	for i := 0; i < ansiPaneLines; i++ {
+		if i < len(lines) {
+			dst[idx] = lines[i]
+		} else {
+			dst[idx] = blank
 		}
-		c.renderBuf.WriteByte('\n')
+		idx++
 	}
-
-	writePane(&c.renderBuf, "---- Call Corrections ----", calls)
-	writePane(&c.renderBuf, "---- Unlicensed US Calls ----", unlic)
-	writePane(&c.renderBuf, "---- Harmonics ----", harm)
-	writePane(&c.renderBuf, "---- System ----", system)
-
-	_, _ = c.renderBuf.WriteTo(os.Stdout)
+	return idx
 }
 
-type stringByteWriter interface {
-	WriteString(string) (int, error)
-	WriteByte(byte) error
+type ansiWriter struct {
+	append func(string)
+	buf    []byte
+	mu     sync.Mutex
 }
 
-// Purpose: Write a titled pane to the output buffer.
-// Key aspects: Emits header and each line with trailing newline.
-// Upstream: render.
-// Downstream: writer WriteString/WriteByte.
-func writePane(w stringByteWriter, title string, lines []string) {
-	w.WriteString(title)
-	w.WriteByte('\n')
+// Purpose: Implement io.Writer for system logs routed to the ANSI console.
+// Key aspects: Buffers until newline and forwards complete lines.
+// Upstream: log output when ANSI UI is active.
+// Downstream: bytes.IndexByte and w.append.
+func (w *ansiWriter) Write(p []byte) (int, error) {
+	if w == nil || w.append == nil {
+		return len(p), nil
+	}
+	w.mu.Lock()
+	w.buf = append(w.buf, p...)
+	data := w.buf
+	var lines []string
+	for {
+		idx := bytes.IndexByte(data, '\n')
+		if idx == -1 {
+			break
+		}
+		line := string(bytes.TrimRight(data[:idx], "\r"))
+		lines = append(lines, line)
+		data = data[idx+1:]
+	}
+	const maxWriterBufferSize = 16 * 1024
+	if len(data) > maxWriterBufferSize {
+		trimmed := string(bytes.TrimRight(data, "\r"))
+		if trimmed != "" {
+			lines = append(lines, trimmed)
+		}
+		data = data[:0]
+	}
+	w.buf = data
+	w.mu.Unlock()
+
 	for _, line := range lines {
-		if line != "" {
-			w.WriteString(line)
-		}
-		w.WriteByte('\n')
+		w.append(line)
 	}
+	return len(p), nil
 }
 
 // Purpose: Snapshot a ring pane into a caller-provided buffer.
@@ -309,92 +504,117 @@ func snapshotPane(p *ringPane, buf []string) []string {
 	return buf[:limit]
 }
 
-type ansiWriter struct {
-	append func(string)
-	buf    []byte
-	color  bool
-	mu     sync.Mutex
+func writeFullFrame(buf *bytes.Buffer, frame []string) {
+	buf.WriteString("\x1b[2J\x1b[H")
+	for i, line := range frame {
+		buf.WriteString(line)
+		buf.WriteString("\x1b[K")
+		if i < len(frame)-1 {
+			buf.WriteByte('\n')
+		}
+	}
 }
 
-// Purpose: Implement io.Writer for system logs routed to the ANSI console.
-// Key aspects: Buffers until newline, applies markup, bounds buffer growth.
-// Upstream: log output when ANSI UI is active.
-// Downstream: indexByte, applyANSIMarkup, and w.append.
-func (w *ansiWriter) Write(p []byte) (int, error) {
-	if w == nil || w.append == nil {
-		return len(p), nil
-	}
-	w.mu.Lock()
-	w.buf = append(w.buf, p...)
-	data := w.buf
-	w.mu.Unlock()
-
-	for {
-		idx := indexByte(data, '\n')
-		if idx == -1 {
-			break
+func writeDiffFrame(buf *bytes.Buffer, frame, last []string) {
+	for i, line := range frame {
+		if i < len(last) && last[i] == line {
+			continue
 		}
-		line := strings.TrimRight(string(data[:idx]), "\r")
-		line = applyANSIMarkup(line, w.color)
-		w.append(line)
-		data = data[idx+1:]
+		writeCursor(buf, i+1)
+		buf.WriteString(line)
+		buf.WriteString("\x1b[K")
 	}
-
-	w.mu.Lock()
-	const maxWriterBufferSize = 16 * 1024
-	if len(data) > maxWriterBufferSize {
-		// Drop overflow by forcing a flush of the partial line to avoid unbounded growth.
-		trimmed := strings.TrimRight(string(data), "\r")
-		if trimmed != "" {
-			w.append(applyANSIMarkup(trimmed, w.color))
-		}
-		data = data[:0]
-	}
-	w.buf = data
-	w.mu.Unlock()
-	return len(p), nil
 }
 
-// Purpose: Find the first byte occurrence in a slice.
-// Key aspects: Thin wrapper around bytes.IndexByte.
-// Upstream: ansiWriter.Write.
-// Downstream: bytes.IndexByte.
-func indexByte(b []byte, c byte) int {
-	return bytes.IndexByte(b, c)
-}
-
-// Purpose: Apply or strip ANSI markup tokens.
-// Key aspects: Optionally appends reset code when markup is present.
-// Upstream: ansiConsole.append and ansiWriter.Write.
-// Downstream: strings.Replacer instances.
-func applyANSIMarkup(line string, enableColor bool) string {
-	if line == "" {
-		return line
-	}
-	if enableColor {
-		// Heuristic: any markup brackets triggers a reset append after replacement.
-		hasMarkup := strings.Contains(line, "[")
-		line = ansiColorReplacer.Replace(line)
-		if hasMarkup {
-			line += resetANSI
-		}
-		return line
-	}
-	return ansiStripReplacer.Replace(line)
+func writeCursor(buf *bytes.Buffer, row int) {
+	buf.WriteString("\x1b[")
+	buf.WriteString(strconv.Itoa(row))
+	buf.WriteString(";1H")
 }
 
 const resetANSI = "\x1b[0m"
 
-var ansiColorReplacer = strings.NewReplacer(
-	"[red]", "\x1b[31m",
-	"[green]", "\x1b[32m",
-	"[yellow]", "\x1b[33m",
-	"[blue]", "\x1b[34m",
-	"[magenta]", "\x1b[35m",
-	"[cyan]", "\x1b[36m",
-	"[white]", "\x1b[37m",
-	"[-]", resetANSI,
-)
+func formatLine(line string, width int, enableColor bool) string {
+	if width <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(width + 16)
+	visible := 0
+	usedColor := false
+	colorActive := false
+	for i := 0; i < len(line) && visible < width; {
+		if line[i] == '[' {
+			if ansi, consumed, ok := markupToken(line[i:]); ok {
+				if enableColor {
+					b.WriteString(ansi)
+					usedColor = true
+					if ansi == resetANSI {
+						colorActive = false
+					} else {
+						colorActive = true
+					}
+				}
+				i += consumed
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		if r == utf8.RuneError && size == 1 {
+			i++
+			continue
+		}
+		if isControlRune(r) {
+			i += size
+			continue
+		}
+		b.WriteRune(r)
+		visible++
+		i += size
+	}
+	if enableColor && usedColor && colorActive {
+		b.WriteString(resetANSI)
+	}
+	for visible < width {
+		b.WriteByte(' ')
+		visible++
+	}
+	return b.String()
+}
+
+func markupToken(s string) (string, int, bool) {
+	switch {
+	case strings.HasPrefix(s, "[red]"):
+		return "\x1b[31m", 5, true
+	case strings.HasPrefix(s, "[green]"):
+		return "\x1b[32m", 7, true
+	case strings.HasPrefix(s, "[yellow]"):
+		return "\x1b[33m", 8, true
+	case strings.HasPrefix(s, "[blue]"):
+		return "\x1b[34m", 6, true
+	case strings.HasPrefix(s, "[magenta]"):
+		return "\x1b[35m", 9, true
+	case strings.HasPrefix(s, "[cyan]"):
+		return "\x1b[36m", 6, true
+	case strings.HasPrefix(s, "[white]"):
+		return "\x1b[37m", 7, true
+	case strings.HasPrefix(s, "[-]"):
+		return resetANSI, 3, true
+	default:
+		return "", 0, false
+	}
+}
+
+func isControlRune(r rune) bool {
+	return r < 0x20 || r == 0x7f
+}
+
+func stripANSIMarkup(line string) string {
+	if line == "" {
+		return ""
+	}
+	return ansiStripReplacer.Replace(line)
+}
 
 var ansiStripReplacer = strings.NewReplacer(
 	"[red]", "",
@@ -406,3 +626,11 @@ var ansiStripReplacer = strings.NewReplacer(
 	"[white]", "",
 	"[-]", "",
 )
+
+func termSize() (int, int, bool) {
+	width, height, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil {
+		return 0, 0, false
+	}
+	return width, height, true
+}

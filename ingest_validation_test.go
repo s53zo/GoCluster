@@ -86,7 +86,7 @@ func TestCTYInfoCacheTTLAndEviction(t *testing.T) {
 func TestIngestValidatorPreservesGrids(t *testing.T) {
 	licCache = newLicenseCache(5 * time.Minute)
 	db := loadIngestCTY(t)
-	v := newIngestValidator(func() *cty.CTYDatabase { return db }, make(chan *spot.Spot, 1), nil, 8, time.Minute)
+	v := newIngestValidator(func() *cty.CTYDatabase { return db }, make(chan *spot.Spot, 1), nil, nil, 8, time.Minute)
 	v.isLicensedUS = func(call string) bool { return true }
 
 	s := spot.NewSpotNormalized("DL1ABC", "K1ABC", 14074.0, "FT8")
@@ -118,7 +118,7 @@ func TestIngestValidatorDropsUnlicensedUSSpotter(t *testing.T) {
 	var gotFreq float64
 	reported := false
 
-	v := newIngestValidator(func() *cty.CTYDatabase { return db }, make(chan *spot.Spot, 1), nil, 8, time.Minute)
+	v := newIngestValidator(func() *cty.CTYDatabase { return db }, make(chan *spot.Spot, 1), nil, nil, 8, time.Minute)
 	v.unlicensedReporter = func(source, role, call, mode string, freq float64) {
 		reported = true
 		gotSource = source

@@ -30,6 +30,7 @@ type uiSurface interface {
 	WaitReady()
 	Stop()
 	SetStats(lines []string)
+	AppendDropped(line string)
 	AppendCall(line string)
 	AppendUnlicensed(line string)
 	AppendHarmonic(line string)
@@ -38,17 +39,19 @@ type uiSurface interface {
 }
 
 // dashboard renders the console layout when a compatible terminal is available.
-// It shows stats plus four scrolling panes (call corrections, unlicensed drops,
-// harmonic drops) and one system log pane.
+// It shows stats plus five scrolling panes (dropped, corrected, unlicensed,
+// harmonics, and system log).
 type dashboard struct {
 	app               *tview.Application
 	statsView         *tview.TextView
+	droppedView       *tview.TextView
 	callView          *tview.TextView
 	unlicensedView    *tview.TextView
 	harmonicView      *tview.TextView
 	systemView        *tview.TextView
 	statsMu           sync.Mutex
 	ready             chan struct{}
+	droppedHasText    bool
 	callHasText       bool
 	unlicensedHasText bool
 	harmHasText       bool
@@ -56,6 +59,7 @@ type dashboard struct {
 
 	// Batching to reduce QueueUpdateDraw frequency.
 	batchMu         sync.Mutex
+	droppedBatch    []string
 	callBatch       []string
 	unlicensedBatch []string
 	harmBatch       []string
@@ -93,10 +97,11 @@ func newDashboard(uiCfg config.UIConfig, enable bool) *dashboard {
 	}
 
 	stats := tview.NewTextView().SetDynamicColors(true).SetWrap(false).SetMaxLines(statsMaxLines)
-	callPane := makePane("Corrected Calls")
-	unlicensedPane := makePane("Unlicensed US Calls")
+	droppedPane := makePane("Dropped")
+	callPane := makePane("Corrected")
+	unlicensedPane := makePane("Unlicensed")
 	harmonicPane := makePane("Harmonics")
-	systemPane := makePane("System")
+	systemPane := makePane("System Log")
 
 	statsHeight := uiCfg.PaneLines.Stats
 	if statsHeight <= 0 {
@@ -121,6 +126,8 @@ func newDashboard(uiCfg config.UIConfig, enable bool) *dashboard {
 
 	layout := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(stats, statsHeight, 0, false).
+		AddItem(tview.NewBox(), 1, 0, false).
+		AddItem(droppedPane, callsHeight, 0, false).
 		AddItem(tview.NewBox(), 1, 0, false).
 		AddItem(callPane, callsHeight, 0, false).
 		AddItem(tview.NewBox(), 1, 0, false).
@@ -148,6 +155,7 @@ func newDashboard(uiCfg config.UIConfig, enable bool) *dashboard {
 	d := &dashboard{
 		app:            app,
 		statsView:      stats,
+		droppedView:    droppedPane,
 		callView:       callPane,
 		unlicensedView: unlicensedPane,
 		harmonicView:   harmonicPane,
@@ -238,6 +246,14 @@ func (d *dashboard) AppendCall(line string) {
 	d.enqueue(&d.callBatch, line)
 }
 
+// Purpose: Queue a drop line for the dropped pane.
+// Key aspects: Uses batching to reduce redraws.
+// Upstream: drop reporters.
+// Downstream: d.enqueue.
+func (d *dashboard) AppendDropped(line string) {
+	d.enqueue(&d.droppedBatch, line)
+}
+
 // Purpose: Queue an unlicensed call line for the unlicensed pane.
 // Key aspects: Uses batching to reduce redraws.
 // Upstream: unlicensed reporter.
@@ -264,7 +280,7 @@ func (d *dashboard) AppendSystem(line string) {
 
 // Purpose: Append to a batch and flush if the batch limit is reached.
 // Key aspects: Shared batching logic for all panes.
-// Upstream: AppendCall/AppendUnlicensed/AppendHarmonic/AppendSystem.
+// Upstream: AppendDropped/AppendCall/AppendUnlicensed/AppendHarmonic/AppendSystem.
 // Downstream: d.flushBatches.
 func (d *dashboard) enqueue(batch *[]string, line string) {
 	if d == nil || batch == nil {
@@ -272,7 +288,7 @@ func (d *dashboard) enqueue(batch *[]string, line string) {
 	}
 	d.batchMu.Lock()
 	*batch = append(*batch, line)
-	callCount := len(d.callBatch) + len(d.unlicensedBatch) + len(d.harmBatch) + len(d.sysBatch)
+	callCount := len(d.droppedBatch) + len(d.callBatch) + len(d.unlicensedBatch) + len(d.harmBatch) + len(d.sysBatch)
 	ready := callCount >= batchMaxLines
 	d.batchMu.Unlock()
 	if ready {
@@ -353,10 +369,12 @@ func (d *dashboard) flushBatches() {
 		return
 	}
 	d.batchMu.Lock()
+	droppedBatch := d.droppedBatch
 	callBatch := d.callBatch
 	unlBatch := d.unlicensedBatch
 	harmBatch := d.harmBatch
 	sysBatch := d.sysBatch
+	d.droppedBatch = d.droppedBatch[:0]
 	d.callBatch = d.callBatch[:0]
 	d.unlicensedBatch = d.unlicensedBatch[:0]
 	d.harmBatch = d.harmBatch[:0]
@@ -370,7 +388,7 @@ func (d *dashboard) flushBatches() {
 	ts := d.lastTSString
 	d.batchMu.Unlock()
 
-	total := len(callBatch) + len(unlBatch) + len(harmBatch) + len(sysBatch)
+	total := len(droppedBatch) + len(callBatch) + len(unlBatch) + len(harmBatch) + len(sysBatch)
 	if total == 0 {
 		return
 	}
@@ -380,6 +398,16 @@ func (d *dashboard) flushBatches() {
 	// Upstream: flushBatches.
 	// Downstream: fmt.Fprint and TextView.ScrollToEnd.
 	d.app.QueueUpdateDraw(func() {
+		if len(droppedBatch) > 0 {
+			for _, line := range droppedBatch {
+				if d.droppedHasText {
+					fmt.Fprint(d.droppedView, "\n")
+				}
+				fmt.Fprint(d.droppedView, ts+line)
+				d.droppedHasText = true
+			}
+			d.droppedView.ScrollToEnd()
+		}
 		if len(callBatch) > 0 {
 			for _, line := range callBatch {
 				if d.callHasText {

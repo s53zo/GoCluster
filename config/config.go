@@ -118,11 +118,11 @@ type ServerConfig struct {
 
 // TelnetConfig contains telnet server settings
 type TelnetConfig struct {
-	Port              int    `yaml:"port"`
-	TLSEnabled        bool   `yaml:"tls_enabled"`
-	MaxConnections    int    `yaml:"max_connections"`
+	Port           int  `yaml:"port"`
+	TLSEnabled     bool `yaml:"tls_enabled"`
+	MaxConnections int  `yaml:"max_connections"`
 	// WelcomeMessage is sent before login; supports <DATE>, <TIME>, <DATETIME>, <UPTIME>, and <USER_COUNT>.
-	WelcomeMessage string `yaml:"welcome_message"`
+	WelcomeMessage    string `yaml:"welcome_message"`
 	DuplicateLoginMsg string `yaml:"duplicate_login_message"`
 	// LoginGreeting is sent after successful login; supports <CALL>, <CLUSTER>, <DATE>, <TIME>, <DATETIME>, <UPTIME>, <USER_COUNT>, <LAST_LOGIN>, and <LAST_IP>.
 	LoginGreeting string `yaml:"login_greeting"`
@@ -236,10 +236,9 @@ type UIConfig struct {
 	// Color enables simple ANSI coloring for marked-up lines; when false the
 	// markup tokens are stripped.
 	Color bool `yaml:"color"`
-	// ClearScreen toggles whether the ANSI renderer clears the screen each
-	// frame. When false, frames are appended (useful for terminals that scroll).
+	// ClearScreen is ignored by the ANSI renderer (kept for compatibility).
 	ClearScreen bool `yaml:"clear_screen"`
-	// PaneLines bounds the retained history per pane for ANSI and sets tview pane heights.
+	// PaneLines sets tview pane heights (ANSI uses a fixed layout).
 	PaneLines UIPaneLines `yaml:"pane_lines"`
 }
 
