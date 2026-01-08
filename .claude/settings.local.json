@@ -18,7 +18,8 @@
       "Bash(go doc:*)",
       "Bash(ls:*)",
       "Bash(file:*)",
-      "Bash(stat:*)"
+      "Bash(stat:*)",
+      "Bash(wc:*)"
     ],
     "deny": [],
     "ask": []

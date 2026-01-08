@@ -4,34 +4,22 @@ package uls
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"dxcluster/config"
+	"dxcluster/download"
 )
 
 const (
 	downloadTimeout  = 30 * time.Minute
-	metadataSuffix   = ".status.json"
 	legacyMetaSuffix = ".meta.json"
 )
-
-type metadata struct {
-	LastModified string    `json:"last_modified,omitempty"`
-	ETag         string    `json:"etag,omitempty"`
-	DownloadedAt time.Time `json:"downloaded_at"`
-	SizeBytes    int64     `json:"size_bytes"`
-	CheckedAt    time.Time `json:"checked_at,omitempty"`
-	UpToDate     bool      `json:"up_to_date,omitempty"`
-}
 
 // Purpose: Start a background refresh loop for the FCC ULS database.
 // Key aspects: Kicks off an immediate refresh and then schedules daily updates.
@@ -62,7 +50,7 @@ func Refresh(cfg config.FCCULSConfig, force bool) (bool, error) {
 	url := strings.TrimSpace(cfg.URL)
 	dest := strings.TrimSpace(cfg.Archive)
 	dbPath := strings.TrimSpace(cfg.DBPath)
-	metaPath := dest + metadataSuffix
+	metaPath := download.MetadataPath(dest)
 	if url == "" {
 		return false, errors.New("fcc uls: URL is empty")
 	}
@@ -80,7 +68,7 @@ func Refresh(cfg config.FCCULSConfig, force bool) (bool, error) {
 		}
 	}
 
-	archiveUpdated, err := downloadArchive(url, dest, force)
+	archiveUpdated, err := downloadArchive(url, dest, metaPath, force)
 	if err != nil {
 		return false, err
 	}
@@ -108,10 +96,14 @@ func Refresh(cfg config.FCCULSConfig, force bool) (bool, error) {
 
 	ResetLicenseDB()
 	if err := buildDatabase(extractDir, dbPath, cfg.TempDir); err != nil {
-		markMetadataBuildStatus(metaPath, false)
+		if metaErr := download.UpdateProcessedStatus(metaPath, false); metaErr != nil {
+			log.Printf("Warning: unable to update FCC ULS metadata %s: %v", metaPath, metaErr)
+		}
 		return false, err
 	}
-	markMetadataBuildStatus(metaPath, true)
+	if err := download.UpdateProcessedStatus(metaPath, true); err != nil {
+		log.Printf("Warning: unable to update FCC ULS metadata %s: %v", metaPath, err)
+	}
 
 	// Clean up archive on success to save space
 	if err := os.Remove(dest); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -174,179 +166,36 @@ func refreshHourMinute(cfg config.FCCULSConfig) (int, int) {
 }
 
 // Purpose: Fetch the FCC ULS archive to disk, honoring cached metadata.
-// Key aspects: Uses conditional headers, atomic rename, and metadata tracking.
+// Key aspects: Uses conditional HTTP download and sidecar metadata.
 // Upstream: Refresh.
-// Downstream: readMetadata, writeMetadata, cleanupLegacyMeta, HTTP client.
-func downloadArchive(url, destination string, force bool) (bool, error) {
-	metaPath := destination + metadataSuffix
-	legacyMetaPath := destination + legacyMetaSuffix
-	prevMeta, metaSource := readMetadata(metaPath, legacyMetaPath)
-	if prevMeta == nil {
-		if info, err := os.Stat(destination); err == nil {
-			prevMeta = &metadata{
-				LastModified: info.ModTime().UTC().Format(http.TimeFormat),
-				SizeBytes:    info.Size(),
-			}
-		}
+// Downstream: download.Download.
+func downloadArchive(url, destination, metaPath string, force bool) (bool, error) {
+	if err := ensureDir(destination); err != nil {
+		return false, err
 	}
-
-	client := &http.Client{Timeout: downloadTimeout}
 	ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	res, err := download.Download(ctx, download.Request{
+		URL:                 url,
+		Destination:         destination,
+		Timeout:             downloadTimeout,
+		Force:               force,
+		MetadataPath:        metaPath,
+		LegacyMetadataPaths: []string{destination + legacyMetaSuffix},
+	})
 	if err != nil {
-		return false, fmt.Errorf("fcc uls: build request: %w", err)
+		return false, fmt.Errorf("fcc uls: %w", err)
 	}
-	if !force && prevMeta != nil {
-		if prevMeta.ETag != "" {
-			req.Header.Set("If-None-Match", prevMeta.ETag)
-		}
-		if prevMeta.LastModified != "" {
-			req.Header.Set("If-Modified-Since", prevMeta.LastModified)
-		}
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("fcc uls: fetch failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotModified {
-		// Record that we checked and nothing changed so operators can see the scheduler ran.
-		now := time.Now().UTC()
-		meta := metadata{
-			LastModified: prevMeta.LastModified,
-			ETag:         prevMeta.ETag,
-			DownloadedAt: prevMeta.DownloadedAt,
-			SizeBytes:    prevMeta.SizeBytes,
-			CheckedAt:    now,
-			UpToDate:     true,
-		}
-		if err := writeMetadata(metaPath, meta); err != nil {
-			log.Printf("Warning: unable to write FCC ULS metadata: %v", err)
-		}
-		cleanupLegacyMeta(metaSource, metaPath, legacyMetaPath)
-		return false, nil
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return false, fmt.Errorf("fcc uls: fetch failed: status %s", resp.Status)
-	}
-
-	tmpDir := filepath.Dir(destination)
-	if tmpDir == "" || tmpDir == "." {
-		tmpDir = "."
-	}
-	tmpFile, err := os.CreateTemp(tmpDir, "fcc-uls-*.tmp")
-	if err != nil {
-		return false, fmt.Errorf("fcc uls: create temp file: %w", err)
-	}
-	tmpName := tmpFile.Name()
-	defer os.Remove(tmpName)
-
-	bytesWritten, err := io.Copy(tmpFile, resp.Body)
-	if err != nil {
-		tmpFile.Close()
-		return false, fmt.Errorf("fcc uls: copy body: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return false, fmt.Errorf("fcc uls: finalize temp file: %w", err)
-	}
-	if bytesWritten == 0 {
-		return false, errors.New("fcc uls: empty download")
-	}
-
-	if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("fcc uls: remove old file: %w", err)
-	}
-	if err := os.Rename(tmpName, destination); err != nil {
-		return false, fmt.Errorf("fcc uls: replace file: %w", err)
-	}
-
-	meta := metadata{
-		LastModified: resp.Header.Get("Last-Modified"),
-		ETag:         resp.Header.Get("ETag"),
-		DownloadedAt: time.Now().UTC(),
-		SizeBytes:    bytesWritten,
-		CheckedAt:    time.Now().UTC(),
-		UpToDate:     true,
-	}
-	if meta.LastModified == "" && prevMeta != nil {
-		meta.LastModified = prevMeta.LastModified
-	}
-	if meta.ETag == "" && prevMeta != nil {
-		meta.ETag = prevMeta.ETag
-	}
-	if err := writeMetadata(metaPath, meta); err != nil {
-		log.Printf("Warning: unable to write FCC ULS metadata: %v", err)
-	}
-	cleanupLegacyMeta(metaSource, metaPath, legacyMetaPath)
-
-	return true, nil
+	return res.Status == download.StatusUpdated, nil
 }
 
-// Purpose: Read metadata JSON from the first readable path.
-// Key aspects: Supports legacy path migration.
-// Upstream: downloadArchive, markMetadataBuildStatus.
-// Downstream: os.ReadFile, json.Unmarshal.
-func readMetadata(paths ...string) (*metadata, string) {
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var meta metadata
-		if err := json.Unmarshal(data, &meta); err != nil {
-			continue
-		}
-		return &meta, path
+func ensureDir(path string) error {
+	dir := filepath.Dir(path)
+	if dir == "" || dir == "." {
+		return nil
 	}
-	return nil, ""
-}
-
-// Purpose: Persist metadata JSON to disk.
-// Key aspects: Writes a human-readable indented JSON file.
-// Upstream: downloadArchive, markMetadataBuildStatus.
-// Downstream: json.MarshalIndent, os.WriteFile.
-func writeMetadata(path string, meta metadata) error {
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return err
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("fcc uls: create directory: %w", err)
 	}
-	return os.WriteFile(path, data, 0o644)
-}
-
-// Purpose: Remove legacy metadata files after a successful write.
-// Key aspects: Deletes only when the legacy path was the source.
-// Upstream: downloadArchive.
-// Downstream: os.Remove.
-func cleanupLegacyMeta(metaSource, newPath, legacyPath string) {
-	if legacyPath == "" || legacyPath == newPath {
-		return
-	}
-	if metaSource == legacyPath {
-		if err := os.Remove(legacyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Printf("Warning: unable to remove legacy FCC ULS metadata %s: %v", legacyPath, err)
-		}
-	}
-}
-
-// Purpose: Update metadata to reflect whether the DB build succeeded.
-// Key aspects: Avoids stale "up to date" markers after a failed build.
-// Upstream: Refresh.
-// Downstream: readMetadata, writeMetadata.
-func markMetadataBuildStatus(metaPath string, success bool) {
-	if strings.TrimSpace(metaPath) == "" {
-		return
-	}
-	meta, _ := readMetadata(metaPath)
-	if meta == nil {
-		return
-	}
-	meta.CheckedAt = time.Now().UTC()
-	meta.UpToDate = success
-	if err := writeMetadata(metaPath, *meta); err != nil {
-		log.Printf("Warning: unable to update FCC ULS metadata %s: %v", metaPath, err)
-	}
+	return nil
 }

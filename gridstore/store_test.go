@@ -18,6 +18,12 @@ func TestUpsertBatchMerge(t *testing.T) {
 		Call:         "k1abc",
 		IsKnown:      false,
 		Grid:         sql.NullString{String: "aa00", Valid: true},
+		CTYValid:     true,
+		CTYADIF:      291,
+		CTYCQZone:    5,
+		CTYITUZone:   8,
+		CTYContinent: "NA",
+		CTYCountry:   "United States",
 		Observations: 1,
 		FirstSeen:    now,
 		UpdatedAt:    now,
@@ -29,6 +35,7 @@ func TestUpsertBatchMerge(t *testing.T) {
 	got := mustGet(t, store, "K1ABC")
 	assertGrid(t, got, "AA00", true)
 	assertKnown(t, got, false)
+	assertCTY(t, got, true, 291, 5, 8, "NA", "United States")
 	assertObservations(t, got, 1)
 	assertUnixTime(t, "first_seen", got.FirstSeen, now)
 	assertUnixTime(t, "updated_at", got.UpdatedAt, now)
@@ -49,6 +56,7 @@ func TestUpsertBatchMerge(t *testing.T) {
 	merged := mustGet(t, store, "k1abc")
 	assertGrid(t, merged, "AA00", true)
 	assertKnown(t, merged, true)
+	assertCTY(t, merged, true, 291, 5, 8, "NA", "United States")
 	assertObservations(t, merged, 3)
 	assertUnixTime(t, "first_seen", merged.FirstSeen, now)
 	assertUnixTime(t, "updated_at", merged.UpdatedAt, later)
@@ -159,6 +167,31 @@ func assertKnown(t *testing.T, rec *Record, known bool) {
 	t.Helper()
 	if rec.IsKnown != known {
 		t.Fatalf("expected known=%v, got %v", known, rec.IsKnown)
+	}
+}
+
+func assertCTY(t *testing.T, rec *Record, valid bool, adif, cq, itu int, continent, country string) {
+	t.Helper()
+	if rec.CTYValid != valid {
+		t.Fatalf("expected cty valid=%v, got %v", valid, rec.CTYValid)
+	}
+	if !valid {
+		return
+	}
+	if rec.CTYADIF != adif {
+		t.Fatalf("expected cty adif=%d, got %d", adif, rec.CTYADIF)
+	}
+	if rec.CTYCQZone != cq {
+		t.Fatalf("expected cty cq=%d, got %d", cq, rec.CTYCQZone)
+	}
+	if rec.CTYITUZone != itu {
+		t.Fatalf("expected cty itu=%d, got %d", itu, rec.CTYITUZone)
+	}
+	if rec.CTYContinent != continent {
+		t.Fatalf("expected cty continent=%q, got %q", continent, rec.CTYContinent)
+	}
+	if rec.CTYCountry != country {
+		t.Fatalf("expected cty country=%q, got %q", country, rec.CTYCountry)
 	}
 }
 

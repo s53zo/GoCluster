@@ -58,35 +58,10 @@ func loadIngestCTY(t *testing.T) *cty.CTYDatabase {
 	return db
 }
 
-func TestCTYInfoCacheTTLAndEviction(t *testing.T) {
-	cache := newCTYInfoCache(1, 10*time.Second)
-	now := time.Now()
-	infoA := &cty.PrefixInfo{Country: "A"}
-	infoB := &cty.PrefixInfo{Country: "B"}
-
-	cache.set("CALLA", infoA, true, now)
-	if got, ok := cache.get("CALLA", now); !ok || got != infoA {
-		t.Fatalf("expected cache hit for CALLA")
-	}
-
-	cache.set("CALLB", infoB, true, now)
-	if _, ok := cache.get("CALLA", now); ok {
-		t.Fatalf("expected CALLA to be evicted")
-	}
-	if got, ok := cache.get("CALLB", now); !ok || got != infoB {
-		t.Fatalf("expected cache hit for CALLB")
-	}
-
-	expired := now.Add(11 * time.Second)
-	if _, ok := cache.get("CALLB", expired); ok {
-		t.Fatalf("expected CALLB to expire")
-	}
-}
-
 func TestIngestValidatorPreservesGrids(t *testing.T) {
 	licCache = newLicenseCache(5 * time.Minute)
 	db := loadIngestCTY(t)
-	v := newIngestValidator(func() *cty.CTYDatabase { return db }, make(chan *spot.Spot, 1), nil, nil, 8, time.Minute)
+	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, make(chan *spot.Spot, 1), nil, nil)
 	v.isLicensedUS = func(call string) bool { return true }
 
 	s := spot.NewSpotNormalized("DL1ABC", "K1ABC", 14074.0, "FT8")
@@ -118,7 +93,7 @@ func TestIngestValidatorDropsUnlicensedUSSpotter(t *testing.T) {
 	var gotFreq float64
 	reported := false
 
-	v := newIngestValidator(func() *cty.CTYDatabase { return db }, make(chan *spot.Spot, 1), nil, nil, 8, time.Minute)
+	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, make(chan *spot.Spot, 1), nil, nil)
 	v.unlicensedReporter = func(source, role, call, mode string, freq float64) {
 		reported = true
 		gotSource = source

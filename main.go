@@ -4,12 +4,10 @@
 package main
 
 import (
-	"container/list"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"net/http"
@@ -35,6 +33,7 @@ import (
 	"dxcluster/config"
 	"dxcluster/cty"
 	"dxcluster/dedup"
+	"dxcluster/download"
 	"dxcluster/filter"
 	"dxcluster/gridstore"
 	"dxcluster/peer"
@@ -53,7 +52,7 @@ import (
 
 const (
 	dedupeEntryBytes    = 32
-	ctyCacheEntryBytes  = 96
+	callMetaEntryBytes  = 96
 	knownCallEntryBytes = 24
 	sourceModeDelimiter = "|"
 	defaultConfigPath   = "data/config"
@@ -180,148 +179,6 @@ type gridMetrics struct {
 	cacheHits    atomic.Uint64
 }
 
-type gridCache struct {
-	mu       sync.Mutex
-	capacity int
-	ttl      time.Duration
-	lru      *list.List
-	entries  map[string]*list.Element
-}
-
-type gridEntry struct {
-	call      string
-	grid      string
-	updatedAt time.Time
-}
-
-// Purpose: Build an in-memory LRU for grid lookups.
-// Key aspects: Enforces capacity and optional TTL for stale eviction.
-// Upstream: main grid cache setup.
-// Downstream: list.New and map allocation.
-func newGridCache(capacity int, ttl time.Duration) *gridCache {
-	if capacity <= 0 {
-		capacity = 100000
-	}
-	return &gridCache{
-		capacity: capacity,
-		ttl:      ttl,
-		lru:      list.New(),
-		entries:  make(map[string]*list.Element),
-	}
-}
-
-// Purpose: Decide whether a grid update should be written and update the cache.
-// Key aspects: Uses cache/DB checks to avoid redundant writes.
-// Upstream: startGridWriter enqueue function.
-// Downstream: gridstore.Store.Get, c.add, and cache mutation.
-func (c *gridCache) shouldUpdate(call, grid string, store *gridstore.Store) bool {
-	if call == "" || grid == "" {
-		return false
-	}
-	now := time.Now()
-
-	// Fast path: cache present
-	c.mu.Lock()
-	if elem, ok := c.entries[call]; ok {
-		entry := elem.Value.(*gridEntry)
-		if c.ttl > 0 && now.Sub(entry.updatedAt) > c.ttl {
-			// stale entry; evict and treat as miss
-			c.lru.Remove(elem)
-			delete(c.entries, call)
-		} else if entry.grid == grid {
-			c.mu.Unlock()
-			return false
-		}
-		entry.grid = grid
-		entry.updatedAt = now
-		c.lru.MoveToFront(elem)
-		c.mu.Unlock()
-		return true
-	}
-	c.mu.Unlock()
-
-	// Miss: check DB to avoid redundant writes
-	if store != nil {
-		if rec, err := store.Get(call); err == nil && rec != nil && rec.Grid.Valid {
-			existing := strings.ToUpper(strings.TrimSpace(rec.Grid.String))
-			if existing == grid {
-				c.add(call, grid)
-				return false
-			}
-		}
-	}
-
-	c.add(call, grid)
-	return true
-}
-
-// Purpose: Add or refresh a grid entry in the LRU cache.
-// Key aspects: Updates timestamps and evicts when capacity exceeded.
-// Upstream: shouldUpdate.
-// Downstream: list operations and map mutation under lock.
-func (c *gridCache) add(call, grid string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if elem, ok := c.entries[call]; ok {
-		entry := elem.Value.(*gridEntry)
-		entry.grid = grid
-		entry.updatedAt = time.Now()
-		c.lru.MoveToFront(elem)
-		return
-	}
-
-	elem := c.lru.PushFront(&gridEntry{call: call, grid: grid, updatedAt: time.Now()})
-	c.entries[call] = elem
-	if c.capacity > 0 && len(c.entries) > c.capacity {
-		// Evict least-recently-used
-		if tail := c.lru.Back(); tail != nil {
-			c.lru.Remove(tail)
-			if e, ok := tail.Value.(*gridEntry); ok {
-				delete(c.entries, e.call)
-			}
-		}
-	}
-}
-
-// Purpose: Retrieve a grid entry from the cache.
-// Key aspects: Applies TTL eviction and refreshes LRU order.
-// Upstream: lookupWithMetrics and grid backfill.
-// Downstream: list operations and map access under lock.
-func (c *gridCache) get(call string) (string, bool) {
-	if call == "" {
-		return "", false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if elem, ok := c.entries[call]; ok {
-		c.lru.MoveToFront(elem)
-		entry := elem.Value.(*gridEntry)
-		if c.ttl > 0 && time.Since(entry.updatedAt) > c.ttl {
-			c.lru.Remove(elem)
-			delete(c.entries, call)
-			return "", false
-		}
-		return entry.grid, entry.grid != ""
-	}
-	return "", false
-}
-
-// Purpose: Retrieve a grid entry with hit/miss metrics.
-// Key aspects: Increments metrics counters when provided.
-// Upstream: grid backfill path in processOutputSpots.
-// Downstream: gridCache.get and atomic counters.
-func (c *gridCache) lookupWithMetrics(call string, metrics *gridMetrics) (string, bool) {
-	if metrics != nil {
-		metrics.cacheLookups.Add(1)
-	}
-	grid, ok := c.get(call)
-	if ok && metrics != nil {
-		metrics.cacheHits.Add(1)
-	}
-	return grid, ok
-}
-
 // Purpose: Report whether stdout is a TTY for UI gating.
 // Key aspects: Uses term.IsTerminal on stdout fd.
 // Upstream: main UI selection.
@@ -443,12 +300,13 @@ func main() {
 	spot.ConfigureNormalizeCallCache(cfg.CallCache.Size, callCacheTTL)
 	rbn.ConfigureCallCache(cfg.CallCache.Size, callCacheTTL)
 	pskreporter.ConfigureCallCache(cfg.CallCache.Size, callCacheTTL)
-	ingestCTYCacheTTL := time.Duration(cfg.PSKReporter.CTYCacheTTLSeconds) * time.Second
 	filter.SetDefaultModeSelection(cfg.Filter.DefaultModes)
 	filter.SetDefaultSourceSelection(cfg.Filter.DefaultSources)
 	if err := filter.EnsureUserDataDir(); err != nil {
 		log.Printf("Warning: unable to initialize filter directory: %v", err)
 	}
+
+	metaCache := newCallMetaCache(cfg.GridCacheSize, time.Duration(cfg.GridCacheTTLSec)*time.Second)
 
 	// Print the configuration (stdout only when not using the dashboard)
 	if ui == nil {
@@ -484,13 +342,16 @@ func main() {
 	ctyURL := strings.TrimSpace(cfg.CTY.URL)
 	if cfg.CTY.Enabled && ctyPath != "" {
 		if _, err := os.Stat(ctyPath); err != nil && errors.Is(err, os.ErrNotExist) && ctyURL != "" {
-			if fresh, refreshErr := refreshCTYDatabase(cfg.CTY); refreshErr != nil {
+			if fresh, updated, refreshErr := refreshCTYDatabase(cfg.CTY); refreshErr != nil {
 				log.Printf("Warning: CTY download failed: %v", refreshErr)
 				ctyState.recordFailure(time.Now().UTC(), refreshErr)
-			} else {
+			} else if updated && fresh != nil {
 				ctyDB.Store(fresh)
 				ctyState.recordSuccess(time.Now().UTC())
 				log.Printf("Downloaded CTY database from %s", ctyURL)
+			} else {
+				ctyState.recordSuccess(time.Now().UTC())
+				log.Printf("CTY database already up to date (%s)", ctyPath)
 			}
 		}
 	}
@@ -508,7 +369,7 @@ func main() {
 		return ctyDB.Load()
 	}
 	if cfg.CTY.Enabled && ctyURL != "" && ctyPath != "" {
-		startCTYScheduler(ctx, cfg.CTY, &ctyDB, ctyState)
+		startCTYScheduler(ctx, cfg.CTY, &ctyDB, metaCache, ctyState)
 	} else if cfg.CTY.Enabled {
 		log.Printf("Warning: CTY download enabled but url or file missing")
 	}
@@ -593,11 +454,13 @@ func main() {
 		if _, err := os.Stat(knownCallsPath); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				if knownCallsURL != "" {
-					if fresh, refreshErr := refreshKnownCallsigns(cfg.KnownCalls); refreshErr != nil {
+					if fresh, updated, refreshErr := refreshKnownCallsigns(cfg.KnownCalls); refreshErr != nil {
 						log.Printf("Warning: known calls download failed: %v", refreshErr)
-					} else {
+					} else if updated && fresh != nil {
 						knownCalls.Store(fresh)
 						log.Printf("Downloaded %d known callsigns from %s", fresh.Count(), knownCallsURL)
+					} else {
+						log.Printf("Known calls file already up to date (%s)", knownCallsPath)
 					}
 				} else {
 					log.Printf("Warning: known calls file %s missing and no download URL configured", knownCallsPath)
@@ -637,9 +500,8 @@ func main() {
 	gridDBCheckOnMiss, gridDBCheckSource := gridDBCheckOnMissEnabled(cfg)
 	log.Printf("Gridstore: db_check_on_miss=%v (source=%s)", gridDBCheckOnMiss, gridDBCheckSource)
 
-	cache := newGridCache(cfg.GridCacheSize, time.Duration(cfg.GridCacheTTLSec)*time.Second)
 	gridTTL := time.Duration(cfg.GridTTLDays) * 24 * time.Hour
-	gridUpdater, gridUpdateState, stopGridWriter, gridLookup := startGridWriter(gridStore, time.Duration(cfg.GridFlushSec)*time.Second, cache, gridTTL, gridDBCheckOnMiss)
+	gridUpdater, ctyUpdater, gridUpdateState, stopGridWriter, gridLookup := startGridWriter(gridStore, time.Duration(cfg.GridFlushSec)*time.Second, metaCache, gridTTL, gridDBCheckOnMiss)
 	defer func() {
 		if stopGridWriter != nil {
 			stopGridWriter()
@@ -648,7 +510,7 @@ func main() {
 
 	if cfg.KnownCalls.Enabled && knownCallsURL != "" && knownCallsPath != "" {
 		if knownCalls.Load() != nil {
-			startKnownCallScheduler(ctx, cfg.KnownCalls, &knownCalls, gridStore)
+			startKnownCallScheduler(ctx, cfg.KnownCalls, &knownCalls, gridStore, metaCache)
 		} else {
 			log.Printf("Warning: known calls scheduler disabled (no initial data); ensure %s is reachable", cfg.KnownCalls.URL)
 		}
@@ -707,7 +569,7 @@ func main() {
 	}
 
 	dedupInput := deduplicator.GetInputChannel()
-	ingestValidator := newIngestValidator(ctyLookup, dedupInput, unlicensedReporter, dropReporter, cfg.PSKReporter.CTYCacheSize, ingestCTYCacheTTL)
+	ingestValidator := newIngestValidator(ctyLookup, metaCache, ctyUpdater, dedupInput, unlicensedReporter, dropReporter)
 	ingestValidator.Start()
 	ingestInput := ingestValidator.Input()
 
@@ -815,7 +677,7 @@ func main() {
 	// Key aspects: Handles corrections, licensing, secondary dedupe, and fan-out.
 	// Upstream: main startup after wiring dependencies.
 	// Downstream: processOutputSpots.
-	go processOutputSpots(deduplicator, secondaryDeduper, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput)
+	go processOutputSpots(deduplicator, secondaryDeduper, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput)
 	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
@@ -934,7 +796,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryDeduper, spotBuffer, ctyLookup, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath)
+	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryDeduper, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -1215,7 +1077,7 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -1312,7 +1174,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 
 		combinedRBN := rbnTotal + rbnFTTotal
 		lines := []string{
-			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, secondary, ctyLookup, knownPtr)), // 1
+			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, secondary, metaCache, knownPtr)), // 1
 			formatGridLineOrPlaceholder(gridStats, gridDB),  // 2
 			formatCTYLineOrPlaceholder(ctyLookup, ctyState), // 3
 			formatFCCLineOrPlaceholder(fccSnap),             // 4
@@ -1468,6 +1330,7 @@ func processOutputSpots(
 	correctionIdx *spot.CorrectionIndex,
 	correctionCfg config.CallCorrectionConfig,
 	ctyLookup func() *cty.CTYDatabase,
+	metaCache *callMetaCache,
 	harmonicDetector *spot.HarmonicDetector,
 	harmonicCfg config.HarmonicConfig,
 	knownCalls *atomic.Pointer[spot.KnownCallsigns],
@@ -1531,7 +1394,7 @@ func processOutputSpots(
 
 			var suppress bool
 			if telnet != nil && !s.IsBeacon {
-				suppress = maybeApplyCallCorrectionWithLogger(s, correctionIdx, correctionCfg, ctyDB, knownCalls, tracker, dash, corrLogger, callCooldown, adaptiveMinReports, spotterReliability)
+				suppress = maybeApplyCallCorrectionWithLogger(s, correctionIdx, correctionCfg, ctyDB, metaCache, knownCalls, tracker, dash, corrLogger, callCooldown, adaptiveMinReports, spotterReliability)
 				if suppress {
 					return
 				}
@@ -1600,7 +1463,7 @@ func processOutputSpots(
 				dirty = false
 			}
 			// Final license gate runs after corrections so busted calls can be fixed first.
-			if applyLicenseGate(s, ctyDB, unlicensedReporter) {
+			if applyLicenseGate(s, ctyDB, metaCache, unlicensedReporter) {
 				return
 			}
 			// License gate refreshes metadata; normalize once more before stats/broadcast.
@@ -1650,7 +1513,7 @@ func processOutputSpots(
 				if call == "" {
 					call = s.DECall
 				}
-				if info := effectivePrefixInfo(ctyDB, call); info != nil {
+				if info := effectivePrefixInfo(ctyDB, metaCache, call); info != nil {
 					deGrid := strings.TrimSpace(s.DEMetadata.Grid)
 					s.DEMetadata = metadataFromPrefix(info)
 					if deGrid != "" {
@@ -1888,7 +1751,7 @@ func cloneSpotForPeerPublish(src *spot.Spot) *spot.Spot {
 // Key aspects: Uses cache, CTY metadata refresh for corrected calls, and reporter callback on drops.
 // Upstream: processOutputSpots before broadcast.
 // Downstream: licCache, uls.IsLicensedUS, reporter.
-func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, reporter func(source, role, call, mode string, freq float64)) bool {
+func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, metaCache *callMetaCache, reporter func(source, role, call, mode string, freq float64)) bool {
 	if s == nil {
 		return false
 	}
@@ -1909,8 +1772,8 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, reporter func(source
 	}
 	needsMetadata := s.DXMetadata.ADIF == 0 || s.DEMetadata.ADIF == 0 || s.Confidence == "C"
 	if needsMetadata {
-		dxInfo := effectivePrefixInfo(ctyDB, dxCall)
-		deInfo := effectivePrefixInfo(ctyDB, deCall)
+		dxInfo := effectivePrefixInfo(ctyDB, metaCache, dxCall)
+		deInfo := effectivePrefixInfo(ctyDB, metaCache, deCall)
 
 		// Refresh metadata from the final CTY match but preserve any grid data we already attached.
 		dxGrid := strings.TrimSpace(s.DXMetadata.Grid)
@@ -1930,9 +1793,7 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, reporter func(source
 	dxLicenseCall := strings.TrimSpace(uls.NormalizeForLicense(dxCall))
 	var dxLicenseInfo *cty.PrefixInfo
 	if dxLicenseCall != "" {
-		if info, ok := ctyDB.LookupCallsign(dxLicenseCall); ok {
-			dxLicenseInfo = info
-		}
+		dxLicenseInfo = effectivePrefixInfo(ctyDB, metaCache, dxLicenseCall)
 	}
 
 	now := time.Now()
@@ -1961,15 +1822,21 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, reporter func(source
 	return false
 }
 
-// Purpose: Resolve prefix metadata for a callsign using CTY database.
+// Purpose: Resolve prefix metadata for a callsign using cache + CTY database.
 // Key aspects: Prefers portable slash prefixes (location) over base calls.
 // Upstream: processOutputSpots DE metadata refresh and corrections.
-// Downstream: cty.LookupCallsignPortable.
-func effectivePrefixInfo(ctyDB *cty.CTYDatabase, call string) *cty.PrefixInfo {
+// Downstream: callMetaCache.LookupCTY or cty.LookupCallsignPortable.
+func effectivePrefixInfo(ctyDB *cty.CTYDatabase, metaCache *callMetaCache, call string) *cty.PrefixInfo {
 	if ctyDB == nil {
 		return nil
 	}
 	if call == "" {
+		return nil
+	}
+	if metaCache != nil {
+		if info, ok, _ := metaCache.LookupCTY(call, ctyDB); ok {
+			return info
+		}
 		return nil
 	}
 	info, ok := ctyDB.LookupCallsignPortable(call)
@@ -2000,7 +1867,7 @@ func metadataFromPrefix(info *cty.PrefixInfo) spot.CallMetadata {
 // Key aspects: Evaluates corrections, updates stats, and can suppress spots.
 // Upstream: processOutputSpots call correction stage.
 // Downstream: spot.ApplyCallCorrection, traceLogger, tracker updates.
-func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash uiSurface, traceLogger spot.CorrectionTraceLogger, cooldown *spot.CallCooldown, adaptive *spot.AdaptiveMinReports, spotterReliability spot.SpotterReliability) bool {
+func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, metaCache *callMetaCache, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash uiSurface, traceLogger spot.CorrectionTraceLogger, cooldown *spot.CallCooldown, adaptive *spot.AdaptiveMinReports, spotterReliability spot.SpotterReliability) bool {
 	if spotEntry == nil {
 		return false
 	}
@@ -2108,7 +1975,7 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 	correctedNorm := ""
 	if ctyDB != nil {
 		correctedNorm = spot.NormalizeCallsign(corrected)
-		if _, valid := ctyDB.LookupCallsignPortable(correctedNorm); valid {
+		if info := effectivePrefixInfo(ctyDB, metaCache, correctedNorm); info != nil {
 			if dash != nil {
 				dash.AppendCall(messageDash)
 			} else {
@@ -2424,69 +2291,13 @@ func skewRefreshHourMinute(cfg config.SkewConfig) (int, int) {
 	return 0, 30
 }
 
-// downloadFileAtomic streams the remote file to a temp file and swaps it into place
-// atomically so readers never see a partial write.
-// Purpose: Download a file to a temp path and atomically swap it into place.
-// Key aspects: Uses timeouts and ensures destination directory exists.
-// Upstream: refreshCTYDatabase and refreshKnownCallsigns.
-// Downstream: http.Get, os.Rename, and file I/O.
-func downloadFileAtomic(url, destination string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("fetch failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("fetch failed: status %s", resp.Status)
-	}
-
-	dir := filepath.Dir(destination)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create directory: %w", err)
-		}
-	}
-	tmpDir := dir
-	if tmpDir == "" {
-		tmpDir = "."
-	}
-	tmpFile, err := os.CreateTemp(tmpDir, "download-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmpFile.Name()
-	defer os.Remove(tmpName)
-
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("copy body: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("finalize temp file: %w", err)
-	}
-	if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove old file: %w", err)
-	}
-	if err := os.Rename(tmpName, destination); err != nil {
-		return fmt.Errorf("replace file: %w", err)
-	}
-	return nil
-}
-
 // Purpose: Periodically refresh the known callsigns dataset.
 // Key aspects: Scheduled daily refresh and atomic pointer swap.
 // Upstream: main startup when known calls are enabled.
 // Downstream: refreshKnownCallsigns, seedKnownCalls, and time.NewTimer.
 // startKnownCallScheduler downloads the known-calls file at the configured UTC
 // time every day and updates the in-memory cache pointer after each refresh.
-func startKnownCallScheduler(ctx context.Context, cfg config.KnownCallsConfig, knownPtr *atomic.Pointer[spot.KnownCallsigns], store *gridstore.Store) {
+func startKnownCallScheduler(ctx context.Context, cfg config.KnownCallsConfig, knownPtr *atomic.Pointer[spot.KnownCallsigns], store *gridstore.Store, metaCache *callMetaCache) {
 	if knownPtr == nil {
 		return
 	}
@@ -2504,9 +2315,9 @@ func startKnownCallScheduler(ctx context.Context, cfg config.KnownCallsConfig, k
 				return
 			case <-timer.C:
 			}
-			if fresh, err := refreshKnownCallsigns(cfg); err != nil {
+			if fresh, updated, err := refreshKnownCallsigns(cfg); err != nil {
 				log.Printf("Warning: scheduled known calls download failed: %v", err)
-			} else {
+			} else if updated && fresh != nil {
 				knownPtr.Store(fresh)
 				log.Printf("Scheduled known calls download complete (%d entries)", fresh.Count())
 				if store != nil {
@@ -2514,30 +2325,47 @@ func startKnownCallScheduler(ctx context.Context, cfg config.KnownCallsConfig, k
 						log.Printf("Warning: failed to reseed known calls into grid database: %v", err)
 					}
 				}
+				if metaCache != nil {
+					metaCache.Clear()
+				}
+			} else {
+				log.Printf("Scheduled known calls download: up to date (%s)", cfg.File)
 			}
 		}
 	}()
 }
 
-// Purpose: Download and parse the known calls file.
-// Key aspects: Uses atomic file swap and returns parsed cache on success.
+// Purpose: Download and parse the known calls file when updated.
+// Key aspects: Uses conditional HTTP download and returns (cache, updated).
 // Upstream: startKnownCallScheduler and startup.
-// Downstream: downloadFileAtomic and spot.LoadKnownCallsigns.
+// Downstream: download.Download and spot.LoadKnownCallsigns.
 // refreshKnownCallsigns downloads the known calls file, writes it to disk, and
-// returns the parsed cache.
-func refreshKnownCallsigns(cfg config.KnownCallsConfig) (*spot.KnownCallsigns, error) {
+// returns the parsed cache when the remote content changed.
+func refreshKnownCallsigns(cfg config.KnownCallsConfig) (*spot.KnownCallsigns, bool, error) {
 	url := strings.TrimSpace(cfg.URL)
 	path := strings.TrimSpace(cfg.File)
 	if url == "" {
-		return nil, errors.New("known calls: URL is empty")
+		return nil, false, errors.New("known calls: URL is empty")
 	}
 	if path == "" {
-		return nil, errors.New("known calls: file path is empty")
+		return nil, false, errors.New("known calls: file path is empty")
 	}
-	if err := downloadFileAtomic(url, path, 1*time.Minute); err != nil {
-		return nil, fmt.Errorf("known calls: %w", err)
+	result, err := download.Download(context.Background(), download.Request{
+		URL:         url,
+		Destination: path,
+		Timeout:     1 * time.Minute,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("known calls: %w", err)
 	}
-	return spot.LoadKnownCallsigns(path)
+	if result.Status != download.StatusUpdated {
+		return nil, false, nil
+	}
+	known, err := spot.LoadKnownCallsigns(path)
+	if err != nil {
+		return nil, true, err
+	}
+	return known, true, nil
 }
 
 // Purpose: Compute delay until the next known calls refresh time.
@@ -2574,7 +2402,7 @@ func knownCallRefreshHourMinute(cfg config.KnownCallsConfig) (int, int) {
 // Downstream: refreshCTYDatabase and time.NewTimer.
 // startCTYScheduler downloads cty.plist at the configured UTC time every day and
 // updates the in-memory CTY database pointer after each refresh.
-func startCTYScheduler(ctx context.Context, cfg config.CTYConfig, ctyPtr *atomic.Pointer[cty.CTYDatabase], state *ctyRefreshState) {
+func startCTYScheduler(ctx context.Context, cfg config.CTYConfig, ctyPtr *atomic.Pointer[cty.CTYDatabase], metaCache *callMetaCache, state *ctyRefreshState) {
 	if ctyPtr == nil {
 		return
 	}
@@ -2596,13 +2424,20 @@ func startCTYScheduler(ctx context.Context, cfg config.CTYConfig, ctyPtr *atomic
 			backoff := ctyRetryBase
 			attempt := 0
 			for {
-				fresh, err := refreshCTYDatabase(cfg)
+				fresh, updated, err := refreshCTYDatabase(cfg)
 				if err == nil {
-					ctyPtr.Store(fresh)
+					if updated && fresh != nil {
+						ctyPtr.Store(fresh)
+						if metaCache != nil {
+							metaCache.Clear()
+						}
+						log.Printf("Scheduled CTY download complete (%d prefixes)", len(fresh.Keys))
+					} else {
+						log.Printf("Scheduled CTY download: up to date (%s)", cfg.File)
+					}
 					if state != nil {
 						state.recordSuccess(time.Now().UTC())
 					}
-					log.Printf("Scheduled CTY download complete (%d prefixes)", len(fresh.Keys))
 					break
 				}
 				attempt++
@@ -2646,28 +2481,36 @@ func sleepWithContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// Purpose: Download and parse the CTY database.
-// Key aspects: Uses atomic file swap and returns parsed DB on success.
+// Purpose: Download and parse the CTY database when updated.
+// Key aspects: Uses conditional HTTP download and returns (db, updated).
 // Upstream: startCTYScheduler and startup.
-// Downstream: downloadFileAtomic and cty.LoadCTYDatabase.
+// Downstream: download.Download and cty.LoadCTYDatabase.
 // refreshCTYDatabase downloads cty.plist, writes it atomically, and returns the parsed DB.
-func refreshCTYDatabase(cfg config.CTYConfig) (*cty.CTYDatabase, error) {
+func refreshCTYDatabase(cfg config.CTYConfig) (*cty.CTYDatabase, bool, error) {
 	url := strings.TrimSpace(cfg.URL)
 	path := strings.TrimSpace(cfg.File)
 	if url == "" {
-		return nil, errors.New("cty: URL is empty")
+		return nil, false, errors.New("cty: URL is empty")
 	}
 	if path == "" {
-		return nil, errors.New("cty: file path is empty")
+		return nil, false, errors.New("cty: file path is empty")
 	}
-	if err := downloadFileAtomic(url, path, 1*time.Minute); err != nil {
-		return nil, fmt.Errorf("cty: %w", err)
+	result, err := download.Download(context.Background(), download.Request{
+		URL:         url,
+		Destination: path,
+		Timeout:     1 * time.Minute,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("cty: %w", err)
+	}
+	if result.Status != download.StatusUpdated {
+		return nil, false, nil
 	}
 	db, err := cty.LoadCTYDatabase(path)
 	if err != nil {
-		return nil, fmt.Errorf("cty: load: %w", err)
+		return nil, true, fmt.Errorf("cty: load: %w", err)
 	}
-	return db, nil
+	return db, true, nil
 }
 
 // Purpose: Compute delay until the next CTY refresh time.
@@ -2890,10 +2733,10 @@ func seedKnownCalls(store *gridstore.Store, known *spot.KnownCallsigns) error {
 // Purpose: Start the grid writer pipeline and return update hooks.
 // Key aspects: Provides enqueue, metrics, stop, and lookup functions.
 // Upstream: main grid store setup.
-// Downstream: gridstore.Store and gridCache methods.
-func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache *gridCache, ttl time.Duration, dbCheckOnMiss bool) (func(call, grid string), *gridMetrics, func(), func(call string) (string, bool)) {
+// Downstream: gridstore.Store and callMetaCache methods.
+func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache *callMetaCache, ttl time.Duration, dbCheckOnMiss bool) (func(call, grid string), func(call string, info *cty.PrefixInfo), *gridMetrics, func(), func(call string) (string, bool)) {
 	if store == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	if flushInterval <= 0 {
 		flushInterval = 60 * time.Second
@@ -2902,18 +2745,49 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 	// Synchronous DB reads are disabled on the hot path to keep output non-blocking.
 	// dbCheckOnMiss now gates async cache backfill instead of in-band reads.
 	asyncLookupEnabled := dbCheckOnMiss
-	type update struct {
-		call string
-		grid string
-	}
-	updates := make(chan update, 8192)
+	updates := make(chan gridstore.Record, 8192)
 	done := make(chan struct{})
 	lookupQueue := make(chan string, 4096)
 	lookupDone := make(chan struct{})
 	var lookupPendingMu sync.Mutex
 	lookupPending := make(map[string]struct{})
 
-	// Purpose: Background writer loop to batch grid updates and periodic TTL purges.
+	mergePending := func(existing, incoming gridstore.Record) gridstore.Record {
+		merged := existing
+		if incoming.Grid.Valid {
+			merged.Grid = incoming.Grid
+		}
+		if incoming.IsKnown {
+			merged.IsKnown = true
+		}
+		if incoming.CTYValid {
+			merged.CTYValid = true
+			merged.CTYADIF = incoming.CTYADIF
+			merged.CTYCQZone = incoming.CTYCQZone
+			merged.CTYITUZone = incoming.CTYITUZone
+			merged.CTYContinent = incoming.CTYContinent
+			merged.CTYCountry = incoming.CTYCountry
+		}
+		if incoming.Observations > 0 {
+			merged.Observations += incoming.Observations
+		}
+		if !incoming.FirstSeen.IsZero() {
+			if merged.FirstSeen.IsZero() || incoming.FirstSeen.Before(merged.FirstSeen) {
+				merged.FirstSeen = incoming.FirstSeen
+			}
+		}
+		if !incoming.UpdatedAt.IsZero() {
+			if merged.UpdatedAt.IsZero() || incoming.UpdatedAt.After(merged.UpdatedAt) {
+				merged.UpdatedAt = incoming.UpdatedAt
+			}
+		}
+		if incoming.ExpiresAt != nil {
+			merged.ExpiresAt = incoming.ExpiresAt
+		}
+		return merged
+	}
+
+	// Purpose: Background writer loop to batch metadata updates and periodic TTL purges.
 	// Key aspects: Flushes on size/interval and closes done on exit.
 	// Upstream: startGridWriter.
 	// Downstream: store.UpsertBatch, store.PurgeOlderThan, and metrics updates.
@@ -2929,8 +2803,8 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 			ttlCh = ttlTicker.C
 		}
 
-		pending := make(map[string]update)
-		// Purpose: Flush pending grid updates to the database in a batch.
+		pending := make(map[string]gridstore.Record)
+		// Purpose: Flush pending updates to the database in a batch.
 		// Key aspects: Retains batch on busy errors; clears on success.
 		// Upstream: update loop and ticker ticks.
 		// Downstream: store.UpsertBatch, metrics.learnedTotal.
@@ -2939,14 +2813,10 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 				return
 			}
 			batch := make([]gridstore.Record, 0, len(pending))
-			now := time.Now().UTC()
-			for _, u := range pending {
-				rec := gridstore.Record{
-					Call:         u.call,
-					Grid:         sqlNullString(u.grid),
-					Observations: 1,
-					FirstSeen:    now,
-					UpdatedAt:    now,
+			gridUpdates := 0
+			for _, rec := range pending {
+				if rec.Grid.Valid {
+					gridUpdates++
 				}
 				batch = append(batch, rec)
 			}
@@ -2964,18 +2834,29 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 			if elapsed := time.Since(start); elapsed > time.Second {
 				log.Printf("Gridstore: batch upsert %d records in %s", len(batch), elapsed)
 			}
-			metrics.learnedTotal.Add(uint64(len(batch)))
+			if gridUpdates > 0 {
+				metrics.learnedTotal.Add(uint64(gridUpdates))
+			}
 			clear(pending)
 		}
 
 		for {
 			select {
-			case u, ok := <-updates:
+			case rec, ok := <-updates:
 				if !ok {
 					flush()
 					return
 				}
-				pending[u.call] = u
+				call := strings.TrimSpace(strings.ToUpper(rec.Call))
+				if call == "" {
+					continue
+				}
+				rec.Call = call
+				if existing, exists := pending[call]; exists {
+					pending[call] = mergePending(existing, rec)
+				} else {
+					pending[call] = rec
+				}
 				if len(pending) >= 500 {
 					flush()
 				}
@@ -2995,22 +2876,59 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 	// Purpose: Enqueue a grid update without blocking the output pipeline.
 	// Key aspects: Normalizes call/grid, uses cache to suppress duplicates.
 	// Upstream: processOutputSpots gridUpdate hook.
-	// Downstream: cache.shouldUpdate and updates channel.
-	updateFn := func(call, grid string) {
+	// Downstream: cache.UpdateGrid and updates channel.
+	gridUpdateFn := func(call, grid string) {
 		call = strings.TrimSpace(strings.ToUpper(call))
 		grid = strings.TrimSpace(strings.ToUpper(grid))
 		if call == "" || len(grid) < 4 {
 			return
 		}
-		// Skip synchronous SQLite reads on cache miss; treat it as an update to keep
-		// the output path non-blocking (extra writes are acceptable).
-		if cache != nil && !cache.shouldUpdate(call, grid, nil) {
+		if cache != nil && !cache.UpdateGrid(call, grid) {
 			return
 		}
+		now := time.Now().UTC()
+		rec := gridstore.Record{
+			Call:         call,
+			Grid:         sqlNullString(grid),
+			Observations: 1,
+			FirstSeen:    now,
+			UpdatedAt:    now,
+		}
 		select {
-		case updates <- update{call: call, grid: grid}:
+		case updates <- rec:
 		default:
 			// Drop silently to avoid backpressure on the spot pipeline.
+		}
+	}
+
+	// Purpose: Enqueue CTY metadata updates without blocking ingest.
+	// Key aspects: Stores CTY fields only; relies on gridstore merge for retention.
+	// Upstream: ingest validation cache misses.
+	// Downstream: updates channel.
+	ctyUpdateFn := func(call string, info *cty.PrefixInfo) {
+		if info == nil {
+			return
+		}
+		call = strings.TrimSpace(strings.ToUpper(call))
+		if call == "" {
+			return
+		}
+		now := time.Now().UTC()
+		rec := gridstore.Record{
+			Call:         call,
+			CTYValid:     true,
+			CTYADIF:      info.ADIF,
+			CTYCQZone:    info.CQZone,
+			CTYITUZone:   info.ITUZone,
+			CTYContinent: info.Continent,
+			CTYCountry:   info.Country,
+			FirstSeen:    now,
+			UpdatedAt:    now,
+		}
+		select {
+		case updates <- rec:
+		default:
+			// Drop silently to avoid backpressure on the ingest pipeline.
 		}
 	}
 
@@ -3030,14 +2948,14 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 	// Purpose: Lookup a grid entry with optional async backfill on cache miss.
 	// Key aspects: Avoids synchronous DB reads on the output pipeline.
 	// Upstream: processOutputSpots gridLookup hook.
-	// Downstream: cache.lookupWithMetrics and lookupQueue enqueue.
+	// Downstream: cache.LookupGrid and lookupQueue enqueue.
 	lookupFn := func(call string) (string, bool) {
 		call = strings.TrimSpace(strings.ToUpper(call))
 		if call == "" {
 			return "", false
 		}
 		if cache != nil {
-			if grid, ok := cache.lookupWithMetrics(call, metrics); ok {
+			if grid, ok := cache.LookupGrid(call, metrics); ok {
 				return grid, true
 			}
 		}
@@ -3061,15 +2979,14 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		// Purpose: Background cache backfill for grid lookups.
 		// Key aspects: Reads from lookupQueue and populates cache entries.
 		// Upstream: lookupFn enqueue path.
-		// Downstream: store.Get and cache.add.
+		// Downstream: store.Get and cache.ApplyRecord.
 		go func() {
 			defer close(lookupDone)
 			for call := range lookupQueue {
 				rec, err := store.Get(call)
-				if err == nil && rec != nil && rec.Grid.Valid {
-					grid := strings.ToUpper(strings.TrimSpace(rec.Grid.String))
-					if grid != "" && cache != nil {
-						cache.add(call, grid)
+				if err == nil && rec != nil {
+					if cache != nil {
+						cache.ApplyRecord(*rec)
 					}
 				} else if err != nil && !gridstore.IsBusyError(err) {
 					log.Printf("Warning: gridstore async lookup failed for %s: %v", call, err)
@@ -3083,7 +3000,7 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		close(lookupDone)
 	}
 
-	return updateFn, metrics, stopFn, lookupFn
+	return gridUpdateFn, ctyUpdateFn, metrics, stopFn, lookupFn
 }
 
 // Purpose: Load FCC ULS database stats for dashboard display.
@@ -3137,12 +3054,12 @@ func sqlNullString(v string) sql.NullString {
 }
 
 // formatMemoryLine reports memory-ish metrics in order:
-// exec alloc / ring buffer / primary dedup (dup%) / secondary dedup / CTY cache (hit%) / known calls (hit%).
+// exec alloc / ring buffer / primary dedup (dup%) / secondary dedup / call meta cache (hit%) / known calls (hit%).
 // Purpose: Format the memory/status line for the stats pane.
 // Key aspects: Reports ring buffer occupancy and cache hit stats.
 // Upstream: displayStatsWithFCC.
-// Downstream: buffer.RingBuffer stats and cty/known cache lookups.
-func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, ctyLookup func() *cty.CTYDatabase, knownPtr *atomic.Pointer[spot.KnownCallsigns]) string {
+// Downstream: buffer.RingBuffer stats and cache lookups.
+func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, metaCache *callMetaCache, knownPtr *atomic.Pointer[spot.KnownCallsigns]) string {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	execMB := bytesToMB(mem.Alloc)
@@ -3167,16 +3084,14 @@ func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, seconda
 		secondaryMB = bytesToMB(uint64(cacheSize * dedupeEntryBytes))
 	}
 
-	ctyMB := 0.0
-	ctyRatio := 0.0
-	if ctyLookup != nil {
-		db := ctyLookup()
-		if db != nil {
-			metrics := db.Metrics()
-			ctyMB = bytesToMB(uint64(metrics.CacheEntries * ctyCacheEntryBytes))
-			if metrics.TotalLookups > 0 {
-				ctyRatio = float64(metrics.CacheHits) / float64(metrics.TotalLookups) * 100
-			}
+	metaMB := 0.0
+	metaRatio := 0.0
+	if metaCache != nil {
+		entries := metaCache.EntryCount()
+		metaMB = bytesToMB(uint64(entries * callMetaEntryBytes))
+		metrics := metaCache.CTYMetrics()
+		if metrics.Lookups > 0 {
+			metaRatio = float64(metrics.Hits) / float64(metrics.Lookups) * 100
 		}
 	}
 
@@ -3195,7 +3110,7 @@ func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, seconda
 	}
 
 	return fmt.Sprintf("Memory MB: %.1f / %.1f / %.1f (%.1f%%) / %.1f / %.1f (%.1f%%) / %.1f (%.1f%%)",
-		execMB, ringMB, dedupeMB, dedupeRatio, secondaryMB, ctyMB, ctyRatio, knownMB, knownRatio)
+		execMB, ringMB, dedupeMB, dedupeRatio, secondaryMB, metaMB, metaRatio, knownMB, knownRatio)
 }
 
 // Purpose: Format a human-readable uptime line.

@@ -1,16 +1,14 @@
 // Package cty loads and queries the CTY prefix database so spots can be
 // enriched with continent/zone/country metadata and validated quickly using a
-// cache-backed longest-prefix lookup.
+// longest-prefix lookup.
 package cty
 
 import (
-	"container/list"
 	"fmt"
 	"io"
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 
 	"howett.net/plist"
@@ -38,27 +36,13 @@ type CTYDatabase struct {
 	// so longest-prefix matches can be resolved in O(L) time where L is the callsign
 	// length (typically < 15 bytes).
 	trie ctyTrie
-	// cache stores normalized callsign lookups (hits and misses) with a bounded LRU.
-	cacheMu   sync.Mutex
-	cacheList *list.List
-	cacheMap  map[string]*list.Element
-	cacheCap  int
-	// metrics track lookup/caching behavior for stats reporting.
+	// metrics track lookup/caching behavior for stats reporting. Cache metrics are
+	// retained for compatibility but remain zero because the LRU is disabled.
 	totalLookups       atomic.Uint64
 	cacheHits          atomic.Uint64
 	cacheEntries       atomic.Uint64
 	validated          atomic.Uint64
 	validatedFromCache atomic.Uint64
-}
-
-type cacheEntry struct {
-	info *PrefixInfo
-	ok   bool
-}
-
-type cacheItem struct {
-	key   string
-	entry cacheEntry
 }
 
 // ctyTrie implements a read-only prefix trie over CTY keys.
@@ -140,8 +124,6 @@ func (tr *ctyTrie) longestPrefixKey(cs string) (string, bool) {
 	return best, true
 }
 
-const defaultCacheCapacity = 50000
-
 // LookupMetrics summarizes callsign lookup behavior.
 type LookupMetrics struct {
 	TotalLookups       uint64
@@ -185,12 +167,9 @@ func LoadCTYDatabaseFromReader(r io.ReadSeeker) (*CTYDatabase, error) {
 	})
 	trie := buildCTYTrie(keys)
 	return &CTYDatabase{
-		Data:      data,
-		Keys:      keys,
-		trie:      trie,
-		cacheCap:  defaultCacheCapacity,
-		cacheList: list.New(),
-		cacheMap:  make(map[string]*list.Element, defaultCacheCapacity),
+		Data: data,
+		Keys: keys,
+		trie: trie,
 	}, nil
 }
 
@@ -220,61 +199,41 @@ func normalizeCallsign(cs string) string {
 	return cs
 }
 
-// Purpose: Resolve CTY metadata for a callsign, with caching.
+// Purpose: Resolve CTY metadata for a callsign.
 // Key aspects: Assumes input is already normalized (uppercased, portable suffixes stripped).
 // Upstream: main.go enrichment, RBN/PSKReporter clients, cmd/ctylookup.
-// Downstream: cacheGet, lookupCallsignNoCache, cacheStore.
+// Downstream: lookupCallsignNoCache.
 func (db *CTYDatabase) LookupCallsign(cs string) (*PrefixInfo, bool) {
 	cs = normalizeCallsign(cs)
 	db.totalLookups.Add(1)
-	if entry, ok := db.cacheGet(cs); ok {
-		db.cacheHits.Add(1)
-		if entry.ok {
-			db.validated.Add(1)
-			db.validatedFromCache.Add(1)
-		}
-		return entry.info, entry.ok
-	}
 
 	info, ok := db.lookupCallsignNoCache(cs)
 	if ok {
 		db.validated.Add(1)
 	}
 
-	entry := cacheEntry{info: info, ok: ok}
-	db.cacheStore(cs, entry)
-	return entry.info, entry.ok
+	return info, ok
 }
 
 // Purpose: Resolve CTY metadata for portable callsigns with slash segments.
 // Key aspects: Chooses the shortest slash segment that matches CTY, order-independent.
 // Upstream: main.go CTY gate/enrichment, RBN/PSKReporter clients.
-// Downstream: cacheGet, lookupCallsignNoCache, cacheStore.
+// Downstream: lookupCallsignNoCache.
 // LookupCallsignPortable prefers location prefixes (e.g., N2WQ/VE3 -> VE3) while
-// preserving the full callsign for caching. It assumes cs is already normalized.
+// preserving the full callsign. It assumes cs is already normalized.
 func (db *CTYDatabase) LookupCallsignPortable(cs string) (*PrefixInfo, bool) {
 	cs = strings.TrimSpace(cs)
 	if cs == "" {
 		return nil, false
 	}
 	db.totalLookups.Add(1)
-	if entry, ok := db.cacheGet(cs); ok {
-		db.cacheHits.Add(1)
-		if entry.ok {
-			db.validated.Add(1)
-			db.validatedFromCache.Add(1)
-		}
-		return entry.info, entry.ok
-	}
 
 	info, ok := db.lookupCallsignPortableNoCache(cs)
 	if ok {
 		db.validated.Add(1)
 	}
 
-	entry := cacheEntry{info: info, ok: ok}
-	db.cacheStore(cs, entry)
-	return entry.info, entry.ok
+	return info, ok
 }
 
 // Purpose: Resolve CTY metadata without using the cache.
@@ -358,59 +317,6 @@ func (db *CTYDatabase) KeysWithPrefix(pref string) []string {
 func clonePrefix(info PrefixInfo) *PrefixInfo {
 	copy := info
 	return &copy
-}
-
-// Purpose: Fetch a cached lookup result for a callsign.
-// Key aspects: Uses an LRU list protected by a mutex.
-// Upstream: CTYDatabase.LookupCallsign.
-// Downstream: cacheList/cacheMap mutation.
-func (db *CTYDatabase) cacheGet(cs string) (cacheEntry, bool) {
-	if db == nil || db.cacheCap <= 0 {
-		return cacheEntry{}, false
-	}
-	db.cacheMu.Lock()
-	defer db.cacheMu.Unlock()
-	elem, ok := db.cacheMap[cs]
-	if !ok {
-		return cacheEntry{}, false
-	}
-	db.cacheList.MoveToFront(elem)
-	item := elem.Value.(*cacheItem)
-	return item.entry, true
-}
-
-// Purpose: Store a lookup result in the LRU cache.
-// Key aspects: Updates existing entries and evicts LRU on overflow.
-// Upstream: CTYDatabase.LookupCallsign.
-// Downstream: cacheList/cacheMap mutation.
-func (db *CTYDatabase) cacheStore(cs string, entry cacheEntry) {
-	if db == nil || db.cacheCap <= 0 {
-		return
-	}
-	db.cacheMu.Lock()
-	defer db.cacheMu.Unlock()
-
-	// Update in-place when present to avoid churn.
-	if elem, ok := db.cacheMap[cs]; ok {
-		elem.Value.(*cacheItem).entry = entry
-		db.cacheList.MoveToFront(elem)
-		db.cacheEntries.Store(uint64(len(db.cacheMap)))
-		return
-	}
-
-	elem := db.cacheList.PushFront(&cacheItem{key: cs, entry: entry})
-	db.cacheMap[cs] = elem
-
-	// Evict least-recently-used entries when capacity is exceeded.
-	if db.cacheCap > 0 && len(db.cacheMap) > db.cacheCap {
-		if tail := db.cacheList.Back(); tail != nil {
-			db.cacheList.Remove(tail)
-			if item, ok := tail.Value.(*cacheItem); ok {
-				delete(db.cacheMap, item.key)
-			}
-		}
-	}
-	db.cacheEntries.Store(uint64(len(db.cacheMap)))
 }
 
 // Purpose: Return snapshot of CTY lookup/cache metrics.

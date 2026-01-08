@@ -19,9 +19,14 @@ import (
 )
 
 const (
-	recordVersion       = 1
-	recordHeaderSize    = 36
+	recordVersion       = 2
+	recordHeaderSize    = 48
 	maintenanceBatchCap = 1024
+)
+
+const (
+	recordFlagKnown    = 1 << 0
+	recordFlagCTYValid = 1 << 1
 )
 
 const (
@@ -63,6 +68,12 @@ type Record struct {
 	Call         string
 	IsKnown      bool
 	Grid         sql.NullString
+	CTYValid     bool
+	CTYADIF      int
+	CTYCQZone    int
+	CTYITUZone   int
+	CTYContinent string
+	CTYCountry   string
 	Observations int
 	FirstSeen    time.Time
 	UpdatedAt    time.Time
@@ -73,6 +84,12 @@ type recordValue struct {
 	isKnown      bool
 	grid         string
 	gridValid    bool
+	ctyValid     bool
+	ctyADIF      uint32
+	ctyCQZone    uint16
+	ctyITUZone   uint16
+	ctyContinent string
+	ctyCountry   string
 	observations uint64
 	firstSeen    int64
 	updatedAt    int64
@@ -631,6 +648,17 @@ func normalizeRecordValue(rec Record, now time.Time) recordValue {
 		expires = rec.ExpiresAt.UTC().Unix()
 	}
 	grid, gridValid := normalizeGrid(rec.Grid)
+	ctyContinent, ctyCountry, ctyValid := normalizeCTY(rec)
+	ctyADIF := clampUint32(rec.CTYADIF)
+	ctyCQZone := clampUint16(rec.CTYCQZone)
+	ctyITUZone := clampUint16(rec.CTYITUZone)
+	if !ctyValid {
+		ctyADIF = 0
+		ctyCQZone = 0
+		ctyITUZone = 0
+		ctyContinent = ""
+		ctyCountry = ""
+	}
 	obs := rec.Observations
 	if obs < 0 {
 		obs = 0
@@ -639,6 +667,12 @@ func normalizeRecordValue(rec Record, now time.Time) recordValue {
 		isKnown:      rec.IsKnown,
 		grid:         grid,
 		gridValid:    gridValid,
+		ctyValid:     ctyValid,
+		ctyADIF:      ctyADIF,
+		ctyCQZone:    ctyCQZone,
+		ctyITUZone:   ctyITUZone,
+		ctyContinent: ctyContinent,
+		ctyCountry:   ctyCountry,
 		observations: uint64(obs),
 		firstSeen:    firstSeen.UTC().Unix(),
 		updatedAt:    updatedAt.UTC().Unix(),
@@ -655,6 +689,14 @@ func mergeRecordValue(existing recordValue, found bool, incoming recordValue) re
 	if !incoming.gridValid {
 		merged.grid = existing.grid
 		merged.gridValid = existing.gridValid
+	}
+	if !incoming.ctyValid {
+		merged.ctyValid = existing.ctyValid
+		merged.ctyADIF = existing.ctyADIF
+		merged.ctyCQZone = existing.ctyCQZone
+		merged.ctyITUZone = existing.ctyITUZone
+		merged.ctyContinent = existing.ctyContinent
+		merged.ctyCountry = existing.ctyCountry
 	}
 	merged.observations = existing.observations + incoming.observations
 	if existing.firstSeen != 0 && (merged.firstSeen == 0 || existing.firstSeen < merged.firstSeen) {
@@ -679,10 +721,28 @@ func recordValueToRecord(call string, val recordValue) Record {
 		t := time.Unix(val.expiresAt, 0).UTC()
 		expires = &t
 	}
+	ctyContinent := ""
+	ctyCountry := ""
+	ctyADIF := 0
+	ctyCQZone := 0
+	ctyITUZone := 0
+	if val.ctyValid {
+		ctyContinent = val.ctyContinent
+		ctyCountry = val.ctyCountry
+		ctyADIF = int(val.ctyADIF)
+		ctyCQZone = int(val.ctyCQZone)
+		ctyITUZone = int(val.ctyITUZone)
+	}
 	return Record{
 		Call:         call,
 		IsKnown:      val.isKnown,
 		Grid:         grid,
+		CTYValid:     val.ctyValid,
+		CTYADIF:      ctyADIF,
+		CTYCQZone:    ctyCQZone,
+		CTYITUZone:   ctyITUZone,
+		CTYContinent: ctyContinent,
+		CTYCountry:   ctyCountry,
 		Observations: int(val.observations),
 		FirstSeen:    time.Unix(val.firstSeen, 0).UTC(),
 		UpdatedAt:    time.Unix(val.updatedAt, 0).UTC(),
@@ -695,12 +755,25 @@ func encodeRecordValue(val recordValue) []byte {
 	if val.gridValid {
 		grid = val.grid
 	}
-	gridLen := len(grid)
-	buf := make([]byte, recordHeaderSize+gridLen)
-	buf[0] = recordVersion
-	if val.isKnown {
-		buf[1] = 1
+	ctyContinent := ""
+	ctyCountry := ""
+	if val.ctyValid {
+		ctyContinent = val.ctyContinent
+		ctyCountry = val.ctyCountry
 	}
+	gridLen := len(grid)
+	contLen := len(ctyContinent)
+	countryLen := len(ctyCountry)
+	buf := make([]byte, recordHeaderSize+gridLen+contLen+countryLen)
+	buf[0] = recordVersion
+	flags := byte(0)
+	if val.isKnown {
+		flags |= recordFlagKnown
+	}
+	if val.ctyValid {
+		flags |= recordFlagCTYValid
+	}
+	buf[1] = flags
 	binary.BigEndian.PutUint64(buf[2:], val.observations)
 	binary.BigEndian.PutUint64(buf[10:], uint64(val.firstSeen))
 	binary.BigEndian.PutUint64(buf[18:], uint64(val.updatedAt))
@@ -709,8 +782,18 @@ func encodeRecordValue(val recordValue) []byte {
 		expires = uint64(val.expiresAt)
 	}
 	binary.BigEndian.PutUint64(buf[26:], expires)
-	binary.BigEndian.PutUint16(buf[34:], uint16(gridLen))
-	copy(buf[36:], grid)
+	binary.BigEndian.PutUint32(buf[34:], val.ctyADIF)
+	binary.BigEndian.PutUint16(buf[38:], val.ctyCQZone)
+	binary.BigEndian.PutUint16(buf[40:], val.ctyITUZone)
+	binary.BigEndian.PutUint16(buf[42:], uint16(gridLen))
+	binary.BigEndian.PutUint16(buf[44:], uint16(contLen))
+	binary.BigEndian.PutUint16(buf[46:], uint16(countryLen))
+	offset := recordHeaderSize
+	copy(buf[offset:], grid)
+	offset += gridLen
+	copy(buf[offset:], ctyContinent)
+	offset += contLen
+	copy(buf[offset:], ctyCountry)
 	return buf
 }
 
@@ -721,29 +804,62 @@ func decodeRecordValue(raw []byte) (recordValue, error) {
 	if raw[0] != recordVersion {
 		return recordValue{}, errInvalidRecord
 	}
-	isKnown := raw[1] != 0
+	flags := raw[1]
+	isKnown := (flags & recordFlagKnown) != 0
+	ctyValid := (flags & recordFlagCTYValid) != 0
 	observations := binary.BigEndian.Uint64(raw[2:])
 	firstSeen := int64(binary.BigEndian.Uint64(raw[10:]))
 	updatedAt := int64(binary.BigEndian.Uint64(raw[18:]))
 	expiresRaw := binary.BigEndian.Uint64(raw[26:])
-	gridLen := int(binary.BigEndian.Uint16(raw[34:]))
-	if recordHeaderSize+gridLen > len(raw) {
+	ctyADIF := binary.BigEndian.Uint32(raw[34:])
+	ctyCQZone := binary.BigEndian.Uint16(raw[38:])
+	ctyITUZone := binary.BigEndian.Uint16(raw[40:])
+	gridLen := int(binary.BigEndian.Uint16(raw[42:]))
+	contLen := int(binary.BigEndian.Uint16(raw[44:]))
+	countryLen := int(binary.BigEndian.Uint16(raw[46:]))
+	if recordHeaderSize+gridLen+contLen+countryLen > len(raw) {
 		return recordValue{}, errInvalidRecord
 	}
 	grid := ""
 	gridValid := false
+	ctyContinent := ""
+	ctyCountry := ""
+	offset := recordHeaderSize
 	if gridLen > 0 {
-		grid = string(raw[36 : 36+gridLen])
+		grid = string(raw[offset : offset+gridLen])
 		gridValid = true
+		offset += gridLen
+	} else {
+		offset += gridLen
+	}
+	if contLen > 0 {
+		ctyContinent = string(raw[offset : offset+contLen])
+	}
+	offset += contLen
+	if countryLen > 0 {
+		ctyCountry = string(raw[offset : offset+countryLen])
 	}
 	expires := expiresNone
 	if expiresRaw != ^uint64(0) {
 		expires = int64(expiresRaw)
 	}
+	if !ctyValid {
+		ctyADIF = 0
+		ctyCQZone = 0
+		ctyITUZone = 0
+		ctyContinent = ""
+		ctyCountry = ""
+	}
 	return recordValue{
 		isKnown:      isKnown,
 		grid:         grid,
 		gridValid:    gridValid,
+		ctyValid:     ctyValid,
+		ctyADIF:      ctyADIF,
+		ctyCQZone:    ctyCQZone,
+		ctyITUZone:   ctyITUZone,
+		ctyContinent: ctyContinent,
+		ctyCountry:   ctyCountry,
 		observations: observations,
 		firstSeen:    firstSeen,
 		updatedAt:    updatedAt,
@@ -816,6 +932,41 @@ func normalizeGrid(grid sql.NullString) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+func normalizeCTY(rec Record) (string, string, bool) {
+	continent := strings.ToUpper(strings.TrimSpace(rec.CTYContinent))
+	country := strings.TrimSpace(rec.CTYCountry)
+	ctyValid := rec.CTYValid
+	if !ctyValid && (rec.CTYADIF > 0 || rec.CTYCQZone > 0 || rec.CTYITUZone > 0 || continent != "" || country != "") {
+		ctyValid = true
+	}
+	if !ctyValid {
+		return "", "", false
+	}
+	return continent, country, true
+}
+
+func clampUint16(v int) uint16 {
+	if v <= 0 {
+		return 0
+	}
+	max := int(^uint16(0))
+	if v > max {
+		return ^uint16(0)
+	}
+	return uint16(v)
+}
+
+func clampUint32(v int) uint32 {
+	if v <= 0 {
+		return 0
+	}
+	max := int(^uint32(0))
+	if v > max {
+		return ^uint32(0)
+	}
+	return uint32(v)
 }
 
 func callKeyBytes(call string) []byte {

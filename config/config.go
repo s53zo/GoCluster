@@ -279,9 +279,9 @@ type PSKReporterConfig struct {
 	// AppendSpotterSSID, when true, appends "-#" to receiver callsigns that
 	// lack an SSID so deduplication treats each PSK skimmer uniquely.
 	AppendSpotterSSID bool `yaml:"append_spotter_ssid"`
-	// CTYCacheSize bounds the shared ingest CTY lookup cache (all sources).
+	// CTYCacheSize is deprecated; unified call metadata cache uses grid_cache_size.
 	CTYCacheSize int `yaml:"cty_cache_size"`
-	// CTYCacheTTLSeconds controls TTL expiration for ingest CTY cache entries.
+	// CTYCacheTTLSeconds is deprecated; unified cache clears on CTY/SCP reload.
 	CTYCacheTTLSeconds int `yaml:"cty_cache_ttl_seconds"`
 	// MaxPayloadBytes caps incoming MQTT payload sizes to guard against abuse.
 	MaxPayloadBytes int `yaml:"max_payload_bytes"`

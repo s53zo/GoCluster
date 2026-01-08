@@ -1,7 +1,6 @@
 package reputation
 
 import (
-	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -9,10 +8,11 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"dxcluster/download"
 )
 
 func (g *Gate) downloadLoop(ctx context.Context) {
@@ -41,8 +41,12 @@ func (g *Gate) downloadAndLoad(ctx context.Context) error {
 	if g == nil || !g.cfg.ipinfoDownloadEnabled {
 		return nil
 	}
-	if err := downloadSnapshot(ctx, g.cfg); err != nil {
+	updated, err := downloadSnapshot(ctx, g.cfg)
+	if err != nil {
 		return err
+	}
+	if !updated && g.ipinfoStoreLoaded() {
+		return nil
 	}
 	if err := g.LoadStore(); err != nil {
 		return err
@@ -51,24 +55,24 @@ func (g *Gate) downloadAndLoad(ctx context.Context) error {
 	return nil
 }
 
-func downloadSnapshot(ctx context.Context, cfg gateConfig) error {
+func downloadSnapshot(ctx context.Context, cfg gateConfig) (bool, error) {
 	url := strings.TrimSpace(cfg.ipinfoDownloadURL)
 	token := strings.TrimSpace(cfg.ipinfoDownloadToken)
 	if url == "" || token == "" {
-		return fmt.Errorf("ipinfo download url/token missing")
+		return false, fmt.Errorf("ipinfo download url/token missing")
 	}
 	url = strings.ReplaceAll(url, "$TOKEN", token)
 	gzPath := strings.TrimSpace(cfg.ipinfoDownloadPath)
 	csvPath := strings.TrimSpace(cfg.ipinfoSnapshotPath)
 	if gzPath == "" || csvPath == "" {
-		return fmt.Errorf("ipinfo download paths missing")
+		return false, fmt.Errorf("ipinfo download paths missing")
 	}
 
 	if err := os.MkdirAll(filepath.Dir(gzPath), 0o755); err != nil {
-		return err
+		return false, err
 	}
 	if err := os.MkdirAll(filepath.Dir(csvPath), 0o755); err != nil {
-		return err
+		return false, err
 	}
 
 	timeout := cfg.ipinfoDownloadTimeout
@@ -77,9 +81,17 @@ func downloadSnapshot(ctx context.Context, cfg gateConfig) error {
 	}
 	downloadCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-
-	if err := runCurl(downloadCtx, url, gzPath); err != nil {
-		return err
+	res, err := download.Download(downloadCtx, download.Request{
+		URL:         url,
+		Destination: gzPath,
+		Timeout:     timeout,
+	})
+	if err != nil {
+		return false, err
+	}
+	if res.Status != download.StatusUpdated {
+		log.Printf("IPinfo download: up to date (%s)", gzPath)
+		return false, nil
 	}
 	importTimeout := cfg.ipinfoImportTimeout
 	if importTimeout <= 0 {
@@ -89,23 +101,23 @@ func downloadSnapshot(ctx context.Context, cfg gateConfig) error {
 	defer importCancel()
 
 	if err := extractGzip(importCtx, gzPath, csvPath); err != nil {
-		return err
+		return false, err
 	}
 	dbPath, err := buildIPInfoPebble(importCtx, csvPath, cfg.ipinfoPebblePath, cfg.ipinfoPebbleCompact)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := updateIPInfoPebbleCurrent(cfg.ipinfoPebblePath, dbPath); err != nil {
-		return err
+		return false, err
 	}
 	if cfg.ipinfoDeleteCSV {
 		if err := os.Remove(csvPath); err != nil && !os.IsNotExist(err) {
-			return err
+			return false, err
 		}
 	}
 	if !cfg.ipinfoKeepGzip {
 		if err := os.Remove(gzPath); err != nil && !os.IsNotExist(err) {
-			return err
+			return false, err
 		}
 	}
 	if cfg.ipinfoPebbleCleanup {
@@ -114,28 +126,17 @@ func downloadSnapshot(ctx context.Context, cfg gateConfig) error {
 		}
 	}
 	log.Printf("IPinfo pebble store updated at %s", dbPath)
-	return nil
+	return true, nil
 }
 
-func runCurl(ctx context.Context, url, dest string) error {
-	cmd := exec.CommandContext(ctx, "curl", "-L", url, "-o", dest)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	start := time.Now()
-	if err := cmd.Run(); err != nil {
-		elapsed := time.Since(start)
-		return fmt.Errorf("curl failed after %s: %w: %s", elapsed, err, strings.TrimSpace(stderr.String()))
+func (g *Gate) ipinfoStoreLoaded() bool {
+	if g == nil {
+		return false
 	}
-	elapsed := time.Since(start)
-	info, err := os.Stat(dest)
-	if err != nil {
-		return err
-	}
-	if info.Size() == 0 {
-		return fmt.Errorf("curl produced empty file: %s", dest)
-	}
-	log.Printf("IPinfo download %s completed in %s (%d bytes)", dest, elapsed, info.Size())
-	return nil
+	g.ipinfoStoreMu.RLock()
+	loaded := g.ipinfoStore != nil
+	g.ipinfoStoreMu.RUnlock()
+	return loaded
 }
 
 func extractGzip(ctx context.Context, src, dest string) error {
