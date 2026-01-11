@@ -68,6 +68,27 @@ type Spot struct {
 	DECallNormStripped string
 }
 
+// pskVariantMap collapses PSK variants to a canonical family while preserving
+// the original token for display/logging.
+var pskVariantMap = map[string]string{
+	"PSK":    "PSK",
+	"PSK31":  "PSK",
+	"PSK63":  "PSK",
+	"PSK125": "PSK",
+}
+
+// CanonicalPSKMode returns the canonical PSK family label alongside the
+// original token. When mode is not a PSK variant, it returns the input as both
+// canonical and variant with isPSK=false.
+func CanonicalPSKMode(mode string) (canonical string, variant string, isPSK bool) {
+	upper := strings.ToUpper(strings.TrimSpace(mode))
+	canonical, ok := pskVariantMap[upper]
+	if !ok {
+		return upper, upper, false
+	}
+	return canonical, upper, true
+}
+
 // CallMetadata stores geographic metadata for a callsign
 type CallMetadata struct {
 	Continent string
@@ -259,6 +280,9 @@ func (sb *stringBuilder) AppendByte(b byte) {
 func (s *Spot) EnsureNormalized() {
 	if s.ModeNorm == "" && s.Mode != "" {
 		s.ModeNorm = strings.ToUpper(strings.TrimSpace(s.Mode))
+		if canonical, _, ok := CanonicalPSKMode(s.ModeNorm); ok {
+			s.ModeNorm = canonical
+		}
 	}
 	if s.BandNorm == "" && s.Band != "" {
 		// Normalize band to canonical lowercase (e.g., "20m") so allowlists match.

@@ -21,12 +21,13 @@ import (
 // normalizedPSK carries normalized tokens to avoid repeated string operations per message.
 // All string fields are uppercased and trimmed.
 type normalizedPSK struct {
-	modeUpper string
-	dxCall    string
-	deCall    string
-	dxGrid    string
-	deGrid    string
-	freqKHz   float64
+	modeUpper   string // canonical mode (e.g., PSK)
+	displayMode string // original token (e.g., PSK31)
+	dxCall      string
+	deCall      string
+	dxGrid      string
+	deGrid      string
+	freqKHz     float64
 }
 
 // Client represents a PSKReporter MQTT client
@@ -328,12 +329,19 @@ func (c *Client) handlePayload(payload []byte) {
 		}
 	}
 	modeUpper := strings.ToUpper(strings.TrimSpace(pskrMsg.Mode))
+	canonical, variant, isPSK := spot.CanonicalPSKMode(modeUpper)
 	if !c.allowAllModes {
-		if modeUpper == "" {
+		if canonical == "" {
 			return
 		}
-		if _, ok := c.allowedModes[modeUpper]; !ok {
-			return
+		if _, ok := c.allowedModes[canonical]; !ok {
+			// Accept explicit variant allowlists as a fallback for operators who still list them.
+			if !isPSK || variant == "" {
+				return
+			}
+			if _, variantOK := c.allowedModes[variant]; !variantOK {
+				return
+			}
 		}
 	}
 	s := c.convertToSpot(&pskrMsg)
@@ -410,7 +418,8 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 	// Create spot
 	// In PSKReporter: sender = DX station, receiver = spotter
 	// In our model: DXCall = sender, DECall = receiver
-	s := spot.NewSpotNormalized(dxCall, deCall, freqKHz, norm.modeUpper)
+	s := spot.NewSpotNormalized(dxCall, deCall, freqKHz, norm.displayMode)
+	s.ModeNorm = norm.modeUpper
 	s.IsHuman = false
 
 	// CRITICAL: Set the actual observation timestamp from PSKReporter
@@ -460,6 +469,13 @@ func (c *Client) normalizeMessage(msg *PSKRMessage) *normalizedPSK {
 	if modeUpper == "" || msg.SenderCall == "" || msg.ReceiverCall == "" {
 		return nil
 	}
+	canonical, variant, ok := spot.CanonicalPSKMode(modeUpper)
+	if ok {
+		modeUpper = canonical
+	}
+	if variant == "" {
+		variant = modeUpper
+	}
 	freqKHz := float64(msg.Frequency) / 1000.0
 	if freqKHz <= 0 {
 		return nil
@@ -469,12 +485,13 @@ func (c *Client) normalizeMessage(msg *PSKRMessage) *normalizedPSK {
 	dxGrid := strings.ToUpper(strings.TrimSpace(msg.SenderLocator))
 	deGrid := strings.ToUpper(strings.TrimSpace(msg.ReceiverLocator))
 	return &normalizedPSK{
-		modeUpper: modeUpper,
-		dxCall:    dxCall,
-		deCall:    deCall,
-		dxGrid:    dxGrid,
-		deGrid:    deGrid,
-		freqKHz:   freqKHz,
+		modeUpper:   modeUpper,
+		displayMode: variant,
+		dxCall:      dxCall,
+		deCall:      deCall,
+		dxGrid:      dxGrid,
+		deGrid:      deGrid,
+		freqKHz:     freqKHz,
 	}
 }
 

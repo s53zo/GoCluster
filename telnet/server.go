@@ -136,6 +136,7 @@ type Client struct {
 	filterMu  sync.RWMutex
 	filter    *filter.Filter // Personal spot filter (band, mode, callsign)
 	dropCount uint64         // Count of spots dropped for this client due to backpressure
+	pendingDeliveries sync.WaitGroup // Outstanding broadcast jobs referencing this client
 }
 
 // InputValidationError represents a non-fatal ingress violation (length or character guardrails).
@@ -309,8 +310,8 @@ const (
 )
 
 const (
-	passFilterUsageMsg      = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern> | PASS DECALL <pattern> | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK31.\nType HELP for usage.\n"
-	rejectFilterUsageMsg    = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER> | REJECT DXCALL | REJECT DECALL | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK31.\nType HELP for usage.\n"
+	passFilterUsageMsg      = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern> | PASS DECALL <pattern> | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
+	rejectFilterUsageMsg    = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER> | REJECT DXCALL | REJECT DECALL | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
 	unknownPassTypeMsg      = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 	unknownRejectTypeMsg    = "Unknown filter type. Use: ALL, BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 	invalidFilterCommandMsg = "Invalid filter command. Type HELP for usage.\n"
@@ -651,6 +652,9 @@ func (s *Server) dispatchSpotToWorkers(spot *spot.Spot, shards [][]*Client) {
 		if len(clients) == 0 {
 			continue
 		}
+		for _, client := range clients {
+			client.pendingDeliveries.Add(1)
+		}
 		job := &broadcastJob{spot: spot, clients: clients}
 		select {
 		case s.workerQueues[i] <- job:
@@ -658,6 +662,9 @@ func (s *Server) dispatchSpotToWorkers(spot *spot.Spot, shards [][]*Client) {
 			drops := atomic.AddUint64(&s.metrics.queueDrops, 1)
 			if shouldLogQueueDrop(drops) {
 				log.Printf("Worker %d queue full (%d pending jobs), dropping %d-client shard (total queue drops=%d)", i, len(s.workerQueues[i]), len(clients), drops)
+			}
+			for _, client := range clients {
+				client.pendingDeliveries.Done()
 			}
 		}
 	}
@@ -747,6 +754,10 @@ func (s *Server) deliverJob(job *broadcastJob) {
 		}
 	}()
 	for _, client := range job.clients {
+		if client == nil {
+			continue
+		}
+		client.pendingDeliveries.Done()
 		// Always deliver spots where the DX callsign matches the logged-in user,
 		// regardless of filters (self-spots should not be filtered out).
 		if !strings.EqualFold(job.spot.DXCall, client.callsign) {
@@ -1262,6 +1273,8 @@ func (s *Server) unregisterClient(client *Client) {
 	s.shardsDirty.Store(true)
 	s.clientsMutex.Unlock()
 
+	// Ensure all outstanding broadcast deliveries referencing this client complete before we close channels.
+	client.pendingDeliveries.Wait()
 	client.saveFilter()
 	close(client.spotChan)
 	close(client.bulletinChan)

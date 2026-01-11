@@ -475,3 +475,18 @@ func TestGrid2UnsetClearsWhitelist(t *testing.T) {
 		t.Fatalf("expected DEGRID2 filter to reset to ALL after removing last entry")
 	}
 }
+
+func TestPSKVariantsMatchCanonicalModeFilter(t *testing.T) {
+	f := NewFilter()
+	f.ResetModes()
+	f.SetMode("PSK", true)
+
+	psk31 := &spot.Spot{
+		Mode: "psk31",
+	}
+	psk31.EnsureNormalized()
+
+	if !f.Matches(psk31) {
+		t.Fatalf("expected PSK31 variant to pass when PSK is allowed")
+	}
+}

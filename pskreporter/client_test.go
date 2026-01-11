@@ -118,3 +118,25 @@ func TestHandlePayloadFiltersModes(t *testing.T) {
 		t.Fatalf("expected allowed mode to enqueue a spot")
 	}
 }
+
+func TestHandlePayloadAllowsPSKVariantsWithCanonicalAllowlist(t *testing.T) {
+	client := NewClient("localhost", 1883, nil, []string{"PSK"}, "", 1, nil, false, 2, 0)
+	psk31 := PSKRMessage{
+		Frequency:    14074000,
+		Mode:         "PSK31",
+		Timestamp:    time.Now().Unix(),
+		SenderCall:   "K1ABC",
+		ReceiverCall: "N0CALL",
+	}
+	payload, _ := json.Marshal(psk31)
+
+	client.handlePayload(payload)
+	select {
+	case spot := <-client.spotChan:
+		if spot.Mode != "PSK31" || spot.ModeNorm != "PSK" {
+			t.Fatalf("expected PSK31 variant with canonical PSK ModeNorm, got Mode=%q ModeNorm=%q", spot.Mode, spot.ModeNorm)
+		}
+	default:
+		t.Fatalf("expected PSK31 to be accepted when PSK is allowed")
+	}
+}

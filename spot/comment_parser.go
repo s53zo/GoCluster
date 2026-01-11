@@ -191,6 +191,8 @@ var keywordPatterns = []acPattern{
 	{word: "FT4", kind: acTokenMode, mode: "FT4"},
 	{word: "FT-4", kind: acTokenMode, mode: "FT4"},
 	{word: "PSK31", kind: acTokenMode, mode: "PSK31"},
+	{word: "PSK63", kind: acTokenMode, mode: "PSK63"},
+	{word: "PSK125", kind: acTokenMode, mode: "PSK125"},
 	{word: "JS8", kind: acTokenMode, mode: "JS8"},
 	{word: "SSTV", kind: acTokenMode, mode: "SSTV"},
 	{word: "MSK", kind: acTokenMode, mode: "MSK144"},

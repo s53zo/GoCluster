@@ -19,7 +19,8 @@
       "Bash(ls:*)",
       "Bash(file:*)",
       "Bash(stat:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(grep:*)"
     ],
     "deny": [],
     "ask": []

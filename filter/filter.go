@@ -37,7 +37,7 @@ var SupportedModes = []string{
 	"USB",
 	"RTTY",
 	"MSK144",
-	"PSK31",
+	"PSK",
 	"SSTV",
 }
 
@@ -47,6 +47,16 @@ var SupportedModes = []string{
 // Downstream: None.
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+// canonicalModeToken collapses PSK variants into the PSK family while keeping
+// other modes uppercase/trimmed.
+func canonicalModeToken(mode string) string {
+	mode = strings.ToUpper(strings.TrimSpace(mode))
+	if canonical, _, ok := spot.CanonicalPSKMode(mode); ok {
+		return canonical
+	}
+	return mode
 }
 
 // SupportedSources enumerates how telnet users can filter on Spot.IsHuman.
@@ -127,7 +137,7 @@ var confidenceSymbolScores = map[string]int{
 // Upstream: Telnet filter parsing and validation.
 // Downstream: supportedModeSet.
 func IsSupportedMode(mode string) bool {
-	mode = strings.ToUpper(strings.TrimSpace(mode))
+	mode = canonicalModeToken(mode)
 	return supportedModeSet[mode]
 }
 
@@ -196,7 +206,7 @@ func SetDefaultModeSelection(modes []string) {
 	}
 	normalized := make([]string, 0, len(modes))
 	for _, mode := range modes {
-		candidate := strings.ToUpper(strings.TrimSpace(mode))
+		candidate := canonicalModeToken(mode)
 		if candidate == "" {
 			continue
 		}
@@ -477,7 +487,7 @@ func (f *Filter) SetBand(band string, enabled bool) {
 // Upstream: Telnet PASS/REJECT MODE commands.
 // Downstream: None.
 func (f *Filter) SetMode(mode string, enabled bool) {
-	mode = strings.ToUpper(mode)
+	mode = canonicalModeToken(mode)
 	if f.Modes == nil {
 		f.Modes = make(map[string]bool)
 	}
@@ -1278,7 +1288,7 @@ func matchesCallsignPattern(callsign, pattern string) bool {
 // Downstream: None.
 func isConfidenceExemptMode(mode string) bool {
 	switch strings.ToUpper(strings.TrimSpace(mode)) {
-	case "FT8", "FT4":
+	case "FT8", "FT4", "PSK", "MSK144":
 		return true
 	default:
 		return false
@@ -1666,6 +1676,35 @@ func (f *Filter) migrateLegacyConfidence() {
 	}
 }
 
+// migratePSKModes collapses legacy PSK31/63/125 entries into the canonical PSK
+// family so filters align with the new single-mode surface.
+func (f *Filter) migratePSKModes() {
+	if f == nil {
+		return
+	}
+	if f.Modes == nil {
+		f.Modes = make(map[string]bool)
+	}
+	if f.BlockModes == nil {
+		f.BlockModes = make(map[string]bool)
+	}
+
+	for mode := range f.Modes {
+		if canonical, _, ok := spot.CanonicalPSKMode(mode); ok && canonical != "" && canonical != mode {
+			f.Modes[canonical] = true
+			delete(f.Modes, mode)
+		}
+	}
+	for mode := range f.BlockModes {
+		if canonical, _, ok := spot.CanonicalPSKMode(mode); ok && canonical != "" && canonical != mode {
+			f.BlockModes[canonical] = true
+			delete(f.BlockModes, mode)
+		}
+	}
+
+	f.AllModes = len(f.Modes) == 0
+}
+
 // Purpose: Repair zero-value filters loaded from disk.
 // Key aspects: Ensures maps/pointers exist and default flags are permissive.
 // Upstream: LoadUserRecord or YAML decoding flow.
@@ -1698,6 +1737,7 @@ func (f *Filter) normalizeDefaults() {
 	if f.BlockConfidence == nil {
 		f.BlockConfidence = make(map[string]bool)
 	}
+	f.migratePSKModes()
 	if f.DXContinents == nil {
 		f.DXContinents = make(map[string]bool)
 	}

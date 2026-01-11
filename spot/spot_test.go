@@ -41,6 +41,18 @@ func TestNewSpotNormalizesSSBToSideband(t *testing.T) {
 	}
 }
 
+func TestEnsureNormalizedCollapsesPSKVariants(t *testing.T) {
+	s := NewSpot("K1ABC", "W1AW", 14074.0, "PSK31")
+	s.ModeNorm = "" // force recompute
+	s.EnsureNormalized()
+	if s.Mode != "PSK31" {
+		t.Fatalf("expected Mode to preserve variant, got %q", s.Mode)
+	}
+	if s.ModeNorm != "PSK" {
+		t.Fatalf("expected ModeNorm to collapse to PSK, got %q", s.ModeNorm)
+	}
+}
+
 func TestRefreshBeaconFlagUsesComment(t *testing.T) {
 	s := NewSpot("W1ABC", "K1XYZ", 14074.5, "CW")
 	s.Comment = "Heard via NCDXF beacon schedule"
