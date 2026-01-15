@@ -1297,7 +1297,7 @@ func isConfidenceExemptMode(mode string) bool {
 
 // Purpose: Render a human-readable summary of active filters.
 // Key aspects: Describes allow/block state for each filter category.
-// Upstream: Telnet SHOW FILTER command output.
+// Upstream: Legacy summaries/diagnostics; telnet SHOW FILTER uses a dedicated snapshot formatter.
 // Downstream: enabled* helpers and filter flags.
 // String returns a human-readable description of the active filters.
 //
@@ -1311,7 +1311,7 @@ func isConfidenceExemptMode(mode string) bool {
 //   - Callsign filter: "Callsigns: W1*, LZ5VV"
 //   - Empty filter: "Bands: NONE (no spots will pass)"
 //
-// This is used for the SHOW FILTER command to display current filter state.
+// This is a legacy summary and does not include the full SHOW FILTER snapshot output.
 //
 // Examples:
 //

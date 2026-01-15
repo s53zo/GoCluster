@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"dxcluster/cty"
 	"dxcluster/filter"
 	"dxcluster/spot"
 )
@@ -13,6 +14,55 @@ func newTestClient() *Client {
 		filter:  filter.NewFilter(),
 		dialect: DialectGo,
 	}
+}
+
+const sampleCTYPLIST = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+<key>K1</key>
+	<dict>
+		<key>Country</key>
+		<string>Alpha</string>
+		<key>Prefix</key>
+		<string>K1</string>
+		<key>ADIF</key>
+		<integer>1</integer>
+		<key>CQZone</key>
+		<integer>5</integer>
+		<key>ITUZone</key>
+		<integer>8</integer>
+		<key>Continent</key>
+		<string>NA</string>
+		<key>ExactCallsign</key>
+		<false/>
+	</dict>
+<key>W6</key>
+	<dict>
+		<key>Country</key>
+		<string>United States</string>
+		<key>Prefix</key>
+		<string>W6</string>
+		<key>ADIF</key>
+		<integer>291</integer>
+		<key>CQZone</key>
+		<integer>3</integer>
+		<key>ITUZone</key>
+		<integer>6</integer>
+		<key>Continent</key>
+		<string>NA</string>
+		<key>ExactCallsign</key>
+		<false/>
+	</dict>
+</dict>
+</plist>`
+
+func loadTestCTY(t *testing.T) *cty.CTYDatabase {
+	t.Helper()
+	db, err := cty.LoadCTYDatabaseFromReader(strings.NewReader(sampleCTYPLIST))
+	if err != nil {
+		t.Fatalf("failed to load CTY sample: %v", err)
+	}
+	return db
 }
 
 func TestPassCommands(t *testing.T) {
@@ -368,6 +418,146 @@ func TestRejectCommands(t *testing.T) {
 			}
 			tt.check(t, client.filter)
 		})
+	}
+}
+
+func TestShowFilterSnapshotDefault(t *testing.T) {
+	client := newTestClient()
+	engine := newFilterCommandEngine()
+
+	resp, handled := engine.Handle(client, "SHOW FILTER")
+	if !handled {
+		t.Fatalf("expected SHOW FILTER to be handled")
+	}
+	if !strings.HasPrefix(resp, "Current filters: ") {
+		t.Fatalf("expected summary line, got: %q", resp)
+	}
+	if strings.Contains(resp, "MODE: allow=ALL") {
+		t.Fatalf("expected default modes to be listed explicitly, got: %q", resp)
+	}
+	if !strings.Contains(resp, "MODE: allow=CW, LSB, USB, RTTY") {
+		t.Fatalf("expected default mode list in snapshot, got: %q", resp)
+	}
+	if !strings.Contains(resp, "DXCALL: patterns=NONE") {
+		t.Fatalf("expected DXCALL line to show patterns=NONE, got: %q", resp)
+	}
+}
+
+func TestShowFilterNormalization(t *testing.T) {
+	client := newTestClient()
+	engine := newFilterCommandEngine()
+
+	if _, handled := engine.Handle(client, "PASS SOURCE HUMAN"); !handled {
+		t.Fatalf("expected PASS SOURCE HUMAN to be handled")
+	}
+	if _, handled := engine.Handle(client, "PASS SOURCE SKIMMER"); !handled {
+		t.Fatalf("expected PASS SOURCE SKIMMER to be handled")
+	}
+	resp, _ := engine.Handle(client, "SHOW FILTER")
+	if !strings.Contains(resp, "SOURCE: allow=ALL") {
+		t.Fatalf("expected SOURCE allow list normalized to ALL, got: %q", resp)
+	}
+
+	allContinents := strings.Join(filter.SupportedContinents, ", ")
+	if _, handled := engine.Handle(client, "PASS DXCONT "+allContinents); !handled {
+		t.Fatalf("expected PASS DXCONT to be handled")
+	}
+	resp, _ = engine.Handle(client, "SHOW FILTER")
+	if !strings.Contains(resp, "DXCONT: allow=ALL") {
+		t.Fatalf("expected DXCONT allow list normalized to ALL, got: %q", resp)
+	}
+}
+
+func TestShowFilterShowsBlockList(t *testing.T) {
+	client := newTestClient()
+	engine := newFilterCommandEngine()
+
+	if _, handled := engine.Handle(client, "REJECT BAND 20m"); !handled {
+		t.Fatalf("expected REJECT BAND to be handled")
+	}
+	resp, _ := engine.Handle(client, "SHOW FILTER")
+	if !strings.Contains(resp, "BAND: allow=ALL block=20m") {
+		t.Fatalf("expected band block list in snapshot, got: %q", resp)
+	}
+	if !strings.Contains(resp, "effective: all except: 20m") {
+		t.Fatalf("expected effective label in snapshot, got: %q", resp)
+	}
+}
+
+func TestShowFilterDeprecatedForms(t *testing.T) {
+	engine := newFilterCommandEngine()
+	client := newTestClient()
+
+	resp, handled := engine.Handle(client, "SHOW FILTER MODES")
+	if !handled {
+		t.Fatalf("expected SHOW FILTER MODES to be handled")
+	}
+	if !strings.HasPrefix(resp, "Current filters: ") || !strings.Contains(strings.ToLower(resp), "deprecated") {
+		t.Fatalf("expected snapshot with deprecation warning, got: %q", resp)
+	}
+
+	client.dialect = DialectCC
+	resp, handled = engine.Handle(client, "SHOW/FILTER BAND")
+	if !handled {
+		t.Fatalf("expected SHOW/FILTER BAND to be handled")
+	}
+	if !strings.HasPrefix(resp, "Current filters: ") || !strings.Contains(strings.ToLower(resp), "deprecated") {
+		t.Fatalf("expected cc snapshot with deprecation warning, got: %q", resp)
+	}
+}
+
+func TestRejectCallsignWarnsOnArgs(t *testing.T) {
+	client := newTestClient()
+	engine := newFilterCommandEngine()
+	client.filter.AddDXCallsignPattern("K1*")
+
+	resp, handled := engine.Handle(client, "REJECT DXCALL W1*")
+	if !handled {
+		t.Fatalf("expected REJECT DXCALL with args to be handled")
+	}
+	if !strings.Contains(strings.ToLower(resp), "arguments ignored") {
+		t.Fatalf("expected warning about ignored arguments, got: %q", resp)
+	}
+	if len(client.filter.DXCallsigns) != 0 {
+		t.Fatalf("expected DX callsign patterns cleared")
+	}
+
+	resp, handled = engine.Handle(client, "REJECT DXCALL")
+	if !handled {
+		t.Fatalf("expected REJECT DXCALL to be handled")
+	}
+	if strings.Contains(strings.ToLower(resp), "arguments ignored") {
+		t.Fatalf("did not expect warning without arguments, got: %q", resp)
+	}
+}
+
+func TestShowFilterDXCCNormalizationUsesCTY(t *testing.T) {
+	ctyDB := loadTestCTY(t)
+	engine := newFilterCommandEngineWithCTY(func() *cty.CTYDatabase { return ctyDB })
+	client := newTestClient()
+
+	if _, handled := engine.Handle(client, "PASS DXDXCC 1,291"); !handled {
+		t.Fatalf("expected PASS DXDXCC to be handled")
+	}
+	resp, _ := engine.Handle(client, "SHOW FILTER")
+	if !strings.Contains(resp, "DXDXCC: allow=ALL") {
+		t.Fatalf("expected DXDXCC allow list normalized to ALL, got: %q", resp)
+	}
+}
+
+func TestPassZoneRejectsInvalidToken(t *testing.T) {
+	client := newTestClient()
+	engine := newFilterCommandEngine()
+
+	resp, handled := engine.Handle(client, "PASS DXZONE 10 ABC")
+	if !handled {
+		t.Fatalf("expected PASS DXZONE to be handled")
+	}
+	if !strings.Contains(resp, "Unknown CQ zone: ABC") {
+		t.Fatalf("expected invalid token in response, got: %q", resp)
+	}
+	if len(client.filter.DXZones) != 0 || !client.filter.AllDXZones {
+		t.Fatalf("expected zone filter unchanged after invalid input")
 	}
 }
 

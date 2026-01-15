@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"dxcluster/cty"
 	"dxcluster/filter"
 	"dxcluster/spot"
 )
@@ -25,8 +26,6 @@ type filterAction int
 const (
 	actionAllow filterAction = iota
 	actionBlock
-	actionShowState
-	actionShowSupported
 	actionSummary
 )
 
@@ -34,6 +33,7 @@ type parsedFilterCommand struct {
 	action filterAction
 	domain string
 	args   []string
+	note   string
 }
 
 type dialectSpec struct {
@@ -43,12 +43,9 @@ type dialectSpec struct {
 }
 
 type domainHandler struct {
-	name            string
-	aliases         []string
-	showSupported   bool
-	apply           func(c *Client, action filterAction, args []string) (string, bool)
-	showState       func(f *filter.Filter) string
-	showSupportedFn func(f *filter.Filter) string
+	name    string
+	aliases []string
+	apply   func(c *Client, action filterAction, args []string) (string, bool)
 }
 
 type filterCommandEngine struct {
@@ -56,14 +53,20 @@ type filterCommandEngine struct {
 	dialectAliases map[string]DialectName
 	domains        map[string]*domainHandler
 	defaultDialect DialectName
+	ctyLookup      func() *cty.CTYDatabase
 }
 
 func newFilterCommandEngine() *filterCommandEngine {
+	return newFilterCommandEngineWithCTY(nil)
+}
+
+func newFilterCommandEngineWithCTY(ctyLookup func() *cty.CTYDatabase) *filterCommandEngine {
 	engine := &filterCommandEngine{
 		dialects:       make(map[DialectName]*dialectSpec),
 		dialectAliases: make(map[string]DialectName),
 		domains:        make(map[string]*domainHandler),
 		defaultDialect: DialectGo,
+		ctyLookup:      ctyLookup,
 	}
 	engine.registerDialects()
 	engine.registerDomains()
@@ -239,8 +242,12 @@ func (e *filterCommandEngine) execute(client *Client, cmd parsedFilterCommand) (
 	switch cmd.action {
 	case actionSummary:
 		client.filterMu.RLock()
-		defer client.filterMu.RUnlock()
-		return fmt.Sprintf("Current filters: %s\n", client.filter.String()), false
+		resp := formatFilterSnapshot(client.filter, e.ctyLookup)
+		client.filterMu.RUnlock()
+		if cmd.note != "" {
+			resp += cmd.note
+		}
+		return resp, false
 	}
 
 	handler := e.domains[strings.ToUpper(strings.TrimSpace(cmd.domain))]
@@ -261,27 +268,8 @@ func (e *filterCommandEngine) execute(client *Client, cmd parsedFilterCommand) (
 		}
 	}
 
-	switch cmd.action {
-	case actionShowSupported:
-		if handler.showSupportedFn == nil {
-			return invalidFilterCommandMsg, false
-		}
-		client.filterMu.RLock()
-		resp := handler.showSupportedFn(client.filter)
-		client.filterMu.RUnlock()
-		return resp, false
-	case actionShowState:
-		if handler.showState == nil {
-			return invalidFilterCommandMsg, false
-		}
-		client.filterMu.RLock()
-		resp := handler.showState(client.filter)
-		client.filterMu.RUnlock()
-		return resp, false
-	default:
-		resp, mutated := handler.apply(client, cmd.action, cmd.args)
-		return resp, mutated
-	}
+	resp, mutated := handler.apply(client, cmd.action, cmd.args)
+	return resp, mutated
 }
 
 func parseClassicDialect(tokens, upper []string) (parsedFilterCommand, bool, string) {
@@ -303,15 +291,11 @@ func parseClassicDialect(tokens, upper []string) (parsedFilterCommand, bool, str
 		if len(upper) < 2 || upper[1] != "FILTER" {
 			return parsedFilterCommand{}, false, ""
 		}
-		if len(upper) == 2 {
-			return parsedFilterCommand{action: actionSummary}, true, ""
+		cmd := parsedFilterCommand{action: actionSummary}
+		if len(upper) > 2 {
+			cmd.note = showFilterDeprecationNote(upper, DialectGo)
 		}
-		domain := upper[2]
-		action := actionShowState
-		if domain == "MODES" || domain == "BANDS" || domain == "CONFIDENCE" {
-			action = actionShowSupported
-		}
-		return parsedFilterCommand{action: action, domain: domain, args: tokens[3:]}, true, ""
+		return cmd, true, ""
 	default:
 		return parsedFilterCommand{}, false, ""
 	}
@@ -385,15 +369,11 @@ func parseCCDialect(tokens, upper []string) (parsedFilterCommand, bool, string) 
 		}
 		return parsedFilterCommand{action: actionBlock, domain: upper[1], args: tokens[2:]}, true, ""
 	case "SHOW/FILTER", "SH/FILTER":
-		if len(upper) == 1 {
-			return parsedFilterCommand{action: actionSummary}, true, ""
+		cmd := parsedFilterCommand{action: actionSummary}
+		if len(upper) > 1 {
+			cmd.note = showFilterDeprecationNote(upper, DialectCC)
 		}
-		domain := upper[1]
-		action := actionShowState
-		if domain == "MODES" || domain == "BANDS" || domain == "CONFIDENCE" {
-			action = actionShowSupported
-		}
-		return parsedFilterCommand{action: action, domain: domain, args: tokens[2:]}, true, ""
+		return cmd, true, ""
 	default:
 		// Mode shortcuts: SET/FT8, SET/NOFT8, etc. (CC supports CW, FT4, FT8, RTTY)
 		if len(upper) == 1 && strings.HasPrefix(upper[0], "SET/NO") {
@@ -414,8 +394,7 @@ func parseCCDialect(tokens, upper []string) (parsedFilterCommand, bool, string) 
 
 func newBandHandler() *domainHandler {
 	return &domainHandler{
-		name:          "BAND",
-		showSupported: true,
+		name: "BAND",
 		apply: func(c *Client, action filterAction, args []string) (string, bool) {
 			switch action {
 			case actionAllow:
@@ -481,12 +460,6 @@ func newBandHandler() *domainHandler {
 				return invalidFilterCommandMsg, false
 			}
 		},
-		showState: func(f *filter.Filter) string {
-			return fmt.Sprintf("Supported bands: %s\n", strings.Join(spot.SupportedBandNames(), ", "))
-		},
-		showSupportedFn: func(f *filter.Filter) string {
-			return fmt.Sprintf("Supported bands: %s\n", strings.Join(spot.SupportedBandNames(), ", "))
-		},
 	}
 }
 
@@ -501,8 +474,7 @@ func newDXBMHandler() *domainHandler {
 
 func newModeHandler() *domainHandler {
 	return &domainHandler{
-		name:          "MODE",
-		showSupported: true,
+		name: "MODE",
 		apply: func(c *Client, action filterAction, args []string) (string, bool) {
 			switch action {
 			case actionAllow:
@@ -556,20 +528,6 @@ func newModeHandler() *domainHandler {
 				return invalidFilterCommandMsg, false
 			}
 		},
-		showSupportedFn: func(f *filter.Filter) string {
-			var b strings.Builder
-			for i, mode := range filter.SupportedModes {
-				enabled := "DISABLED"
-				if f.AllModes || f.Modes[mode] {
-					enabled = "ENABLED"
-				}
-				b.WriteString(fmt.Sprintf("%s=%s", mode, enabled))
-				if i < len(filter.SupportedModes)-1 {
-					b.WriteString(", ")
-				}
-			}
-			return fmt.Sprintf("Supported modes: %s\n", b.String())
-		},
 	}
 }
 
@@ -605,16 +563,6 @@ func newSourceHandler() *domainHandler {
 				return invalidFilterCommandMsg, false
 			}
 		},
-		showState: func(f *filter.Filter) string {
-			state := "ALL"
-			if len(f.Sources) > 0 {
-				state = strings.Join(keysString(f.Sources), ", ")
-			}
-			if f.BlockAllSources {
-				return "Source: BLOCK ALL\n"
-			}
-			return fmt.Sprintf("Source: %s\n", state)
-		},
 	}
 }
 
@@ -640,6 +588,14 @@ func newCallPatternHandler(name string) *domainHandler {
 				}
 				return fmt.Sprintf("Filter set: DE callsign %s\n", value), true
 			case actionBlock:
+				warn := ""
+				if len(args) > 0 {
+					if name == "DXCALL" {
+						warn = "Note: REJECT DXCALL clears ALL patterns. Arguments ignored; use REJECT DXCALL without arguments.\n"
+					} else {
+						warn = "Note: REJECT DECALL clears ALL patterns. Arguments ignored; use REJECT DECALL without arguments.\n"
+					}
+				}
 				c.updateFilter(func(f *filter.Filter) {
 					if name == "DXCALL" {
 						f.ClearDXCallsignPatterns()
@@ -648,26 +604,19 @@ func newCallPatternHandler(name string) *domainHandler {
 					}
 				})
 				if name == "DXCALL" {
-					return "DX callsign filters cleared\n", true
+					return "DX callsign filters cleared\n" + warn, true
 				}
-				return "DE callsign filters cleared\n", true
+				return "DE callsign filters cleared\n" + warn, true
 			default:
 				return invalidFilterCommandMsg, false
 			}
-		},
-		showState: func(f *filter.Filter) string {
-			if name == "DXCALL" {
-				return fmt.Sprintf("DX callsigns: %s\n", strings.Join(f.DXCallsigns, ", "))
-			}
-			return fmt.Sprintf("DE callsigns: %s\n", strings.Join(f.DECallsigns, ", "))
 		},
 	}
 }
 
 func newConfidenceHandler() *domainHandler {
 	return &domainHandler{
-		name:          "CONFIDENCE",
-		showSupported: true,
+		name: "CONFIDENCE",
 		apply: func(c *Client, action filterAction, args []string) (string, bool) {
 			value := strings.TrimSpace(strings.Join(args, " "))
 			switch action {
@@ -722,20 +671,6 @@ func newConfidenceHandler() *domainHandler {
 			default:
 				return invalidFilterCommandMsg, false
 			}
-		},
-		showSupportedFn: func(f *filter.Filter) string {
-			var b strings.Builder
-			for i, symbol := range filter.SupportedConfidenceSymbols {
-				enabled := "DISABLED"
-				if f.AllConfidence || f.ConfidenceSymbolEnabled(symbol) {
-					enabled = "ENABLED"
-				}
-				b.WriteString(fmt.Sprintf("%s=%s", symbol, enabled))
-				if i < len(filter.SupportedConfidenceSymbols)-1 {
-					b.WriteString(", ")
-				}
-			}
-			return fmt.Sprintf("Confidence symbols: %s\n", b.String())
 		},
 	}
 }
@@ -808,10 +743,6 @@ func newContinentHandler(name string, setter func(*filter.Filter, string, bool),
 				return invalidFilterCommandMsg, false
 			}
 		},
-		showState: func(f *filter.Filter) string {
-			all, blockAll, allow, block := snapshot(f)
-			return fmt.Sprintf("%s continents: %s\n", name[:2], formatAllowBlockStrings(all, blockAll, allow, block))
-		},
 	}
 }
 
@@ -835,12 +766,12 @@ func newZoneHandler(name string, setter func(*filter.Filter, int, bool), snapsho
 					})
 					return fmt.Sprintf("All %s zones enabled\n", strings.ToLower(name[:2])), true
 				}
-				zones := parseZoneList(value)
+				zones, invalidTokens := parseZoneList(value)
+				if len(invalidTokens) > 0 {
+					return fmt.Sprintf("Unknown CQ zone: %s\nValid zones: %d-%d\n", strings.Join(invalidTokens, ", "), filter.MinCQZone(), filter.MaxCQZone()), false
+				}
 				if len(zones) == 0 {
 					return fmt.Sprintf("Usage: PASS %s <zone>[,<zone>...] (1-40, or ALL)\nType HELP for usage.\n", name), false
-				}
-				if invalid := collectInvalidZones(zones); len(invalid) > 0 {
-					return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone()), false
 				}
 				c.updateFilter(func(f *filter.Filter) {
 					for _, zone := range zones {
@@ -866,12 +797,12 @@ func newZoneHandler(name string, setter func(*filter.Filter, int, bool), snapsho
 					})
 					return fmt.Sprintf("All %s zones blocked\n", strings.ToLower(name[:2])), true
 				}
-				zones := parseZoneList(value)
+				zones, invalidTokens := parseZoneList(value)
+				if len(invalidTokens) > 0 {
+					return fmt.Sprintf("Unknown CQ zone: %s\nValid zones: %d-%d\n", strings.Join(invalidTokens, ", "), filter.MinCQZone(), filter.MaxCQZone()), false
+				}
 				if len(zones) == 0 {
 					return fmt.Sprintf("Usage: REJECT %s <zone>[,<zone>...] (comma or space separated, or ALL)\nType HELP for usage.\n", name), false
-				}
-				if invalid := collectInvalidZones(zones); len(invalid) > 0 {
-					return fmt.Sprintf("Unknown CQ zone: %v\nValid zones: %d-%d\n", invalid, filter.MinCQZone(), filter.MaxCQZone()), false
 				}
 				c.updateFilter(func(f *filter.Filter) {
 					for _, zone := range zones {
@@ -882,10 +813,6 @@ func newZoneHandler(name string, setter func(*filter.Filter, int, bool), snapsho
 			default:
 				return invalidFilterCommandMsg, false
 			}
-		},
-		showState: func(f *filter.Filter) string {
-			all, blockAll, allow, block := snapshot(f)
-			return fmt.Sprintf("%s zones: %s\n", name[:2], formatAllowBlockInts(all, blockAll, allow, block))
 		},
 	}
 }
@@ -958,10 +885,6 @@ func newDXCCHandler(name string, setter func(*filter.Filter, int, bool), snapsho
 				return invalidFilterCommandMsg, false
 			}
 		},
-		showState: func(f *filter.Filter) string {
-			all, blockAll, allow, block := snapshot(f)
-			return fmt.Sprintf("%s DXCC: %s\n", name[:2], formatAllowBlockInts(all, blockAll, allow, block))
-		},
 	}
 }
 
@@ -1033,15 +956,11 @@ func newGrid2Handler(name string, setter func(*filter.Filter, string, bool), sna
 				return invalidFilterCommandMsg, false
 			}
 		},
-		showState: func(f *filter.Filter) string {
-			all, blockAll, allow, block := snapshot(f)
-			return fmt.Sprintf("%s 2-character grids: %s\n", name[:2], formatAllowBlockStrings(all, blockAll, allow, block))
-		},
 	}
 }
 
 func newFeatureToggleHandler(name string, setter func(*filter.Filter, bool), aliases ...string) *domainHandler {
-	enableLabel, disableLabel, statusLabel := featureLabels(name)
+	enableLabel, disableLabel, _ := featureLabels(name)
 	return &domainHandler{
 		name:    name,
 		aliases: aliases,
@@ -1056,24 +975,6 @@ func newFeatureToggleHandler(name string, setter func(*filter.Filter, bool), ali
 			default:
 				return invalidFilterCommandMsg, false
 			}
-		},
-		showState: func(f *filter.Filter) string {
-			enabled := false
-			switch name {
-			case "BEACON":
-				enabled = f.BeaconsEnabled()
-			case "WWV":
-				enabled = f.WWVEnabled()
-			case "WCY":
-				enabled = f.WCYEnabled()
-			case "ANNOUNCE":
-				enabled = f.AnnounceEnabled()
-			}
-			status := "ENABLED"
-			if !enabled {
-				status = "DISABLED"
-			}
-			return fmt.Sprintf("%s: %s\n", statusLabel, status)
 		},
 	}
 }
@@ -1195,38 +1096,395 @@ func normalizeBands(values []string) ([]string, []string) {
 	return normalized, invalid
 }
 
-func formatAllowBlockStrings(allowAll, blockAll bool, allow, block map[string]bool) string {
-	if blockAll {
-		return "BLOCK ALL"
+func showFilterDeprecationNote(tokens []string, dialect DialectName) string {
+	if len(tokens) == 0 {
+		return ""
 	}
-	allowStr := "ALL"
-	if len(allow) > 0 {
-		allowStr = strings.Join(keysString(allow), ", ")
-	} else if !allowAll {
-		allowStr = "NONE"
+	cmd := strings.Join(tokens, " ")
+	switch dialect {
+	case DialectCC:
+		return fmt.Sprintf("Note: %s is deprecated. Use SHOW/FILTER or SH/FILTER.\n", cmd)
+	default:
+		return fmt.Sprintf("Note: %s is deprecated. Use SHOW FILTER.\n", cmd)
 	}
-	blockStr := "NONE"
-	if len(block) > 0 {
-		blockStr = strings.Join(keysString(block), ", ")
-	}
-	return fmt.Sprintf("allow=%s block=%s", allowStr, blockStr)
 }
 
-func formatAllowBlockInts(allowAll, blockAll bool, allow, block map[int]bool) string {
+type allowBlockSnapshot struct {
+	allow      string
+	block      string
+	effective  string
+	allowAll   bool
+	blockAll   bool
+	allowList  string
+	blockList  string
+	allowCount int
+	blockCount int
+}
+
+// formatFilterSnapshot renders a stable, multi-line view of current filter state.
+// Caller must hold a read lock; output uses display-only normalization plus effective labels.
+func formatFilterSnapshot(f *filter.Filter, ctyLookup func() *cty.CTYDatabase) string {
+	if f == nil {
+		return "Current filters: unavailable\n"
+	}
+
+	var ctyDB *cty.CTYDatabase
+	if ctyLookup != nil {
+		ctyDB = ctyLookup()
+	}
+	dxccSupported := supportedDXCCCodes(ctyDB)
+
+	bands := snapshotAllowBlockStrings(f.AllBands, f.BlockAllBands, f.Bands, f.BlockBands, spot.SupportedBandNames())
+	modes := snapshotAllowBlockStrings(f.AllModes, f.BlockAllModes, f.Modes, f.BlockModes, filter.SupportedModes)
+	sources := snapshotAllowBlockStrings(f.AllSources, f.BlockAllSources, f.Sources, f.BlockSources, filter.SupportedSources)
+	confidence := snapshotAllowBlockStrings(f.AllConfidence, f.BlockAllConfidence, f.Confidence, f.BlockConfidence, filter.SupportedConfidenceSymbols)
+	dxCont := snapshotAllowBlockStrings(f.AllDXContinents, f.BlockAllDXContinents, f.DXContinents, f.BlockDXContinents, filter.SupportedContinents)
+	deCont := snapshotAllowBlockStrings(f.AllDEContinents, f.BlockAllDEContinents, f.DEContinents, f.BlockDEContinents, filter.SupportedContinents)
+	dxZone := snapshotAllowBlockIntsRange(f.AllDXZones, f.BlockAllDXZones, f.DXZones, f.BlockDXZones, filter.MinCQZone(), filter.MaxCQZone())
+	deZone := snapshotAllowBlockIntsRange(f.AllDEZones, f.BlockAllDEZones, f.DEZones, f.BlockDEZones, filter.MinCQZone(), filter.MaxCQZone())
+	dxDXCC := snapshotAllowBlockIntsSupported(f.AllDXDXCC, f.BlockAllDXDXCC, f.DXDXCC, f.BlockDXDXCC, dxccSupported)
+	deDXCC := snapshotAllowBlockIntsSupported(f.AllDEDXCC, f.BlockAllDEDXCC, f.DEDXCC, f.BlockDEDXCC, dxccSupported)
+	dxGrid2 := snapshotAllowBlockStrings(f.AllDXGrid2, f.BlockAllDXGrid2, f.DXGrid2Prefixes, f.BlockDXGrid2, nil)
+	deGrid2 := snapshotAllowBlockStrings(f.AllDEGrid2, f.BlockAllDEGrid2, f.DEGrid2Prefixes, f.BlockDEGrid2, nil)
+
+	dxCallSummary, dxCallLine := callsignSnapshot("DXCALL", f.DXCallsigns)
+	deCallSummary, deCallLine := callsignSnapshot("DECALL", f.DECallsigns)
+
+	beaconSummary, beaconLine := toggleSnapshot("BEACON", f.BeaconsEnabled(), f.IncludeBeacons)
+	wwvSummary, wwvLine := toggleSnapshot("WWV", f.WWVEnabled(), f.AllowWWV)
+	wcySummary, wcyLine := toggleSnapshot("WCY", f.WCYEnabled(), f.AllowWCY)
+	announceSummary, announceLine := toggleSnapshot("ANNOUNCE", f.AnnounceEnabled(), f.AllowAnnounce)
+
+	var b strings.Builder
+	summaryPrefix := "Current filters: "
+	summaryIndent := strings.Repeat(" ", len(summaryPrefix))
+	const summaryMaxWidth = 78
+	maxFieldLen := summaryMaxWidth - len(summaryIndent)
+	if maxFieldLen < 1 {
+		maxFieldLen = summaryMaxWidth
+	}
+	summaryParts := []string{
+		summaryAllowBlockField("BAND", bands, maxFieldLen),
+		summaryAllowBlockField("MODE", modes, maxFieldLen),
+		summaryAllowBlockField("SOURCE", sources, maxFieldLen),
+		clampSummaryField(dxCallSummary, maxFieldLen),
+		clampSummaryField(deCallSummary, maxFieldLen),
+		summaryAllowBlockField("CONFIDENCE", confidence, maxFieldLen),
+		summaryAllowBlockField("DXCONT", dxCont, maxFieldLen),
+		summaryAllowBlockField("DECONT", deCont, maxFieldLen),
+		summaryAllowBlockField("DXZONE", dxZone, maxFieldLen),
+		summaryAllowBlockField("DEZONE", deZone, maxFieldLen),
+		summaryAllowBlockField("DXDXCC", dxDXCC, maxFieldLen),
+		summaryAllowBlockField("DEDXCC", deDXCC, maxFieldLen),
+		summaryAllowBlockField("DXGRID2", dxGrid2, maxFieldLen),
+		summaryAllowBlockField("DEGRID2", deGrid2, maxFieldLen),
+		clampSummaryField(beaconSummary, maxFieldLen),
+		clampSummaryField(wwvSummary, maxFieldLen),
+		clampSummaryField(wcySummary, maxFieldLen),
+		clampSummaryField(announceSummary, maxFieldLen),
+	}
+	for _, line := range wrapSummaryLines(summaryPrefix, summaryIndent, summaryParts, summaryMaxWidth) {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString(formatAllowBlockLine("BAND", bands))
+	b.WriteString(formatAllowBlockLine("MODE", modes))
+	b.WriteString(formatAllowBlockLine("SOURCE", sources))
+	b.WriteString(dxCallLine)
+	b.WriteString(deCallLine)
+	b.WriteString(formatAllowBlockLine("CONFIDENCE", confidence))
+	b.WriteString(formatAllowBlockLine("DXCONT", dxCont))
+	b.WriteString(formatAllowBlockLine("DECONT", deCont))
+	b.WriteString(formatAllowBlockLine("DXZONE", dxZone))
+	b.WriteString(formatAllowBlockLine("DEZONE", deZone))
+	b.WriteString(formatAllowBlockLine("DXDXCC", dxDXCC))
+	b.WriteString(formatAllowBlockLine("DEDXCC", deDXCC))
+	b.WriteString(formatAllowBlockLine("DXGRID2", dxGrid2))
+	b.WriteString(formatAllowBlockLine("DEGRID2", deGrid2))
+	b.WriteString(beaconLine)
+	b.WriteString(wwvLine)
+	b.WriteString(wcyLine)
+	b.WriteString(announceLine)
+	return b.String()
+}
+
+func snapshotAllowBlockStrings(allowAll, blockAll bool, allow, block map[string]bool, supported []string) allowBlockSnapshot {
+	allowValues := orderedStringValues(allow, supported)
+	blockValues := orderedStringValues(block, supported)
+	allowListLabel := strings.Join(allowValues, ", ")
+	blockListLabel := strings.Join(blockValues, ", ")
+	allowAllNormalized := allowAll || coversAllSupported(allow, supported)
+	return buildAllowBlockSnapshot(allowAllNormalized, blockAll, allowListLabel, blockListLabel, len(allowValues), len(blockValues))
+}
+
+func snapshotAllowBlockIntsRange(allowAll, blockAll bool, allow, block map[int]bool, min, max int) allowBlockSnapshot {
+	allowValues := orderedIntValues(allow)
+	blockValues := orderedIntValues(block)
+	allowList := joinIntValues(allowValues)
+	blockList := joinIntValues(blockValues)
+	allowAllNormalized := allowAll || coversAllRange(allow, min, max)
+	return buildAllowBlockSnapshot(allowAllNormalized, blockAll, allowList, blockList, len(allowValues), len(blockValues))
+}
+
+func snapshotAllowBlockIntsSupported(allowAll, blockAll bool, allow, block map[int]bool, supported []int) allowBlockSnapshot {
+	allowValues := orderedIntValues(allow)
+	blockValues := orderedIntValues(block)
+	allowList := joinIntValues(allowValues)
+	blockList := joinIntValues(blockValues)
+	allowAllNormalized := allowAll || coversAllSupportedInts(allow, supported)
+	return buildAllowBlockSnapshot(allowAllNormalized, blockAll, allowList, blockList, len(allowValues), len(blockValues))
+}
+
+func buildAllowBlockSnapshot(allowAll, blockAll bool, allowList, blockList string, allowCount, blockCount int) allowBlockSnapshot {
+	allowLabel := "NONE"
+	if allowAll {
+		allowLabel = "ALL"
+	} else if allowList != "" {
+		allowLabel = allowList
+	}
+
+	blockLabel := "NONE"
 	if blockAll {
-		return "BLOCK ALL"
+		blockLabel = "ALL"
+	} else if blockList != "" {
+		blockLabel = blockList
 	}
-	allowStr := "ALL"
-	if len(allow) > 0 {
-		allowStr = strings.Join(keysInt(allow), ", ")
-	} else if !allowAll {
-		allowStr = "NONE"
+
+	return allowBlockSnapshot{
+		allow:      allowLabel,
+		block:      blockLabel,
+		effective:  effectiveAllowBlockLabel(allowAll, blockAll, allowList, blockList),
+		allowAll:   allowAll,
+		blockAll:   blockAll,
+		allowList:  allowList,
+		blockList:  blockList,
+		allowCount: allowCount,
+		blockCount: blockCount,
 	}
-	blockStr := "NONE"
-	if len(block) > 0 {
-		blockStr = strings.Join(keysInt(block), ", ")
+}
+
+func effectiveAllowBlockLabel(allowAll, blockAll bool, allowList, blockList string) string {
+	if blockAll {
+		return "all blocked"
 	}
-	return fmt.Sprintf("allow=%s block=%s", allowStr, blockStr)
+	if allowAll {
+		if blockList == "" {
+			return "all pass"
+		}
+		return "all except: " + blockList
+	}
+	if allowList == "" {
+		return "none pass"
+	}
+	return "only: " + allowList
+}
+
+func formatAllowBlockLine(name string, snapshot allowBlockSnapshot) string {
+	return fmt.Sprintf("%s: allow=%s block=%s (effective: %s)\n", name, snapshot.allow, snapshot.block, snapshot.effective)
+}
+
+func summaryAllowBlockField(name string, snapshot allowBlockSnapshot, maxFieldLen int) string {
+	if maxFieldLen <= len(name)+1 {
+		return name
+	}
+	maxLabelLen := maxFieldLen - len(name) - 1
+	label := summaryEffectiveLabel(snapshot, maxLabelLen)
+	field := fmt.Sprintf("%s=%s", name, label)
+	return clampSummaryField(field, maxFieldLen)
+}
+
+func summaryEffectiveLabel(snapshot allowBlockSnapshot, maxLen int) string {
+	label := snapshot.effective
+	if len(label) <= maxLen {
+		return label
+	}
+	if snapshot.blockAll {
+		return label
+	}
+	if snapshot.allowAll {
+		if snapshot.blockList != "" {
+			label = fmt.Sprintf("all except: %d items", snapshot.blockCount)
+		}
+		return clampSummaryField(label, maxLen)
+	}
+	if snapshot.allowList != "" {
+		label = fmt.Sprintf("only: %d items", snapshot.allowCount)
+	}
+	return clampSummaryField(label, maxLen)
+}
+
+func clampSummaryField(field string, maxLen int) string {
+	if maxLen <= 0 || len(field) <= maxLen {
+		return field
+	}
+	if maxLen <= 3 {
+		return field[:maxLen]
+	}
+	return field[:maxLen-3] + "..."
+}
+
+func wrapSummaryLines(prefix, indent string, fields []string, maxWidth int) []string {
+	if maxWidth <= 0 {
+		return []string{prefix + strings.Join(fields, " | ")}
+	}
+	lines := make([]string, 0, len(fields))
+	linePrefix := prefix
+	line := linePrefix
+	lineLen := len(line)
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		sep := ""
+		if lineLen > len(linePrefix) {
+			sep = " | "
+		}
+		candidate := line + sep + field
+		if len(candidate) > maxWidth && lineLen > len(linePrefix) {
+			lines = append(lines, line)
+			linePrefix = indent
+			line = linePrefix + field
+			lineLen = len(line)
+			continue
+		}
+		line = candidate
+		lineLen = len(line)
+	}
+	if strings.TrimSpace(line) != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func orderedStringValues(values map[string]bool, supported []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	if len(supported) == 0 {
+		return keysString(values)
+	}
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, entry := range supported {
+		if values[entry] {
+			out = append(out, entry)
+			seen[entry] = true
+		}
+	}
+	extras := make([]string, 0, len(values))
+	for entry := range values {
+		if !seen[entry] {
+			extras = append(extras, entry)
+		}
+	}
+	sort.Strings(extras)
+	out = append(out, extras...)
+	return out
+}
+
+func orderedIntValues(values map[int]bool) []int {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]int, 0, len(values))
+	for entry := range values {
+		out = append(out, entry)
+	}
+	sort.Ints(out)
+	return out
+}
+
+func joinIntValues(values []int) string {
+	if len(values) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(values))
+	for _, v := range values {
+		parts = append(parts, strconv.Itoa(v))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func coversAllSupported(values map[string]bool, supported []string) bool {
+	if len(supported) == 0 {
+		return false
+	}
+	for _, entry := range supported {
+		if !values[entry] {
+			return false
+		}
+	}
+	return true
+}
+
+func coversAllRange(values map[int]bool, min, max int) bool {
+	if min <= 0 || max < min {
+		return false
+	}
+	for i := min; i <= max; i++ {
+		if !values[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func coversAllSupportedInts(values map[int]bool, supported []int) bool {
+	if len(supported) == 0 {
+		return false
+	}
+	for _, entry := range supported {
+		if !values[entry] {
+			return false
+		}
+	}
+	return true
+}
+
+func supportedDXCCCodes(db *cty.CTYDatabase) []int {
+	if db == nil || len(db.Data) == 0 {
+		return nil
+	}
+	seen := make(map[int]bool)
+	codes := make([]int, 0, len(db.Data))
+	for _, entry := range db.Data {
+		if entry.ADIF <= 0 {
+			continue
+		}
+		if seen[entry.ADIF] {
+			continue
+		}
+		seen[entry.ADIF] = true
+		codes = append(codes, entry.ADIF)
+	}
+	sort.Ints(codes)
+	return codes
+}
+
+func callsignSnapshot(name string, patterns []string) (summary string, line string) {
+	if len(patterns) == 0 {
+		summary = fmt.Sprintf("%s=all pass", name)
+		line = fmt.Sprintf("%s: patterns=NONE (allowlist OR; REJECT clears all; all pass)\n", name)
+		return summary, line
+	}
+	summary = fmt.Sprintf("%s=allowlist(%d)", name, len(patterns))
+	line = fmt.Sprintf("%s: patterns=%s (allowlist OR; REJECT clears all)\n", name, strings.Join(patterns, ", "))
+	return summary, line
+}
+
+func toggleSnapshot(name string, enabled bool, raw *bool) (summary string, line string) {
+	status := "OFF"
+	if enabled {
+		status = "ON"
+	}
+	summary = fmt.Sprintf("%s=%s", name, status)
+	if raw == nil {
+		line = fmt.Sprintf("%s: %s (default)\n", name, status)
+		return summary, line
+	}
+	line = fmt.Sprintf("%s: %s\n", name, status)
+	return summary, line
 }
 
 func splitListValues(arg string) []string {
@@ -1296,13 +1554,14 @@ func parseContinentList(arg string) []string {
 	return continents
 }
 
-func parseZoneList(arg string) []int {
+func parseZoneList(arg string) ([]int, []string) {
 	values := splitListValues(arg)
 	if len(values) == 0 {
-		return nil
+		return nil, nil
 	}
 	seen := make(map[int]bool)
 	zones := make([]int, 0, len(values))
+	invalid := make([]string, 0)
 	for _, value := range values {
 		v := strings.TrimSpace(value)
 		if v == "" {
@@ -1310,7 +1569,12 @@ func parseZoneList(arg string) []int {
 		}
 		zone, err := strconv.Atoi(v)
 		if err != nil {
-			return append(zones, -1)
+			invalid = append(invalid, value)
+			continue
+		}
+		if !filter.IsSupportedZone(zone) {
+			invalid = append(invalid, value)
+			continue
 		}
 		if seen[zone] {
 			continue
@@ -1318,7 +1582,7 @@ func parseZoneList(arg string) []int {
 		zones = append(zones, zone)
 		seen[zone] = true
 	}
-	return zones
+	return zones, invalid
 }
 
 func parseDXCCList(arg string) ([]int, []string) {
@@ -1398,16 +1662,6 @@ func collectInvalidContinents(continents []string) []string {
 	return invalid
 }
 
-func collectInvalidZones(zones []int) []int {
-	invalid := make([]int, 0)
-	for _, zone := range zones {
-		if !filter.IsSupportedZone(zone) {
-			invalid = append(invalid, zone)
-		}
-	}
-	return invalid
-}
-
 func collectInvalidModes(modes []string) []string {
 	invalid := make([]string, 0)
 	for _, mode := range modes {
@@ -1424,19 +1678,6 @@ func keysString(m map[string]bool) []string {
 		out = append(out, k)
 	}
 	sort.Strings(out)
-	return out
-}
-
-func keysInt(m map[int]bool) []string {
-	vals := make([]int, 0, len(m))
-	for k := range m {
-		vals = append(vals, k)
-	}
-	sort.Ints(vals)
-	out := make([]string, 0, len(vals))
-	for _, v := range vals {
-		out = append(out, fmt.Sprintf("%d", v))
-	}
 	return out
 }
 

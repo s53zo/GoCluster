@@ -36,6 +36,7 @@ import (
 	"dxcluster/download"
 	"dxcluster/filter"
 	"dxcluster/gridstore"
+	"dxcluster/pathreliability"
 	"dxcluster/peer"
 	"dxcluster/pskreporter"
 	"dxcluster/rbn"
@@ -51,12 +52,13 @@ import (
 )
 
 const (
-	dedupeEntryBytes    = 32
-	callMetaEntryBytes  = 96
-	knownCallEntryBytes = 24
-	sourceModeDelimiter = "|"
-	defaultConfigPath   = "data/config"
-	envConfigPath       = "DXC_CONFIG_PATH"
+	dedupeEntryBytes          = 32
+	callMetaEntryBytes        = 96
+	knownCallEntryBytes       = 24
+	sourceModeDelimiter       = "|"
+	defaultConfigPath         = "data/config"
+	pathReliabilityConfigFile = "path_reliability.yaml"
+	envConfigPath             = "DXC_CONFIG_PATH"
 
 	// envGridDBCheckOnMiss overrides the config-driven grid_db_check_on_miss at runtime.
 	// When true, grid updates may synchronously consult SQLite on cache miss to avoid
@@ -257,6 +259,25 @@ func main() {
 	}
 	log.Printf("Loaded configuration from %s", configSource)
 
+	// Load path reliability config from dedicated file in the config directory.
+	configDir := configSource
+	if info, err := os.Stat(configSource); err == nil && !info.IsDir() {
+		configDir = filepath.Dir(configSource)
+	}
+	pathCfgPath := filepath.Join(configDir, pathReliabilityConfigFile)
+	pathCfg, pathCfgErr := pathreliability.LoadFile(pathCfgPath)
+	if pathCfgErr != nil {
+		if os.IsNotExist(pathCfgErr) {
+			pathCfg = pathreliability.DefaultConfig()
+			pathCfg.Enabled = false
+			log.Printf("Path reliability config not found at %s; feature disabled", pathCfgPath)
+		} else {
+			log.Printf("Warning: failed to load path reliability config (%s): %v", pathCfgPath, pathCfgErr)
+			pathCfg = pathreliability.DefaultConfig()
+		}
+	}
+	pathPredictor := pathreliability.NewPredictor(pathCfg, spot.SupportedBandNames())
+
 	uiMode := strings.ToLower(strings.TrimSpace(cfg.UI.Mode))
 	renderAllowed := isStdoutTTY()
 
@@ -295,6 +316,20 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	startLicenseCacheSweeper(ctx, licCache)
+	if pathCfg.Enabled && pathPredictor != nil {
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					pathPredictor.PurgeStale(time.Now().UTC())
+				}
+			}
+		}()
+	}
 
 	callCacheTTL := time.Duration(cfg.CallCache.TTLSeconds) * time.Second
 	spot.ConfigureNormalizeCallCache(cfg.CallCache.Size, callCacheTTL)
@@ -569,7 +604,7 @@ func main() {
 	}
 
 	dedupInput := deduplicator.GetInputChannel()
-	ingestValidator := newIngestValidator(ctyLookup, metaCache, ctyUpdater, dedupInput, unlicensedReporter, dropReporter)
+	ingestValidator := newIngestValidator(ctyLookup, metaCache, ctyUpdater, dedupInput, unlicensedReporter, dropReporter, cfg.CTY.Enabled)
 	ingestValidator.Start()
 	ingestInput := ingestValidator.Input()
 
@@ -656,6 +691,11 @@ func main() {
 		LoginLineLimit:         cfg.Telnet.LoginLineLimit,
 		CommandLineLimit:       cfg.Telnet.CommandLineLimit,
 		ReputationGate:         repGate,
+		PathPredictor:          pathPredictor,
+		PathDisplayEnabled:     pathCfg.DisplayEnabled,
+		NoiseOffsets:           pathCfg.NoiseOffsets,
+		GridLookup:             gridLookup,
+		CTYLookup:              ctyLookup,
 	}, processor)
 
 	err = telnetServer.Start()
@@ -677,7 +717,7 @@ func main() {
 	// Key aspects: Handles corrections, licensing, secondary dedupe, and fan-out.
 	// Upstream: main startup after wiring dependencies.
 	// Downstream: processOutputSpots.
-	go processOutputSpots(deduplicator, secondaryDeduper, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput)
+	go processOutputSpots(deduplicator, secondaryDeduper, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor)
 	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
@@ -1348,6 +1388,7 @@ func processOutputSpots(
 	broadcastKeepSSID bool,
 	archiveWriter *archive.Writer,
 	lastOutput *atomic.Int64,
+	pathPredictor *pathreliability.Predictor,
 ) {
 	outputChan := deduplicator.GetOutputChannel()
 
@@ -1552,6 +1593,30 @@ func processOutputSpots(
 				if strings.TrimSpace(s.DEMetadata.Grid) == "" {
 					if grid, ok := gridLookup(deCall); ok {
 						s.DEMetadata.Grid = grid
+					}
+				}
+			}
+
+			if pathPredictor != nil && pathPredictor.Config().Enabled {
+				// Populate cached cells even when we skip updates so broadcast can reuse them.
+				if s.DXCellID == 0 || s.DXCellID == 0xffff {
+					s.DXCellID = uint16(pathreliability.EncodeCell(strings.TrimSpace(s.DXMetadata.Grid)))
+				}
+				if s.DECellID == 0 || s.DECellID == 0xffff {
+					s.DECellID = uint16(pathreliability.EncodeCell(strings.TrimSpace(s.DEMetadata.Grid)))
+				}
+				if s.HasReport {
+					if ft8, ok := pathreliability.FT8Equivalent(s.ModeNorm, s.Report, pathPredictor.Config()); ok {
+						dxCell := pathreliability.CellID(s.DXCellID)
+						deCell := pathreliability.CellID(s.DECellID)
+						dxGrid2 := pathreliability.EncodeGrid2(s.DXMetadata.Grid)
+						deGrid2 := pathreliability.EncodeGrid2(s.DEMetadata.Grid)
+						band := s.BandNorm
+						if strings.TrimSpace(band) == "" {
+							band = s.Band
+						}
+						// Spot SNR reflects DX -> DE (spotter is the receiver).
+						pathPredictor.Update(deCell, dxCell, deGrid2, dxGrid2, band, ft8, 1.0, time.Now().UTC(), s.IsBeacon)
 					}
 				}
 			}

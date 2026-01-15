@@ -129,8 +129,10 @@ func TestUserRecordRoundTrip(t *testing.T) {
 	f := NewFilter()
 	f.SetMode("CW", true)
 	record := &UserRecord{
-		Filter:    *f,
-		RecentIPs: []string{"203.0.113.10", "198.51.100.42"},
+		Filter:     *f,
+		RecentIPs:  []string{"203.0.113.10", "198.51.100.42"},
+		Grid:       "FN31",
+		NoiseClass: "URBAN",
 	}
 	if err := SaveUserRecord("k3to", record); err != nil {
 		t.Fatalf("SaveUserRecord failed: %v", err)
@@ -145,6 +147,12 @@ func TestUserRecordRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded.RecentIPs, record.RecentIPs) {
 		t.Fatalf("expected recent IPs %v, got %v", record.RecentIPs, loaded.RecentIPs)
+	}
+	if loaded.Grid != "FN31" {
+		t.Fatalf("expected grid FN31, got %s", loaded.Grid)
+	}
+	if loaded.NoiseClass != "URBAN" {
+		t.Fatalf("expected noise class URBAN, got %s", loaded.NoiseClass)
 	}
 }
 

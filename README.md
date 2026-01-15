@@ -21,9 +21,9 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
    - The parser supports both `DX de CALL: 14074.0 ...` and the glued form `DX de CALL:14074.0 ...` by splitting the spotter token into `DECall` + optional attached frequency.
    - Frequency is the first token that parses as a plausible dial frequency (currently `100.0`-`3,000,000.0` kHz), rather than assuming a fixed column index.
    - Mode is taken from the first explicit mode token (`CW`, `USB`, `JS8`, `SSTV`, `FT8`, `MSK144`, etc.). If mode is absent, it is inferred from `data/config/mode_allocations.yaml` (with a simple fallback: `USB` >= 10 MHz else `CW`).
-   - Report/SNR is recognized in both `+5 dB` and `-13dB` forms; `HasReport` is set whenever a report is present (including a valid `0 dB`).
+   - Report/SNR is recognized in both `+5 dB` and `-13dB` forms; `HasReport` is set whenever a report is present (RBN/RBN-Digital zero-SNR reports are dropped before ingest).
    - Ingest burst protection is sized per source via `rbn.slot_buffer` / `rbn_digital.slot_buffer` in `data/config/ingest.yaml`; overflow logs are tagged by source for easier diagnosis.
-3. **PSKReporter MQTT** (`pskreporter/client.go`) subscribes to a single catch-all `pskr/filter/v2/+/+/#` topic and filters modes downstream according to `pskreporter.modes`. It converts JSON payloads into canonical spots and preserves locator-based grids. Set `pskreporter.append_spotter_ssid: true` if you want receiver callsigns that lack SSIDs to pick up a `-#` suffix for deduplication. PSKReporter spots no longer carry a comment string; DX/DE grids stay in metadata and are shown in the fixed tail of telnet output. Configure `pskreporter.max_payload_bytes` to guard against oversized payloads; CTY caching is handled by the unified call metadata cache.
+3. **PSKReporter MQTT** (`pskreporter/client.go`) subscribes to a single catch-all `pskr/filter/v2/+/+/#` topic and filters modes downstream according to `pskreporter.modes`. It converts JSON payloads into canonical spots and preserves locator-based grids. Set `pskreporter.append_spotter_ssid: true` if you want receiver callsigns that lack SSIDs to pick up a `-#` suffix for deduplication. PSKReporter spots no longer carry a comment string; DX/DE grids stay in metadata and are shown in the fixed tail of telnet output. Configure `pskreporter.max_payload_bytes` to guard against oversized payloads; CTY caching is handled by the unified call metadata cache. PSKReporter spots with explicit `0 dB` reports (rp=0) are dropped before ingest; missing reports are treated as absent.
    - PSK modes are normalized to a canonical `PSK` family for filtering, dedupe, and stats while preserving the reported variant (PSK31/63/125) in telnet/archive output.
 4. **CTY Database** (`cty/parser.go` + `data/cty/cty.plist`) performs longest-prefix lookups; when a callsign includes slashes, it prefers the shortest matching segment (portable/location prefix), so `N2WQ/VE3` and `VE3/N2WQ` both resolve to `VE3` (Canada) for metadata. The in-memory CTY DB is paired with a unified call metadata cache so repeated lookups do not thrash the trie.
 5. **Dedup Engine** (`dedup/deduplicator.go`) filters duplicates before they reach the ring buffer. A zero-second window effectively disables dedup, but the pipeline stays unified. A secondary, broadcast-only dedupe (configurable window, default 60s) runs after call correction/harmonic/frequency adjustments to collapse same-DX/frequency reports from spotters that share the same DE ADIF (DXCC) and DE CQ zone; it hashes kHz + DE ADIF + DE zone + DX call (time window enforced separately), so one spot per window per spotter country/zone reaches clients while the ring/history remain intact. When `secondary_prefer_stronger_snr` is true, the stronger SNR duplicate replaces the cached entry and is broadcast. Spotter SSID display is controlled at broadcast time (see `rbn.keep_ssid_suffix`); when disabled, telnet output, archive, and filters use stripped DE calls while peers keep the raw calls.
@@ -45,7 +45,7 @@ High-level flow:
   - Classify each token by checking for an exact hit that spans the token (fallback: scan the token text itself when whitespace/punctuation causes slight drift).
 - **Single pass extraction**: walk tokens left-to-right, consuming fields as they are discovered: spotter call (and optional `CALL:freq` attachment), frequency, DX call, mode, report (`<signed int> dB` or `<signed int>dB`), time (`HHMMZ`), then treat any remaining unconsumed tokens as the free-form comment.
 - **Mode inference**: when no explicit mode token exists, infer from `data/config/mode_allocations.yaml` by frequency (fallback: `USB` ≥ 10 MHz else `CW`).
-- **Report semantics**: `HasReport` is strictly “report was present in the source line”, so `0 dB` is distinct from “missing report”.
+- **Report semantics**: `HasReport` is strictly “report was present in the source line” (or PSKReporter rp field), so `0 dB` is distinct from “missing report” on sources that retain it (RBN/PSKReporter zero-SNR drops happen before ingest).
 
 ### Call-Correction Distance Tuning
 - CW distance can be Morse-aware with weighted/normalized dot-dash costs (configurable via `call_correction.morse_weights`: `insert`, `delete`, `sub`, `scale`; defaults 1/1/2/2).
@@ -148,7 +148,7 @@ DX de W3LPL:       7009.5  K1ABC       FT8 -5 dB                          FN20 S
 Each `spot.Spot` stores:
 - **ID** - monotonic identifier
 - **DXCall / DECall** - normalized callsigns (portable suffixes stripped, location prefixes like `/VE3` retained; validation accepts 3-15 characters; telnet display truncates DX to 10 as described above)
-- **Frequency** (kHz), **Band**, **Mode**, **Report** (dB/SNR), **HasReport** (distinguishes missing SNR from a real 0)
+- **Frequency** (kHz), **Band**, **Mode**, **Report** (dB/SNR), **HasReport** (distinguishes missing SNR from a real 0 on sources that retain it; RBN/PSKReporter zero-SNR are dropped at ingest)
 - **Time** - UTC timestamp from the source
 - **Comment** - free-form message (human ingest strips mode/SNR/time tokens before storing)
 - **SourceType / SourceNode** - origin tags (`RBN`, `FT8`, `FT4`, `PSKREPORTER`, `UPSTREAM`, etc.)
@@ -176,12 +176,10 @@ Telnet clients can issue commands via the prompt once logged in. The processor, 
 
 Filter management commands use a table-driven engine in `telnet/server.go` with explicit dialect selection. The default `go` dialect uses `PASS`/`REJECT`/`SHOW FILTER`. A CC-style subset is available via `DIALECT cc` (aliases: `SET/ANN`, `SET/NOANN`, `SET/BEACON`, `SET/NOBEACON`, `SET/WWV`, `SET/NOWWV`, `SET/WCY`, `SET/NOWCY`, `SET/SKIMMER`, `SET/NOSKIMMER`, `SET/<MODE>`, `SET/NO<MODE>`, `SET/FILTER DXBM/PASS|REJECT <band>` mapping CC DXBM bands to our band filters, `SET/NOFILTER`, plus `SET/FILTER`/`UNSET/FILTER`/`SHOW/FILTER`). `DIALECT LIST` shows the available dialects, the chosen dialect is persisted per callsign along with filter state, and HELP renders the verbs for the active dialect. Classic/go commands operate on each client's `filter.Filter` and fall into `PASS`, `REJECT`, and `SHOW FILTER` groups:
 
-- `SHOW FILTER` - prints the current filter state for bands, modes, source category, continents, CQ zones, and callsigns.
-- `SHOW FILTER MODES` - lists every supported mode along with whether it is currently enabled for the session.
-- `SHOW FILTER BANDS` - lists all supported bands that can be enabled.
-- `SHOW FILTER DXCONT` / `DECONT` - list supported DX/spotter continents and enabled state.
-- `SHOW FILTER DXZONE` / `DEZONE` - list CQ zones (1-40) and enabled state for DX/spotter.
-- `SHOW FILTER DXGRID2` / `DEGRID2` - list enabled 2-character DX/DE grid prefixes or `ALL`.
+- `SHOW FILTER` - prints a full snapshot of filter state (allow/block + effective) for bands, modes, sources, continents, zones, DXCC, grids, confidence, callsigns, and toggles.
+
+Tokenized `SHOW FILTER <type>` / `SHOW/FILTER <type>` forms are deprecated; they return the full snapshot with a warning.
+Effective labels in the snapshot use a fixed vocabulary: `all pass`, `all except: <items>`, `only: <items>`, `none pass`, `all blocked`.
 - `PASS BAND <band>[,<band>...]` - enables filtering for the comma- or space-separated list (each item normalized via `spot.NormalizeBand`), or specify `ALL` to accept every band; use the band names from `spot.SupportedBandNames()`.
 - `PASS MODE <mode>[,<mode>...]` - enables one or more modes (comma- or space-separated) that must exist in `filter.SupportedModes`, or specify `ALL` to accept every mode.
 - `PASS SOURCE <HUMAN|SKIMMER|ALL>` - filter by spot origin: `HUMAN` passes only spots with `IsHuman=true`, `SKIMMER` passes only spots with `IsHuman=false`, and `ALL` disables source filtering.
@@ -200,12 +198,10 @@ Filter management commands use a table-driven engine in `telnet/server.go` with 
 - `REJECT DXCONT` / `DECONT` / `DXZONE` / `DEZONE` - block continent/zone filters (use `ALL` to block all).
 - `REJECT DXGRID2 <grid>[,<grid>...]` - remove specific 2-character DX grid prefixes (tokens truncated to two characters); `ALL` blocks every DX 2-character grid.
 - `REJECT DEGRID2 <grid>[,<grid>...]` - remove specific 2-character DE grid prefixes (tokens truncated to two characters); `ALL` blocks every DE 2-character grid.
-- `REJECT DXCALL` - removes all DX callsign patterns.
-- `REJECT DECALL` - removes all DE callsign patterns.
+- `REJECT DXCALL` - clears all DX callsign patterns (arguments ignored).
+- `REJECT DECALL` - clears all DE callsign patterns (arguments ignored).
 - `REJECT CONFIDENCE <symbol>[,<symbol>...]` - disables only the comma- or space-separated list of glyphs provided (use `ALL` to block every glyph).
 - `REJECT BEACON` - drop beacon spots entirely (they remain tagged internally for future processing).
-- `SHOW FILTER BEACON` - display the current beacon-filter state.
-- `SHOW FILTER CONFIDENCE` - lists each glyph alongside whether it is currently enabled.
 
 Confidence glyphs are only emitted for modes that run consensus-based correction (CW/RTTY/USB/LSB voice modes). FT8/FT4 spots carry no confidence glyphs, so confidence filters do not affect them. After correction assigns `P`/`V`/`C`/`?`, any remaining `?` is upgraded to `S` when the DX call is present in `MASTER.SCP`.
 
@@ -243,8 +239,8 @@ Configuration:
 
 Use `PASS CONFIDENCE` with the glyphs above to whitelist the consensus levels you want to see (for example, `PASS CONFIDENCE P,V` keeps strong/very strong reports while dropping `?`/`S`/`B` entries).
 
-Use `REJECT BEACON` to suppress DX beacons when you only want live operator traffic; `PASS BEACON` re-enables them, and `SHOW FILTER BEACON` reports the current state. Regardless of delivery, `/B` spots are excluded from call-correction, frequency-averaging, and harmonic checks.
-Errors during filter commands return a usage message (e.g., invalid bands or modes refer to the supported lists) and the `SHOW FILTER` commands help confirm the active settings.
+Use `REJECT BEACON` to suppress DX beacons when you only want live operator traffic; `PASS BEACON` re-enables them, and `SHOW FILTER` reports the current state. Regardless of delivery, `/B` spots are excluded from call-correction, frequency-averaging, and harmonic checks.
+Errors during filter commands return a usage message (e.g., invalid bands or modes refer to the supported lists) and the `SHOW FILTER` command helps confirm the active settings.
 
 Continent and CQ-zone filters behave like the band/mode whitelists: start permissive, tighten with `PASS`, reset with `ALL`. When a continent/zone filter is active, spots missing that metadata are rejected so the whitelist cannot be bypassed by incomplete records.
 
@@ -362,17 +358,17 @@ DX1 14.074 FT8 599 N1ABC>W1XYZ
 DX2 14.070 FT4 26 N1ABC>W2ABC
 ...
 PASS BAND 20M
-Filter set: Band 20M
+Filter set: Band 20m
 PASS MODE FT8,FT4
 Filter set: Modes FT8, FT4
 PASS CONFIDENCE P,V
 Confidence symbols enabled: P, V
-SHOW FILTER MODES
-Supported modes: FT8=ENABLED, FT4=ENABLED, CW=DISABLED, ...
-SHOW FILTER CONFIDENCE
-Confidence symbols: ?=DISABLED, S=DISABLED, C=ENABLED, P=ENABLED, V=ENABLED, B=DISABLED
 SHOW FILTER
-Current filters: Bands: 20M | Modes: FT8, FT4 | Confidence: P, V
+Current filters: BAND=only: 20m | MODE=only: FT8, FT4 | CONFIDENCE=only: P, V | ...
+BAND: allow=20m block=NONE (effective: only: 20m)
+MODE: allow=FT8, FT4 block=NONE (effective: only: FT8, FT4)
+CONFIDENCE: allow=P, V block=NONE (effective: only: P, V)
+...
 REJECT MODE FT4
 Mode filters disabled: FT4
 REJECT ALL
@@ -454,6 +450,13 @@ Operational guidance: enable `auto_delete_corrupt_db` only if the archive is tru
 	 go run .
 	 ```
 10. Connect via `telnet localhost 9300` (or your configured `telnet.port`), enter your callsign, and the server will immediately stream real-time spots.
+
+## Path Reliability (telnet)
+
+- Uses recent CW/RTTY/PSK/FT8/FT4 spots to maintain directional FT8-equivalent quality on a 2×2 grid per Maidenhead field (plus coarse grid2), with per-band half-lives and staleness purging.
+- Telnet lines show a single glyph in the comment area when enabled, reflecting a merged path estimate adjusted for the user's noise class: `+` (high), `=` (medium), `-` (low), `!` (unlikely). No glyph is shown when data is insufficient.
+- Commands: `SET GRID <grid>` to set/confirm your location (4–6 char), `SET NOISE <QUIET|RURAL|SUBURBAN|URBAN>` to apply a DX→you noise penalty. Defaults: QUIET/0 dB.
+- Config: `data/config/path_reliability.yaml` controls clamps (-25..15 dB FT8-equiv), per-band half-life, neighbor fallback, reverse hint discount, merge weights, per-mode glyph thresholds (`mode_thresholds`) with a fallback `glyph_thresholds`, beacon weight cap (default 1), mode offsets (FT4/CW/RTTY/PSK; CW/RTTY/PSK defaults assume 500 Hz -> 2500 Hz bandwidth correction of -7 dB), and noise offsets.
 
 ## Configuration Loader Defaults
 

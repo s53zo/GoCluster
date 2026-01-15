@@ -28,6 +28,7 @@ type ingestValidator struct {
 	unlicensedReporter func(source, role, call, mode string, freq float64)
 	dropReporter       func(line string)
 	isLicensedUS       func(call string) bool
+	requireCTY         bool
 	ctyDropDXCounter   rateCounter
 	ctyDropDECounter   rateCounter
 	dedupDropCounter   rateCounter
@@ -42,6 +43,7 @@ func newIngestValidator(
 	dedupInput chan<- *spot.Spot,
 	unlicensedReporter func(source, role, call, mode string, freq float64),
 	dropReporter func(line string),
+	requireCTY bool,
 ) *ingestValidator {
 	inputBuffer := cap(dedupInput)
 	if inputBuffer <= 0 {
@@ -56,6 +58,7 @@ func newIngestValidator(
 		unlicensedReporter: unlicensedReporter,
 		dropReporter:       dropReporter,
 		isLicensedUS:       uls.IsLicensedUS,
+		requireCTY:         requireCTY,
 		ctyDropDXCounter:   newRateCounter(defaultIngestCTYLogInterval),
 		ctyDropDECounter:   newRateCounter(defaultIngestCTYLogInterval),
 		dedupDropCounter:   newRateCounter(defaultIngestDropLogInterval),
@@ -117,7 +120,13 @@ func (v *ingestValidator) validateSpot(s *spot.Spot) bool {
 	}
 	ctyDB := v.ctyLookup()
 	if ctyDB == nil {
-		return true
+		if !v.requireCTY {
+			return true
+		}
+		ctyDB = v.waitForCTY()
+		if ctyDB == nil {
+			return false
+		}
 	}
 
 	dxCall := s.DXCallNorm
@@ -181,6 +190,26 @@ func (v *ingestValidator) validateSpot(s *spot.Spot) bool {
 	}
 
 	return true
+}
+
+func (v *ingestValidator) waitForCTY() *cty.CTYDatabase {
+	if v == nil || v.ctyLookup == nil {
+		return nil
+	}
+	if db := v.ctyLookup(); db != nil {
+		return db
+	}
+	log.Printf("CTY database not loaded; ingest paused until ready")
+	timer := time.NewTimer(defaultIngestCTYLogInterval)
+	defer timer.Stop()
+	for {
+		<-timer.C
+		if db := v.ctyLookup(); db != nil {
+			return db
+		}
+		log.Printf("CTY database still unavailable; ingest paused")
+		timer.Reset(defaultIngestCTYLogInterval)
+	}
 }
 
 func (v *ingestValidator) lookupCTY(db *cty.CTYDatabase, call string) (*cty.PrefixInfo, bool) {

@@ -67,7 +67,7 @@ type PSKRMessage struct {
 	SequenceNumber  uint64 `json:"sq"` // Sequence number
 	Frequency       int64  `json:"f"`  // Frequency in Hz
 	Mode            string `json:"md"` // Mode (FT8, FT4, etc.)
-	Report          int    `json:"rp"` // SNR report in dB
+	Report          *int   `json:"rp"` // SNR report in dB (nil when missing)
 	Timestamp       int64  `json:"t"`  // Unix timestamp in seconds (seconds since 1970-01-01)
 	SenderCall      string `json:"sc"` // Sender (DX) callsign
 	SenderLocator   string `json:"sl"` // Sender grid locator
@@ -328,6 +328,9 @@ func (c *Client) handlePayload(payload []byte) {
 			return
 		}
 	}
+	if pskrMsg.Report != nil && *pskrMsg.Report == 0 {
+		return
+	}
 	modeUpper := strings.ToUpper(strings.TrimSpace(pskrMsg.Mode))
 	canonical, variant, isPSK := spot.CanonicalPSKMode(modeUpper)
 	if !c.allowAllModes {
@@ -429,9 +432,11 @@ func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
 	// deduplication across multiple spotters reporting the same signal
 	s.Time = spotTime
 
-	// Set report (SNR in dB)
-	s.Report = msg.Report
-	s.HasReport = true
+	// Set report (SNR in dB) when present.
+	if msg.Report != nil {
+		s.Report = *msg.Report
+		s.HasReport = true
+	}
 
 	// Comment intentionally left empty for PSKReporter; grids are stored in metadata
 	// and rendered in the DX cluster tail to avoid duplicating payload.

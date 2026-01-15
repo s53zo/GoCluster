@@ -45,7 +45,9 @@ import (
 	"time"
 
 	"dxcluster/commands"
+	"dxcluster/cty"
 	"dxcluster/filter"
+	"dxcluster/pathreliability"
 	"dxcluster/reputation"
 	"dxcluster/spot"
 	ztelnet "github.com/ziutek/telnet"
@@ -72,37 +74,41 @@ import (
 //   - BroadcastSpot() is thread-safe (uses mutex)
 //   - Each client goroutine operates independently
 type Server struct {
-	port              int                  // TCP port to listen on
-	welcomeMessage    string               // Welcome message for new connections
-	maxConnections    int                  // Maximum concurrent client connections
-	duplicateLoginMsg string               // Message sent to evicted duplicate session
-	greetingTemplate  string               // Post-login greeting with placeholders
-	clusterCall       string               // Cluster/node callsign for greeting substitution
-	listener          net.Listener         // TCP listener
-	clients           map[string]*Client   // Map of callsign → Client
-	clientsMutex      sync.RWMutex         // Protects clients map
-	shutdown          chan struct{}        // Shutdown coordination channel
-	broadcast         chan *spot.Spot      // Broadcast channel for spots (buffered, configurable)
-	broadcastWorkers  int                  // Number of goroutines delivering spots
-	workerQueues      []chan *broadcastJob // Per-worker job queues
-	workerQueueSize   int                  // Capacity of each worker's queue
-	batchInterval     time.Duration        // Broadcast batch interval; 0 means immediate
-	batchMax          int                  // Max jobs per batch before flush
-	metrics           broadcastMetrics     // Broadcast metrics counters
-	keepaliveInterval time.Duration        // Optional periodic CRLF to keep idle sessions alive
-	clientShards      [][]*Client          // Cached shard layout for broadcasts
-	shardsDirty       atomic.Bool          // Flag to rebuild shards on client add/remove
-	processor         *commands.Processor  // Command processor for user commands
-	skipHandshake     bool                 // When true, omit Telnet IAC negotiation
-	transport         string               // Telnet transport backend ("native" or "ziutek")
-	useZiutek         bool                 // True when the external telnet transport is enabled
-	echoMode          string               // Input echo policy ("server", "local", "off")
-	clientBufferSize  int                  // Per-client spot channel capacity
-	loginLineLimit    int                  // Maximum bytes accepted for login/callsign input
-	commandLineLimit  int                  // Maximum bytes accepted for post-login commands
-	filterEngine      *filterCommandEngine // Table-driven filter command parser/executor
-	reputationGate    *reputation.Gate     // Optional reputation gate for login metadata
-	startTime         time.Time            // Process start time for uptime tokens
+	port              int                         // TCP port to listen on
+	welcomeMessage    string                      // Welcome message for new connections
+	maxConnections    int                         // Maximum concurrent client connections
+	duplicateLoginMsg string                      // Message sent to evicted duplicate session
+	greetingTemplate  string                      // Post-login greeting with placeholders
+	clusterCall       string                      // Cluster/node callsign for greeting substitution
+	listener          net.Listener                // TCP listener
+	clients           map[string]*Client          // Map of callsign → Client
+	clientsMutex      sync.RWMutex                // Protects clients map
+	shutdown          chan struct{}               // Shutdown coordination channel
+	broadcast         chan *spot.Spot             // Broadcast channel for spots (buffered, configurable)
+	broadcastWorkers  int                         // Number of goroutines delivering spots
+	workerQueues      []chan *broadcastJob        // Per-worker job queues
+	workerQueueSize   int                         // Capacity of each worker's queue
+	batchInterval     time.Duration               // Broadcast batch interval; 0 means immediate
+	batchMax          int                         // Max jobs per batch before flush
+	metrics           broadcastMetrics            // Broadcast metrics counters
+	keepaliveInterval time.Duration               // Optional periodic CRLF to keep idle sessions alive
+	clientShards      [][]*Client                 // Cached shard layout for broadcasts
+	shardsDirty       atomic.Bool                 // Flag to rebuild shards on client add/remove
+	processor         *commands.Processor         // Command processor for user commands
+	skipHandshake     bool                        // When true, omit Telnet IAC negotiation
+	transport         string                      // Telnet transport backend ("native" or "ziutek")
+	useZiutek         bool                        // True when the external telnet transport is enabled
+	echoMode          string                      // Input echo policy ("server", "local", "off")
+	clientBufferSize  int                         // Per-client spot channel capacity
+	loginLineLimit    int                         // Maximum bytes accepted for login/callsign input
+	commandLineLimit  int                         // Maximum bytes accepted for post-login commands
+	filterEngine      *filterCommandEngine        // Table-driven filter command parser/executor
+	reputationGate    *reputation.Gate            // Optional reputation gate for login metadata
+	startTime         time.Time                   // Process start time for uptime tokens
+	pathPredictor     *pathreliability.Predictor  // Optional path reliability predictor
+	pathDisplay       bool                        // Toggle glyph rendering
+	noiseOffsets      map[string]float64          // Noise class lookup
+	gridLookup        func(string) (string, bool) // Optional grid lookup from store
 }
 
 // Client represents a connected telnet client session.
@@ -115,27 +121,32 @@ type Server struct {
 //
 // The client remains active until they type BYE or their connection drops.
 type Client struct {
-	conn         net.Conn        // TCP connection to client
-	reader       *bufio.Reader   // Buffered reader for client input
-	writer       *bufio.Writer   // Buffered writer for client output
-	callsign     string          // Client's amateur radio callsign
-	connected    time.Time       // Timestamp when client connected
-	address      string          // Client's IP address
-	recentIPs    []string        // Most-recent-first IP history for this callsign
-	spotChan     chan *spot.Spot // Buffered channel for spot delivery (configurable capacity)
-	bulletinChan chan bulletin   // Buffered channel for WWV/WCY bulletin delivery
-	handleIAC    bool            // True when we parse IAC sequences in ReadLine
-	echoInput    bool            // True when we should echo typed characters back to the client
-	dialect      DialectName     // Active command dialect for filter commands
+	conn         net.Conn               // TCP connection to client
+	reader       *bufio.Reader          // Buffered reader for client input
+	writer       *bufio.Writer          // Buffered writer for client output
+	callsign     string                 // Client's amateur radio callsign
+	connected    time.Time              // Timestamp when client connected
+	server       *Server                // Back-reference to server for formatting/helpers
+	address      string                 // Client's IP address
+	recentIPs    []string               // Most-recent-first IP history for this callsign
+	spotChan     chan *spot.Spot        // Buffered channel for spot delivery (configurable capacity)
+	bulletinChan chan bulletin          // Buffered channel for WWV/WCY bulletin delivery
+	handleIAC    bool                   // True when we parse IAC sequences in ReadLine
+	echoInput    bool                   // True when we should echo typed characters back to the client
+	dialect      DialectName            // Active command dialect for filter commands
+	grid         string                 // User grid (4+ chars) for path reliability
+	gridCell     pathreliability.CellID // Cached cell for path reliability
+	noiseClass   string                 // Noise class token (e.g., QUIET, URBAN)
+	noisePenalty float64                // dB penalty applied DX->user
 
 	// filterMu guards filter, which is read by telnet broadcast workers while the
 	// client session goroutine mutates it in response to PASS/REJECT commands.
 	// Without this lock, Go's runtime can terminate the process with:
 	// "fatal error: concurrent map read and map write"
 	// because Filter contains many maps.
-	filterMu  sync.RWMutex
-	filter    *filter.Filter // Personal spot filter (band, mode, callsign)
-	dropCount uint64         // Count of spots dropped for this client due to backpressure
+	filterMu          sync.RWMutex
+	filter            *filter.Filter // Personal spot filter (band, mode, callsign)
+	dropCount         uint64         // Count of spots dropped for this client due to backpressure
 	pendingDeliveries sync.WaitGroup // Outstanding broadcast jobs referencing this client
 }
 
@@ -172,9 +183,11 @@ func (c *Client) saveFilter() error {
 	c.filterMu.RLock()
 	defer c.filterMu.RUnlock()
 	record := &filter.UserRecord{
-		Filter:    *c.filter,
-		RecentIPs: c.recentIPs,
-		Dialect:   string(c.dialect),
+		Filter:     *c.filter,
+		RecentIPs:  c.recentIPs,
+		Dialect:    string(c.dialect),
+		Grid:       strings.ToUpper(strings.TrimSpace(c.grid)),
+		NoiseClass: strings.ToUpper(strings.TrimSpace(c.noiseClass)),
 	}
 	if existing, err := filter.LoadUserRecord(callsign); err == nil {
 		record.RecentIPs = filter.MergeRecentIPs(record.RecentIPs, existing.RecentIPs)
@@ -270,6 +283,54 @@ func dialectWelcomeLine(active DialectName, created bool, loadErr error, default
 	return fmt.Sprintf("Current dialect: %s (%s). Use DIALECT LIST or DIALECT CC to switch. Type HELP for commands in this dialect.\n", strings.ToUpper(string(active)), source)
 }
 
+// handlePathSettingsCommand processes SET GRID/SET NOISE commands.
+func (s *Server) handlePathSettingsCommand(client *Client, line string) (string, bool) {
+	if client == nil {
+		return "", false
+	}
+	upper := strings.Fields(strings.ToUpper(strings.TrimSpace(line)))
+	if len(upper) < 2 || upper[0] != "SET" {
+		return "", false
+	}
+	switch upper[1] {
+	case "GRID":
+		if len(upper) < 3 {
+			return "Usage: SET GRID <4-6 char maidenhead>\n", true
+		}
+		grid := strings.ToUpper(strings.TrimSpace(upper[2]))
+		if len(grid) < 4 {
+			return "Grid must be at least 4 characters (e.g., FN31)\n", true
+		}
+		cell := pathreliability.EncodeCell(grid)
+		if cell == pathreliability.InvalidCell {
+			return "Invalid grid. Please provide a 4-6 character Maidenhead locator.\n", true
+		}
+		client.grid = grid
+		client.gridCell = cell
+		if err := client.saveFilter(); err != nil {
+			return fmt.Sprintf("Grid set to %s (warning: failed to persist: %v)\n", grid, err), true
+		}
+		return fmt.Sprintf("Grid set to %s\n", grid), true
+	case "NOISE":
+		if len(upper) < 3 {
+			return "Usage: SET NOISE <QUIET|RURAL|SUBURBAN|URBAN>\n", true
+		}
+		class := strings.ToUpper(strings.TrimSpace(upper[2]))
+		penalty := s.noisePenaltyForClass(class)
+		if class == "" || (penalty == 0 && class != "QUIET" && class != "RURAL" && class != "SUBURBAN" && class != "URBAN") {
+			return "Unknown noise class. Use QUIET, RURAL, SUBURBAN, or URBAN.\n", true
+		}
+		client.noiseClass = class
+		client.noisePenalty = penalty
+		if err := client.saveFilter(); err != nil {
+			return fmt.Sprintf("Noise class set to %s (warning: failed to persist: %v)\n", class, err), true
+		}
+		return fmt.Sprintf("Noise class set to %s\n", class), true
+	default:
+		return "", false
+	}
+}
+
 func shouldLogQueueDrop(total uint64) bool {
 	return total == 1 || total%100 == 0
 }
@@ -311,7 +372,7 @@ const (
 
 const (
 	passFilterUsageMsg      = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern> | PASS DECALL <pattern> | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
-	rejectFilterUsageMsg    = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER> | REJECT DXCALL | REJECT DECALL | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
+	rejectFilterUsageMsg    = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER> | REJECT DXCALL (clears all patterns; args ignored) | REJECT DECALL (clears all patterns; args ignored) | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
 	unknownPassTypeMsg      = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 	unknownRejectTypeMsg    = "Unknown filter type. Use: ALL, BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 	invalidFilterCommandMsg = "Invalid filter command. Type HELP for usage.\n"
@@ -337,6 +398,11 @@ type ServerOptions struct {
 	LoginLineLimit         int
 	CommandLineLimit       int
 	ReputationGate         *reputation.Gate
+	PathPredictor          *pathreliability.Predictor
+	PathDisplayEnabled     bool
+	NoiseOffsets           map[string]float64
+	GridLookup             func(string) (string, bool)
+	CTYLookup              func() *cty.CTYDatabase
 }
 
 // NewServer creates a new telnet server
@@ -366,9 +432,13 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		processor:         processor,
 		loginLineLimit:    config.LoginLineLimit,
 		commandLineLimit:  config.CommandLineLimit,
-		filterEngine:      newFilterCommandEngine(),
+		filterEngine:      newFilterCommandEngineWithCTY(config.CTYLookup),
 		reputationGate:    opts.ReputationGate,
 		startTime:         time.Now().UTC(),
+		pathPredictor:     opts.PathPredictor,
+		pathDisplay:       opts.PathDisplayEnabled,
+		noiseOffsets:      opts.NoiseOffsets,
+		gridLookup:        opts.GridLookup,
 	}
 }
 
@@ -411,6 +481,12 @@ func normalizeServerOptions(opts ServerOptions) ServerOptions {
 	}
 	if config.CommandLineLimit <= 0 {
 		config.CommandLineLimit = defaultCommandLineLimit
+	}
+	if config.PathPredictor == nil {
+		config.PathDisplayEnabled = false
+	}
+	if config.NoiseOffsets == nil {
+		config.NoiseOffsets = map[string]float64{}
 	}
 	return config
 }
@@ -872,12 +948,16 @@ func (s *Server) handleClient(conn net.Conn) {
 		reader:       bufio.NewReader(readerConn),
 		writer:       bufio.NewWriter(writerConn),
 		connected:    time.Now(),
+		server:       s,
 		address:      address,
 		spotChan:     make(chan *spot.Spot, spotQueueSize),
 		bulletinChan: make(chan bulletin, spotQueueSize),
 		filter:       filter.NewFilter(), // Start with no filters (accept all)
 		handleIAC:    !s.useZiutek,
 		dialect:      s.filterEngine.defaultDialect,
+		gridCell:     pathreliability.InvalidCell,
+		noiseClass:   "QUIET",
+		noisePenalty: 0,
 		// Echo policy is configured explicitly so we can support local echo even
 		// when clients toggle their own modes.
 		echoInput: s.echoMode == telnetEchoServer,
@@ -938,6 +1018,10 @@ func (s *Server) handleClient(conn net.Conn) {
 		client.filter = &record.Filter
 		client.recentIPs = record.RecentIPs
 		client.dialect = normalizeDialectName(record.Dialect)
+		client.grid = strings.ToUpper(strings.TrimSpace(record.Grid))
+		client.gridCell = pathreliability.EncodeCell(client.grid)
+		client.noiseClass = strings.ToUpper(strings.TrimSpace(record.NoiseClass))
+		client.noisePenalty = s.noisePenaltyForClass(client.noiseClass)
 		if created {
 			log.Printf("Created default filter for %s", client.callsign)
 		} else {
@@ -947,10 +1031,26 @@ func (s *Server) handleClient(conn net.Conn) {
 		client.filter = filter.NewFilter()
 		client.recentIPs = filter.UpdateRecentIPs(nil, spotterIP(client.address))
 		client.dialect = s.filterEngine.defaultDialect
+		client.gridCell = pathreliability.InvalidCell
+		client.noiseClass = "QUIET"
+		client.noisePenalty = s.noisePenaltyForClass(client.noiseClass)
 		log.Printf("Warning: failed to load user record for %s: %v", client.callsign, err)
 		if err := client.saveFilter(); err != nil {
 			log.Printf("Warning: failed to save user record for %s: %v", client.callsign, err)
 		}
+	}
+
+	// Seed grid from lookup when none is stored.
+	if strings.TrimSpace(client.grid) == "" && s.gridLookup != nil {
+		if g, ok := s.gridLookup(client.callsign); ok {
+			client.grid = strings.ToUpper(strings.TrimSpace(g))
+			client.gridCell = pathreliability.EncodeCell(client.grid)
+		}
+	}
+	// Normalize noise defaults when absent.
+	if strings.TrimSpace(client.noiseClass) == "" {
+		client.noiseClass = "QUIET"
+		client.noisePenalty = s.noisePenaltyForClass(client.noiseClass)
 	}
 
 	// Register client
@@ -964,6 +1064,14 @@ func (s *Server) handleClient(conn net.Conn) {
 	}
 	client.Send(greeting + "\n")
 	client.Send(dialectWelcomeLine(client.dialect, created, err, s.filterEngine.defaultDialect))
+	if s.pathPredictor != nil && s.pathDisplay {
+		status := "Path reliability enabled"
+		gridNote := client.grid
+		if gridNote == "" {
+			gridNote = "unset"
+		}
+		client.Send(fmt.Sprintf("%s. Grid: %s (SET GRID <grid>), Noise: %s (SET NOISE QUIET|RURAL|SUBURBAN|URBAN)\n", status, gridNote, client.noiseClass))
+	}
 
 	// Start spot sender goroutine
 	go client.spotSender()
@@ -992,6 +1100,13 @@ func (s *Server) handleClient(conn net.Conn) {
 
 		// Dialect selection is handled before filter commands.
 		if resp, handled := s.handleDialectCommand(client, line); handled {
+			if resp != "" {
+				client.Send(resp)
+			}
+			continue
+		}
+
+		if resp, handled := s.handlePathSettingsCommand(client, line); handled {
 			if resp != "" {
 				client.Send(resp)
 			}
@@ -1095,6 +1210,95 @@ func formatGreeting(tmpl string, data templateData) string {
 		return ""
 	}
 	return applyTemplateTokens(tmpl, data)
+}
+
+func (s *Server) noisePenaltyForClass(class string) float64 {
+	if s == nil {
+		return 0
+	}
+	key := strings.ToUpper(strings.TrimSpace(class))
+	if val, ok := s.noiseOffsets[key]; ok {
+		return val
+	}
+	return 0
+}
+
+// formatSpotForClient renders a spot with optional reliability glyphs.
+func (s *Server) formatSpotForClient(client *Client, sp *spot.Spot) string {
+	if sp == nil {
+		return ""
+	}
+	base := sp.FormatDXCluster()
+	if s == nil || s.pathPredictor == nil || !s.pathDisplay {
+		return base + "\n"
+	}
+	glyphs := s.pathGlyphsForClient(client, sp)
+	if glyphs != "" {
+		base = injectGlyphs(base, glyphs)
+	}
+	return base + "\n"
+}
+
+func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
+	if client == nil || sp == nil {
+		return ""
+	}
+	cfg := s.pathPredictor.Config()
+	if !cfg.Enabled {
+		return ""
+	}
+	userCell := client.gridCell
+	if userCell == pathreliability.InvalidCell && strings.TrimSpace(client.grid) != "" {
+		userCell = pathreliability.EncodeCell(client.grid)
+		client.gridCell = userCell
+	}
+	if userCell == pathreliability.InvalidCell {
+		return ""
+	}
+	dxCell := pathreliability.InvalidCell
+	if sp.DXCellID != 0 && sp.DXCellID != 0xffff {
+		dxCell = pathreliability.CellID(sp.DXCellID)
+	}
+	if dxCell == pathreliability.InvalidCell {
+		dxCell = pathreliability.EncodeCell(sp.DXMetadata.Grid)
+	}
+	if dxCell == pathreliability.InvalidCell {
+		return ""
+	}
+	userGrid2 := pathreliability.EncodeGrid2(client.grid)
+	dxGrid2 := pathreliability.EncodeGrid2(sp.DXMetadata.Grid)
+
+	band := sp.BandNorm
+	if strings.TrimSpace(band) == "" {
+		band = sp.Band
+	}
+	mode := sp.ModeNorm
+	if strings.TrimSpace(mode) == "" {
+		mode = sp.Mode
+	}
+	now := time.Now().UTC()
+	res := s.pathPredictor.Predict(userCell, dxCell, userGrid2, dxGrid2, band, mode, client.noisePenalty, now)
+	g := res.Glyph
+	return g
+}
+
+func injectGlyphs(base string, glyph string) string {
+	if len(base) < 66 || len(glyph) < 1 {
+		return base
+	}
+	b := []byte(base)
+	// Place the glyph at column 65 (0-based index 64) so there is exactly one
+	// space (column 66) before the grid starts at column 67.
+	pos := 64
+	if pos >= len(b) {
+		return base
+	}
+	// Ensure a single space separates any comment text from the glyph.
+	if pos-1 >= 0 {
+		b[pos-1] = ' '
+	}
+	b[pos] = glyph[0]
+	return string(b)
 }
 
 // applyWelcomeTokens remains for compatibility; it now delegates to the full token replacer.
@@ -1217,6 +1421,9 @@ func (c *Client) spotSender() {
 				continue
 			}
 			formatted := spot.FormatDXCluster() + "\n"
+			if c.server != nil {
+				formatted = c.server.formatSpotForClient(c, spot)
+			}
 			if err := c.Send(formatted); err != nil {
 				log.Printf("Error sending spot to %s: %v", c.callsign, err)
 				return

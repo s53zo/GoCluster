@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+func intPtr(v int) *int {
+	return &v
+}
+
 func TestDecorateSpotterCall(t *testing.T) {
 	with := &Client{appendSSID: true}
 
@@ -35,7 +39,7 @@ func TestConvertToSpotOmitsCommentAndCarriesGrids(t *testing.T) {
 		SequenceNumber:  1,
 		Frequency:       14074000,
 		Mode:            "FT8",
-		Report:          10,
+		Report:          intPtr(10),
 		Timestamp:       time.Now().Add(-time.Minute).Unix(),
 		SenderCall:      "K1ABC",
 		SenderLocator:   "fn42",
@@ -91,6 +95,7 @@ func TestHandlePayloadFiltersModes(t *testing.T) {
 	allowed := PSKRMessage{
 		Frequency:    14074000,
 		Mode:         "FT8",
+		Report:       intPtr(5),
 		Timestamp:    time.Now().Unix(),
 		SenderCall:   "K1ABC",
 		ReceiverCall: "N0CALL",
@@ -119,11 +124,54 @@ func TestHandlePayloadFiltersModes(t *testing.T) {
 	}
 }
 
+func TestHandlePayloadDropsZeroSNR(t *testing.T) {
+	client := NewClient("localhost", 1883, nil, nil, "", 1, nil, false, 2, 0)
+	msg := PSKRMessage{
+		Frequency:    14074000,
+		Mode:         "FT8",
+		Report:       intPtr(0),
+		Timestamp:    time.Now().Unix(),
+		SenderCall:   "K1ABC",
+		ReceiverCall: "N0CALL",
+	}
+	payload, _ := json.Marshal(msg)
+
+	client.handlePayload(payload)
+	select {
+	case spot := <-client.spotChan:
+		t.Fatalf("expected zero-SNR spot to be dropped, got %+v", spot)
+	default:
+	}
+}
+
+func TestHandlePayloadAllowsMissingReport(t *testing.T) {
+	client := NewClient("localhost", 1883, nil, nil, "", 1, nil, false, 2, 0)
+	msg := PSKRMessage{
+		Frequency:    14074000,
+		Mode:         "FT8",
+		Timestamp:    time.Now().Unix(),
+		SenderCall:   "K1ABC",
+		ReceiverCall: "N0CALL",
+	}
+	payload, _ := json.Marshal(msg)
+
+	client.handlePayload(payload)
+	select {
+	case spot := <-client.spotChan:
+		if spot.HasReport {
+			t.Fatalf("expected HasReport=false when report missing, got Report=%d", spot.Report)
+		}
+	default:
+		t.Fatalf("expected missing-report payload to enqueue a spot")
+	}
+}
+
 func TestHandlePayloadAllowsPSKVariantsWithCanonicalAllowlist(t *testing.T) {
 	client := NewClient("localhost", 1883, nil, []string{"PSK"}, "", 1, nil, false, 2, 0)
 	psk31 := PSKRMessage{
 		Frequency:    14074000,
 		Mode:         "PSK31",
+		Report:       intPtr(5),
 		Timestamp:    time.Now().Unix(),
 		SenderCall:   "K1ABC",
 		ReceiverCall: "N0CALL",

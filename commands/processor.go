@@ -144,7 +144,7 @@ func filterHelpText(dialect string) string {
 	SET/FILTER <type> [...]  - Allow (BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, DEDXCC, BEACON, WWV, WCY, ANNOUNCE)
 	SET/FILTER <type>/OFF    - Block the specified type (ALL)
 	UNSET/FILTER <type> [...] - Block/clear for the specified type
-	SHOW/FILTER [type]       - Show current filters or detailed state for a type`
+	SHOW/FILTER              - Show the full filter snapshot (tokenized forms deprecated)`
 	default:
 		return `Filter commands (allow + block, deny wins):
 	PASS BAND <band>[,<band>...] - Allow specific bands (comma/space). ALL clears blocklist and allows all.
@@ -176,14 +176,14 @@ func filterHelpText(dialect string) string {
 	REJECT DEDXCC <code>[,<code>...]    - Block DE ADIF/DXCC codes; ALL blocks all DE DXCCs.
 	REJECT DXGRID2 <grid>[,<grid>...]    - Block 2-char DX grids; ALL blocks all DX grids.
 	REJECT DEGRID2 <grid>[,<grid>...]    - Block 2-char DE grids; ALL blocks all DE grids.
-	REJECT DXCALL - Remove all DX callsign patterns (allows any DX call, subject to other filters).
-	REJECT DECALL - Remove all DE callsign patterns (allows any DE call, subject to other filters).
+	REJECT DXCALL - Clear all DX callsign patterns (arguments ignored; allows any DX call, subject to other filters).
+	REJECT DECALL - Clear all DE callsign patterns (arguments ignored; allows any DE call, subject to other filters).
 	REJECT CONFIDENCE <symbol>[,<symbol>...] - Block glyphs; ALL blocks all glyphs (non-exempt modes).
 	REJECT BEACON - Suppress DX beacons
 	REJECT WWV - Suppress WWV bulletins
 	REJECT WCY - Suppress WCY bulletins
 	REJECT ANNOUNCE - Suppress PC93 announcements
-	SHOW FILTER ...             - Show supported/active state for bands, modes, continents, zones, DXCC, grid2, confidence, beacon, WWV, WCY, announce`
+	SHOW FILTER                 - Show the full filter snapshot (tokenized forms deprecated)`
 	}
 }
 

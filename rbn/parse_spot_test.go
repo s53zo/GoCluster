@@ -148,6 +148,18 @@ func TestACParserPositiveSNRNoComment(t *testing.T) {
 	}
 }
 
+func TestACParserDropsZeroSNRForRBN(t *testing.T) {
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
+	line := "DX de UA3RF: 144360.0 R1BPV MSK144 0 dB 1943Z"
+	c.parseSpot(line)
+
+	select {
+	case s := <-c.spotChan:
+		t.Fatalf("expected zero-SNR spot to be dropped, got %+v", s)
+	default:
+	}
+}
+
 func TestACParserParsesMSKSNRWithTrailingComment(t *testing.T) {
 	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	line := "DX de IK8PV: 144360.0 DL1OBF MSK144 +7 dB HRD"

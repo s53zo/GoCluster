@@ -627,6 +627,10 @@ func (c *Client) parseSpot(line string) {
 	report := parsed.Report
 	hasReport := parsed.HasReport
 
+	if !c.minimalParse && hasReport && report == 0 {
+		return
+	}
+
 	if !c.minimalParse {
 		freq = skew.ApplyCorrection(c.skewStore, deCallRaw, freq)
 	}

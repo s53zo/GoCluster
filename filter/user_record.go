@@ -21,6 +21,8 @@ type UserRecord struct {
 	Dialect   string   `yaml:"dialect,omitempty"`
 	// LastLoginUTC records the timestamp of the previous successful login (UTC).
 	LastLoginUTC time.Time `yaml:"last_login_utc,omitempty"`
+	Grid         string    `yaml:"grid,omitempty"`        // Optional user-supplied grid (uppercased)
+	NoiseClass   string    `yaml:"noise_class,omitempty"` // Optional noise class token (uppercased)
 }
 
 // Purpose: Load a persisted user record by callsign.
@@ -47,6 +49,8 @@ func LoadUserRecord(callsign string) (*UserRecord, error) {
 	if strings.TrimSpace(record.Dialect) == "" {
 		record.Dialect = "go"
 	}
+	record.Grid = strings.ToUpper(strings.TrimSpace(record.Grid))
+	record.NoiseClass = strings.ToUpper(strings.TrimSpace(record.NoiseClass))
 	return &record, nil
 }
 
