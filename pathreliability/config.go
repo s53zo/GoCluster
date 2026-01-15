@@ -1,6 +1,7 @@
 package pathreliability
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -25,6 +26,7 @@ type Config struct {
 	ModeOffsets         ModeOffsets        `yaml:"mode_offsets"`              // per-mode FT8-equiv offsets
 	ModeThresholds      map[string]GlyphThresholds `yaml:"mode_thresholds"`   // per-mode glyph thresholds in FT8-equiv dB
 	GlyphThresholds     GlyphThresholds    `yaml:"glyph_thresholds"`          // fallback glyph thresholds in FT8-equiv dB
+	GlyphSymbols        GlyphSymbols       `yaml:"glyph_symbols"`             // glyph mapping for high/medium/low/unlikely/insufficient
 	NoiseOffsets        map[string]float64 `yaml:"noise_offsets"`             // noise class -> dB penalty
 }
 
@@ -38,9 +40,103 @@ type ModeOffsets struct {
 
 // GlyphThresholds defines FT8-equiv dB cutoffs for glyphs.
 type GlyphThresholds struct {
-	Excellent float64 `yaml:"excellent"` // >= Excellent
-	Good      float64 `yaml:"good"`      // >= Good
-	Marginal  float64 `yaml:"marginal"`  // >= Marginal
+	High     float64 `yaml:"high"`     // >= High
+	Medium   float64 `yaml:"medium"`   // >= Medium
+	Low      float64 `yaml:"low"`      // >= Low
+	Unlikely float64 `yaml:"unlikely"` // >= Unlikely (still "unlikely" below)
+
+	hasHigh     bool
+	hasMedium   bool
+	hasLow      bool
+	hasUnlikely bool
+}
+
+// UnmarshalYAML enforces the new high/medium/low/unlikely keys and rejects legacy names.
+func (t *GlyphThresholds) UnmarshalYAML(value *yaml.Node) error {
+	if t == nil {
+		return nil
+	}
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+		return nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("glyph thresholds must be a mapping")
+	}
+	*t = GlyphThresholds{}
+	raw := make(map[string]float64, len(value.Content)/2)
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	for k, v := range raw {
+		key := strings.ToLower(strings.TrimSpace(k))
+		switch key {
+		case "high":
+			t.High = v
+			t.hasHigh = true
+		case "medium":
+			t.Medium = v
+			t.hasMedium = true
+		case "low":
+			t.Low = v
+			t.hasLow = true
+		case "unlikely":
+			t.Unlikely = v
+			t.hasUnlikely = true
+		case "excellent", "good", "marginal":
+			return fmt.Errorf("unsupported glyph threshold key %q; use high/medium/low/unlikely", k)
+		default:
+			return fmt.Errorf("unsupported glyph threshold key %q; use high/medium/low/unlikely", k)
+		}
+	}
+	return nil
+}
+
+// GlyphSymbols defines the glyph characters for each reliability class.
+type GlyphSymbols struct {
+	High         string `yaml:"high"`
+	Medium       string `yaml:"medium"`
+	Low          string `yaml:"low"`
+	Unlikely     string `yaml:"unlikely"`
+	Insufficient string `yaml:"insufficient"`
+}
+
+// UnmarshalYAML enforces single printable ASCII glyphs and rejects unknown keys.
+func (s *GlyphSymbols) UnmarshalYAML(value *yaml.Node) error {
+	if s == nil {
+		return nil
+	}
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+		return nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("glyph_symbols must be a mapping")
+	}
+	*s = GlyphSymbols{}
+	raw := make(map[string]string, len(value.Content)/2)
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	for k, v := range raw {
+		key := strings.ToLower(strings.TrimSpace(k))
+		if err := validateGlyphSymbol(v); err != nil {
+			return fmt.Errorf("glyph_symbols.%s: %w", key, err)
+		}
+		switch key {
+		case "high":
+			s.High = v
+		case "medium":
+			s.Medium = v
+		case "low":
+			s.Low = v
+		case "unlikely":
+			s.Unlikely = v
+		case "insufficient":
+			s.Insufficient = v
+		default:
+			return fmt.Errorf("unsupported glyph_symbols key %q; use high/medium/low/unlikely/insufficient", k)
+		}
+	}
+	return nil
 }
 
 // DefaultConfig returns a safe, enabled configuration.
@@ -66,16 +162,28 @@ func DefaultConfig() Config {
 			PSK:  -7,
 		},
 		ModeThresholds: map[string]GlyphThresholds{
-			"FT8":  {Excellent: -13, Good: -17, Marginal: -21},
-			"FT4":  {Excellent: -13, Good: -17, Marginal: -21},
-			"CW":   {Excellent: 5, Good: -1, Marginal: -5},
-			"RTTY": {Excellent: 5, Good: -1, Marginal: -5},
-			"PSK":  {Excellent: 5, Good: -1, Marginal: -5},
+			"FT8":  {High: -13, Medium: -17, Low: -21, Unlikely: -21, hasHigh: true, hasMedium: true, hasLow: true, hasUnlikely: true},
+			"FT4":  {High: -13, Medium: -17, Low: -21, Unlikely: -21, hasHigh: true, hasMedium: true, hasLow: true, hasUnlikely: true},
+			"CW":   {High: 5, Medium: -1, Low: -5, Unlikely: -5, hasHigh: true, hasMedium: true, hasLow: true, hasUnlikely: true},
+			"RTTY": {High: 5, Medium: -1, Low: -5, Unlikely: -5, hasHigh: true, hasMedium: true, hasLow: true, hasUnlikely: true},
+			"PSK":  {High: 5, Medium: -1, Low: -5, Unlikely: -5, hasHigh: true, hasMedium: true, hasLow: true, hasUnlikely: true},
 		},
 		GlyphThresholds: GlyphThresholds{
-			Excellent: -13,
-			Good:      -17,
-			Marginal:  -21,
+			High:        -13,
+			Medium:      -17,
+			Low:         -21,
+			Unlikely:    -21,
+			hasHigh:     true,
+			hasMedium:   true,
+			hasLow:      true,
+			hasUnlikely: true,
+		},
+		GlyphSymbols: GlyphSymbols{
+			High:         "+",
+			Medium:       "=",
+			Low:          "-",
+			Unlikely:     "!",
+			Insufficient: "?",
 		},
 		NoiseOffsets: map[string]float64{
 			"QUIET":    0,
@@ -159,12 +267,35 @@ func (c *Config) normalize() {
 	}
 	c.ModeThresholds = normalizedThresholds
 	for mode, defThresholds := range def.ModeThresholds {
-		if t, ok := c.ModeThresholds[mode]; !ok || !validGlyphThresholds(t) {
-			c.ModeThresholds[mode] = defThresholds
+		if t, ok := c.ModeThresholds[mode]; ok {
+			merged := mergeGlyphThresholds(defThresholds, t)
+			if validGlyphThresholds(merged) {
+				c.ModeThresholds[mode] = merged
+				continue
+			}
 		}
+		c.ModeThresholds[mode] = defThresholds
 	}
-	if !validGlyphThresholds(c.GlyphThresholds) {
+	mergedFallback := mergeGlyphThresholds(def.GlyphThresholds, c.GlyphThresholds)
+	if validGlyphThresholds(mergedFallback) {
+		c.GlyphThresholds = mergedFallback
+	} else {
 		c.GlyphThresholds = def.GlyphThresholds
+	}
+	if c.GlyphSymbols.High == "" {
+		c.GlyphSymbols.High = def.GlyphSymbols.High
+	}
+	if c.GlyphSymbols.Medium == "" {
+		c.GlyphSymbols.Medium = def.GlyphSymbols.Medium
+	}
+	if c.GlyphSymbols.Low == "" {
+		c.GlyphSymbols.Low = def.GlyphSymbols.Low
+	}
+	if c.GlyphSymbols.Unlikely == "" {
+		c.GlyphSymbols.Unlikely = def.GlyphSymbols.Unlikely
+	}
+	if c.GlyphSymbols.Insufficient == "" {
+		c.GlyphSymbols.Insufficient = def.GlyphSymbols.Insufficient
 	}
 	if c.NoiseOffsets == nil {
 		c.NoiseOffsets = map[string]float64{}
@@ -184,7 +315,41 @@ func (c *Config) normalize() {
 }
 
 func validGlyphThresholds(t GlyphThresholds) bool {
-	return t.Excellent > t.Good && t.Good > t.Marginal
+	return t.High > t.Medium && t.Medium > t.Low && t.Low >= t.Unlikely
+}
+
+func mergeGlyphThresholds(def, override GlyphThresholds) GlyphThresholds {
+	if !override.hasHigh && !override.hasMedium && !override.hasLow && !override.hasUnlikely {
+		if validGlyphThresholds(override) {
+			return override
+		}
+		return def
+	}
+	out := def
+	if override.hasHigh {
+		out.High = override.High
+	}
+	if override.hasMedium {
+		out.Medium = override.Medium
+	}
+	if override.hasLow {
+		out.Low = override.Low
+	}
+	if override.hasUnlikely {
+		out.Unlikely = override.Unlikely
+	}
+	return out
+}
+
+func validateGlyphSymbol(symbol string) error {
+	if len(symbol) != 1 {
+		return fmt.Errorf("must be a single printable ASCII character")
+	}
+	b := symbol[0]
+	if b < 0x20 || b > 0x7e {
+		return fmt.Errorf("must be a single printable ASCII character")
+	}
+	return nil
 }
 
 // LoadFile loads YAML config and applies defaults.

@@ -37,14 +37,16 @@ func ApplyNoise(value float64, offset float64, clampMin, clampMax float64) float
 func GlyphForDB(ft8dB float64, mode string, cfg Config) string {
 	thresholds := thresholdsForMode(mode, cfg)
 	switch {
-	case ft8dB >= thresholds.Excellent:
-		return "+"
-	case ft8dB >= thresholds.Good:
-		return "="
-	case ft8dB >= thresholds.Marginal:
-		return "-"
+	case ft8dB >= thresholds.High:
+		return cfg.GlyphSymbols.High
+	case ft8dB >= thresholds.Medium:
+		return cfg.GlyphSymbols.Medium
+	case ft8dB >= thresholds.Low:
+		return cfg.GlyphSymbols.Low
+	case ft8dB >= thresholds.Unlikely:
+		return cfg.GlyphSymbols.Unlikely
 	default:
-		return "!"
+		return cfg.GlyphSymbols.Unlikely
 	}
 }
 

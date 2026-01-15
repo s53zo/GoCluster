@@ -49,8 +49,12 @@ type Result struct {
 
 // Predict returns a single merged glyph for the path.
 func (p *Predictor) Predict(userCell, dxCell CellID, userGrid2, dxGrid2 string, band string, mode string, noisePenalty float64, now time.Time) Result {
+	insufficient := "?"
+	if p != nil && p.cfg.GlyphSymbols.Insufficient != "" {
+		insufficient = p.cfg.GlyphSymbols.Insufficient
+	}
 	if p == nil || p.store == nil || !p.cfg.Enabled {
-		return Result{Glyph: "?"}
+		return Result{Glyph: insufficient}
 	}
 
 	// Receive (DX->user): receiver=user, sender=dx.
@@ -63,7 +67,7 @@ func (p *Predictor) Predict(userCell, dxCell CellID, userGrid2, dxGrid2 string, 
 
 	mergedDB, mergedWeight, ok := mergeSamples(receive, transmit, p.cfg, noisePenalty)
 	if !ok || mergedWeight < p.cfg.MinEffectiveWeight {
-		return Result{Glyph: "", Value: mergedDB, Weight: mergedWeight}
+		return Result{Glyph: insufficient, Value: mergedDB, Weight: mergedWeight}
 	}
 	return Result{
 		Glyph:  GlyphForDB(mergedDB, mode, p.cfg),

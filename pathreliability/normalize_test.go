@@ -1,6 +1,9 @@
 package pathreliability
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestGlyphForDB(t *testing.T) {
 	cfg := DefaultConfig()
@@ -21,6 +24,29 @@ func TestGlyphForDB(t *testing.T) {
 	}
 }
 
+func TestGlyphForDBUsesCustomSymbols(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.GlyphSymbols = GlyphSymbols{
+		High:         "H",
+		Medium:       "M",
+		Low:          "L",
+		Unlikely:     "U",
+		Insufficient: "I",
+	}
+	if got := GlyphForDB(-12, "FT8", cfg); got != "H" {
+		t.Fatalf("expected H for -12 dB, got %q", got)
+	}
+	if got := GlyphForDB(-16, "FT8", cfg); got != "M" {
+		t.Fatalf("expected M for -16 dB, got %q", got)
+	}
+	if got := GlyphForDB(-20, "FT8", cfg); got != "L" {
+		t.Fatalf("expected L for -20 dB, got %q", got)
+	}
+	if got := GlyphForDB(-30, "FT8", cfg); got != "U" {
+		t.Fatalf("expected U for -30 dB, got %q", got)
+	}
+}
+
 func TestMergeSamplesWeighted(t *testing.T) {
 	cfg := DefaultConfig()
 	receive := Sample{Value: -10, Weight: 10}
@@ -34,6 +60,18 @@ func TestMergeSamplesWeighted(t *testing.T) {
 	}
 	if mergedDB >= -7 || mergedDB <= -11 {
 		t.Fatalf("unexpected merged dB: %v", mergedDB)
+	}
+}
+
+func TestPredictUsesInsufficientGlyph(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.GlyphSymbols.Insufficient = "I"
+	predictor := NewPredictor(cfg, []string{"20m"})
+	userCell := EncodeCell("FN31")
+	dxCell := EncodeCell("FN32")
+	res := predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "FT8", 0, time.Now().UTC())
+	if res.Glyph != "I" {
+		t.Fatalf("expected insufficient glyph I, got %q", res.Glyph)
 	}
 }
 

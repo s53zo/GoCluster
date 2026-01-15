@@ -53,6 +53,8 @@ Then:
 - Move completed items to Implemented and reprint the updated ledger.
 
 ### Change classification (conservative default)
+Assume reasoning effort is high for all non-trivial work; if the environment supports adjusting reasoning effort automatically, raise to xhigh for the Self-Audit step.
+
 Default to non-trivial unless it is clearly and provably a small change.
 
 Small (requires explicit justification in 1–2 sentences):
