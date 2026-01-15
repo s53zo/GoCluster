@@ -113,6 +113,8 @@ DX <freq> <call> [comment] - Post a spot (frequency in kHz)
 SHOW/DX [count]      - Show last N DX spots (default: 10)
 SHOW MYDX [count]    - Show last N DX spots that match your active filters
 SHOW DXCC <prefix|callsign> - Look up DXCC/ADIF and zones for a prefix or callsign
+SET GRID <grid>      - Set your grid (4-6 chars) for path reliability glyphs
+SET NOISE <class>    - Set noise class (QUIET|RURAL|SUBURBAN|URBAN) for glyph penalties
 BYE                  - Disconnect
 DIALECT [name|LIST]  - Show or set the filter command dialect (go, cc)
 

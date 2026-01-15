@@ -144,7 +144,7 @@ func TestHandlePayloadDropsZeroSNR(t *testing.T) {
 	}
 }
 
-func TestHandlePayloadAllowsMissingReport(t *testing.T) {
+func TestHandlePayloadDropsMissingReport(t *testing.T) {
 	client := NewClient("localhost", 1883, nil, nil, "", 1, nil, false, 2, 0)
 	msg := PSKRMessage{
 		Frequency:    14074000,
@@ -158,11 +158,8 @@ func TestHandlePayloadAllowsMissingReport(t *testing.T) {
 	client.handlePayload(payload)
 	select {
 	case spot := <-client.spotChan:
-		if spot.HasReport {
-			t.Fatalf("expected HasReport=false when report missing, got Report=%d", spot.Report)
-		}
+		t.Fatalf("expected missing-report spot to be dropped, got %+v", spot)
 	default:
-		t.Fatalf("expected missing-report payload to enqueue a spot")
 	}
 }
 

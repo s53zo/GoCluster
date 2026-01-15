@@ -627,6 +627,9 @@ func (c *Client) parseSpot(line string) {
 	report := parsed.Report
 	hasReport := parsed.HasReport
 
+	if !c.minimalParse && !hasReport {
+		return
+	}
 	if !c.minimalParse && hasReport && report == 0 {
 		return
 	}

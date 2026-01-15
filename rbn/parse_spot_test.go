@@ -41,21 +41,10 @@ func TestACParserLeavesModeBlankWithoutExplicitToken(t *testing.T) {
 	line := "DX de K0DG: 28015.1 K7SS WA 1912Z"
 	c.parseSpot(line)
 
-	var s *spot.Spot
 	select {
-	case s = <-c.spotChan:
+	case s := <-c.spotChan:
+		t.Fatalf("expected missing-report spot to be dropped, got %+v", s)
 	default:
-		t.Fatalf("expected a parsed spot")
-	}
-
-	if s.Mode != "" {
-		t.Fatalf("expected blank mode without explicit token, got %q", s.Mode)
-	}
-	if s.HasReport {
-		t.Fatalf("did not expect a report, got %v", s.Report)
-	}
-	if strings.TrimSpace(s.Comment) != "WA" {
-		t.Fatalf("expected comment WA, got %q", s.Comment)
 	}
 }
 
@@ -64,18 +53,10 @@ func TestACParserLeavesModeBlankWithoutExplicitTokenVoiceBand(t *testing.T) {
 	line := "DX de KC9IMA: 28319.0 KC9IMA ARRL 10-Meter Contest 1912Z"
 	c.parseSpot(line)
 
-	var s *spot.Spot
 	select {
-	case s = <-c.spotChan:
+	case s := <-c.spotChan:
+		t.Fatalf("expected missing-report spot to be dropped, got %+v", s)
 	default:
-		t.Fatalf("expected a parsed spot")
-	}
-
-	if s.Mode != "" {
-		t.Fatalf("expected blank mode without explicit token, got %q", s.Mode)
-	}
-	if strings.TrimSpace(s.Comment) != "ARRL 10-Meter Contest" {
-		t.Fatalf("expected contest name in comment, got %q", s.Comment)
 	}
 }
 
@@ -206,19 +187,14 @@ func TestACParserParsesMSKSNRWithSignificantComment(t *testing.T) {
 	}
 }
 
-func TestACParserSetsHasReportFalseWhenNoSNR(t *testing.T) {
+func TestACParserDropsMissingSNRForRBN(t *testing.T) {
 	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	line := "DX de PB0MD: 144360.0 S50TA MSK144 HRD"
 	c.parseSpot(line)
 
-	var s *spot.Spot
 	select {
-	case s = <-c.spotChan:
+	case s := <-c.spotChan:
+		t.Fatalf("expected missing-report spot to be dropped, got %+v", s)
 	default:
-		t.Fatalf("expected a parsed spot")
-	}
-
-	if s.HasReport {
-		t.Fatalf("expected HasReport=false when no SNR, got true with Report=%d", s.Report)
 	}
 }

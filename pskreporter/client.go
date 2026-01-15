@@ -328,7 +328,7 @@ func (c *Client) handlePayload(payload []byte) {
 			return
 		}
 	}
-	if pskrMsg.Report != nil && *pskrMsg.Report == 0 {
+	if pskrMsg.Report == nil || *pskrMsg.Report == 0 {
 		return
 	}
 	modeUpper := strings.ToUpper(strings.TrimSpace(pskrMsg.Mode))
