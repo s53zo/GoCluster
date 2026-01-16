@@ -1,6 +1,7 @@
 package telnet
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -725,6 +726,95 @@ func TestCCDialectNoFilterReset(t *testing.T) {
 	}
 	if !client.filter.AllBands || client.filter.BlockAllBands {
 		t.Fatalf("expected filters reset to permissive defaults")
+	}
+}
+
+func TestResetFilterDefaultsGoDialect(t *testing.T) {
+	engine := newFilterCommandEngine()
+	client := newTestClient()
+	client.dialect = DialectGo
+
+	client.filter.SetBand("20M", false)
+	client.filter.SetMode("FT8", true)
+	client.filter.SetSource("HUMAN", true)
+	client.filter.AddDXCallsignPattern("K1*")
+	client.filter.SetWWVEnabled(false)
+	client.filter.BlockAllBands = true
+	client.filter.BlockAllModes = true
+	client.filter.BlockAllSources = true
+
+	resp, handled := engine.Handle(client, "RESET FILTER")
+	if !handled || resp == "" {
+		t.Fatalf("expected RESET FILTER handled with response, got handled=%v resp=%q", handled, resp)
+	}
+
+	assertFilterMatchesDefaults(t, client.filter)
+}
+
+func TestResetFilterDefaultsCCDialect(t *testing.T) {
+	engine := newFilterCommandEngine()
+	client := newTestClient()
+	client.dialect = DialectCC
+
+	client.filter.SetBand("20M", false)
+	client.filter.SetMode("FT8", true)
+	client.filter.SetSource("HUMAN", true)
+	client.filter.AddDECallsignPattern("W1*")
+	client.filter.SetAnnounceEnabled(false)
+	client.filter.BlockAllBands = true
+	client.filter.BlockAllModes = true
+	client.filter.BlockAllSources = true
+
+	resp, handled := engine.Handle(client, "RESET FILTER")
+	if !handled || resp == "" {
+		t.Fatalf("expected RESET FILTER handled with response, got handled=%v resp=%q", handled, resp)
+	}
+
+	assertFilterMatchesDefaults(t, client.filter)
+}
+
+func assertFilterMatchesDefaults(t *testing.T, got *filter.Filter) {
+	t.Helper()
+	expected := filter.NewFilter()
+
+	if got == nil {
+		t.Fatalf("expected filter instance, got nil")
+	}
+	if got.AllBands != expected.AllBands || got.BlockAllBands != expected.BlockAllBands {
+		t.Fatalf("band defaults mismatch: got AllBands=%v BlockAllBands=%v", got.AllBands, got.BlockAllBands)
+	}
+	if got.AllModes != expected.AllModes || got.BlockAllModes != expected.BlockAllModes {
+		t.Fatalf("mode defaults mismatch: got AllModes=%v BlockAllModes=%v", got.AllModes, got.BlockAllModes)
+	}
+	if !reflect.DeepEqual(got.Modes, expected.Modes) {
+		t.Fatalf("mode defaults mismatch: got=%v expected=%v", got.Modes, expected.Modes)
+	}
+	if got.AllSources != expected.AllSources || got.BlockAllSources != expected.BlockAllSources {
+		t.Fatalf("source defaults mismatch: got AllSources=%v BlockAllSources=%v", got.AllSources, got.BlockAllSources)
+	}
+	if !reflect.DeepEqual(got.Sources, expected.Sources) {
+		t.Fatalf("source defaults mismatch: got=%v expected=%v", got.Sources, expected.Sources)
+	}
+	if len(got.DXCallsigns) != 0 || len(got.DECallsigns) != 0 {
+		t.Fatalf("expected callsign patterns cleared, got DX=%v DE=%v", got.DXCallsigns, got.DECallsigns)
+	}
+	if got.AllConfidence != expected.AllConfidence || got.BlockAllConfidence != expected.BlockAllConfidence {
+		t.Fatalf("confidence defaults mismatch: got AllConfidence=%v BlockAllConfidence=%v", got.AllConfidence, got.BlockAllConfidence)
+	}
+	if got.BeaconsEnabled() != expected.BeaconsEnabled() || got.WWVEnabled() != expected.WWVEnabled() || got.WCYEnabled() != expected.WCYEnabled() || got.AnnounceEnabled() != expected.AnnounceEnabled() {
+		t.Fatalf("feature defaults mismatch: got beacon=%v wwv=%v wcy=%v announce=%v", got.BeaconsEnabled(), got.WWVEnabled(), got.WCYEnabled(), got.AnnounceEnabled())
+	}
+	if got.AllDXContinents != expected.AllDXContinents || got.AllDEContinents != expected.AllDEContinents {
+		t.Fatalf("continent defaults mismatch: got DX=%v DE=%v", got.AllDXContinents, got.AllDEContinents)
+	}
+	if got.AllDXZones != expected.AllDXZones || got.AllDEZones != expected.AllDEZones {
+		t.Fatalf("zone defaults mismatch: got DX=%v DE=%v", got.AllDXZones, got.AllDEZones)
+	}
+	if got.AllDXGrid2 != expected.AllDXGrid2 || got.AllDEGrid2 != expected.AllDEGrid2 {
+		t.Fatalf("grid defaults mismatch: got DX=%v DE=%v", got.AllDXGrid2, got.AllDEGrid2)
+	}
+	if got.AllDXDXCC != expected.AllDXDXCC || got.AllDEDXCC != expected.AllDEDXCC {
+		t.Fatalf("dxcc defaults mismatch: got DX=%v DE=%v", got.AllDXDXCC, got.AllDEDXCC)
 	}
 }
 

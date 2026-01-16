@@ -163,12 +163,12 @@ func TestHelpPerDialect(t *testing.T) {
 	p := NewProcessor(nil, nil, nil, nil, nil, nil)
 
 	classic := p.ProcessCommandForClient("HELP", "", "", nil, "classic")
-	if !strings.Contains(classic, "PASS BAND") || !strings.Contains(classic, "Current dialect: GO") {
+	if !strings.Contains(classic, "PASS BAND") || !strings.Contains(classic, "RESET FILTER") || !strings.Contains(classic, "Current dialect: GO") {
 		t.Fatalf("classic help missing expected content: %q", classic)
 	}
 
 	cc := p.ProcessCommandForClient("HELP", "", "", nil, "cc")
-	if !strings.Contains(strings.ToUpper(cc), "SET/ANN") || !strings.Contains(strings.ToUpper(cc), "SET/NOFILTER") {
+	if !strings.Contains(strings.ToUpper(cc), "SET/ANN") || !strings.Contains(strings.ToUpper(cc), "SET/NOFILTER") || !strings.Contains(strings.ToUpper(cc), "RESET FILTER") {
 		t.Fatalf("cc help missing cc aliases: %q", cc)
 	}
 }

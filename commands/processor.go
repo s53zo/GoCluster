@@ -143,6 +143,7 @@ func filterHelpText(dialect string) string {
 	SET/FILTER DXBM/PASS <band>[,...]   - Map CC DXBM bands to allow (bands: 160, 80, 40, 30, 20, 17, 15, 12, 10, 6, 2, 1). Mode suffix ignored; use SET/NO<MODE>. Approximate: per-band only, not band-mode.
 	SET/FILTER DXBM/REJECT <band>[,...] - Map CC DXBM bands to block (same mapping; PASS takes precedence over REJECT in overlaps)
 	SET/NOFILTER             - Reset filters to permissive defaults
+	RESET FILTER             - Reset filters to configured defaults
 	SET/FILTER <type> [...]  - Allow (BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, DEDXCC, BEACON, WWV, WCY, ANNOUNCE)
 	SET/FILTER <type>/OFF    - Block the specified type (ALL)
 	UNSET/FILTER <type> [...] - Block/clear for the specified type
@@ -185,6 +186,7 @@ func filterHelpText(dialect string) string {
 	REJECT WWV - Suppress WWV bulletins
 	REJECT WCY - Suppress WCY bulletins
 	REJECT ANNOUNCE - Suppress PC93 announcements
+	RESET FILTER               - Reset filters to configured defaults
 	SHOW FILTER                 - Show the full filter snapshot (tokenized forms deprecated)`
 	}
 }

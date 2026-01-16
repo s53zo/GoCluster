@@ -176,6 +176,8 @@ Telnet clients can issue commands via the prompt once logged in. The processor, 
 
 Filter management commands use a table-driven engine in `telnet/server.go` with explicit dialect selection. The default `go` dialect uses `PASS`/`REJECT`/`SHOW FILTER`. A CC-style subset is available via `DIALECT cc` (aliases: `SET/ANN`, `SET/NOANN`, `SET/BEACON`, `SET/NOBEACON`, `SET/WWV`, `SET/NOWWV`, `SET/WCY`, `SET/NOWCY`, `SET/SKIMMER`, `SET/NOSKIMMER`, `SET/<MODE>`, `SET/NO<MODE>`, `SET/FILTER DXBM/PASS|REJECT <band>` mapping CC DXBM bands to our band filters, `SET/NOFILTER`, plus `SET/FILTER`/`UNSET/FILTER`/`SHOW/FILTER`). `DIALECT LIST` shows the available dialects, the chosen dialect is persisted per callsign along with filter state, and HELP renders the verbs for the active dialect. Classic/go commands operate on each client's `filter.Filter` and fall into `PASS`, `REJECT`, and `SHOW FILTER` groups:
 
+- Operator note: `RESET FILTER` re-applies the configured defaults from `data/config/runtime.yaml` (`filter.default_modes` and `filter.default_sources`). `SET/NOFILTER` is CC-only and resets to a fully permissive "all pass" state; it does not use configured defaults.
+
 - `SHOW FILTER` - prints a full snapshot of filter state (allow/block + effective) for bands, modes, sources, continents, zones, DXCC, grids, confidence, callsigns, and toggles.
 
 Tokenized `SHOW FILTER <type>` / `SHOW/FILTER <type>` forms are deprecated; they return the full snapshot with a warning.

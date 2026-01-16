@@ -1556,7 +1556,9 @@ func (c *Client) Send(message string) error {
 //     the caller can tear down the session before state is mutated.
 //
 // The CRLF terminator is always allowed: '\r' is skipped and '\n' ends the
-// input. maxLen is measured in bytes because telnet input is ASCII-oriented.
+// input. Editing controls are handled inline: BS/DEL remove one byte, Ctrl+U
+// clears the line, and Ctrl+W removes the last word. maxLen is measured in
+// bytes because telnet input is ASCII-oriented.
 func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard, allowConfidence, allowDot bool) (string, error) {
 	if maxLen <= 0 {
 		maxLen = defaultCommandLineLimit
@@ -1599,6 +1601,35 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 			continue
 		}
 
+		switch b {
+		case 0x08, 0x7f: // BS or DEL
+			if len(line) > 0 {
+				line = line[:len(line)-1]
+				if err := c.echoErase(1); err != nil {
+					return "", err
+				}
+			}
+			continue
+		case 0x15: // Ctrl+U (line kill)
+			if len(line) > 0 {
+				erased := len(line)
+				line = line[:0]
+				if err := c.echoErase(erased); err != nil {
+					return "", err
+				}
+			}
+			continue
+		case 0x17: // Ctrl+W (word erase)
+			erased := wordEraseCount(line)
+			if erased > 0 {
+				line = line[:len(line)-erased]
+				if err := c.echoErase(erased); err != nil {
+					return "", err
+				}
+			}
+			continue
+		}
+
 		if len(line) >= maxLen {
 			c.logRejectedInput(context, fmt.Sprintf("exceeded %d-byte limit", maxLen))
 			return "", newInputValidationError(
@@ -1626,6 +1657,31 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 	}
 
 	return string(line), nil
+}
+
+func (c *Client) echoErase(count int) error {
+	if !c.echoInput || count <= 0 {
+		return nil
+	}
+	if _, err := c.writer.WriteString(strings.Repeat("\b \b", count)); err != nil {
+		return err
+	}
+	return c.writer.Flush()
+}
+
+func wordEraseCount(line []byte) int {
+	if len(line) == 0 {
+		return 0
+	}
+	i := len(line)
+	for i > 0 && line[i-1] == ' ' {
+		i--
+	}
+	j := i
+	for j > 0 && line[j-1] != ' ' {
+		j--
+	}
+	return len(line) - j
 }
 
 // isAllowedInputByte reports whether the byte is part of the strict ingress

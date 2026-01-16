@@ -951,6 +951,19 @@ func (f *Filter) Reset() {
 	f.SetAnnounceEnabled(true)
 }
 
+// Purpose: Reset all filter criteria back to configured defaults.
+// Key aspects: Rebuilds defaults from the active default mode/source selections.
+// Upstream: Telnet RESET FILTER command.
+// Downstream: NewFilter.
+func (f *Filter) ResetToDefaults() {
+	if f == nil {
+		return
+	}
+	// Replace contents in place so callers retain the same *Filter pointer.
+	defaults := NewFilter()
+	*f = *defaults
+}
+
 // Purpose: Clear DX continent filters and accept all.
 // Key aspects: Resets allow/block maps and flags.
 // Upstream: Telnet RESET DXCONT flows.

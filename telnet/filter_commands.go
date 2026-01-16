@@ -27,6 +27,7 @@ const (
 	actionAllow filterAction = iota
 	actionBlock
 	actionSummary
+	actionResetDefaults
 )
 
 type parsedFilterCommand struct {
@@ -248,6 +249,9 @@ func (e *filterCommandEngine) execute(client *Client, cmd parsedFilterCommand) (
 			resp += cmd.note
 		}
 		return resp, false
+	case actionResetDefaults:
+		client.updateFilter(func(f *filter.Filter) { f.ResetToDefaults() })
+		return "Filters reset to defaults\n", true
 	}
 
 	handler := e.domains[strings.ToUpper(strings.TrimSpace(cmd.domain))]
@@ -277,6 +281,11 @@ func parseClassicDialect(tokens, upper []string) (parsedFilterCommand, bool, str
 		return parsedFilterCommand{}, false, ""
 	}
 	switch upper[0] {
+	case "RESET":
+		if len(upper) == 2 && upper[1] == "FILTER" {
+			return parsedFilterCommand{action: actionResetDefaults}, true, ""
+		}
+		return parsedFilterCommand{}, true, "Usage: RESET FILTER\nType HELP for usage.\n"
 	case "PASS":
 		if len(upper) < 2 {
 			return parsedFilterCommand{}, true, passFilterUsageMsg
@@ -327,6 +336,11 @@ func parseCCDialect(tokens, upper []string) (parsedFilterCommand, bool, string) 
 	}
 
 	switch upper[0] {
+	case "RESET":
+		if len(upper) == 2 && upper[1] == "FILTER" {
+			return parsedFilterCommand{action: actionResetDefaults}, true, ""
+		}
+		return parsedFilterCommand{}, true, "Usage: RESET FILTER\nType HELP for usage.\n"
 	case "SET/ANN":
 		return parsedFilterCommand{action: actionAllow, domain: "ANNOUNCE"}, true, ""
 	case "SET/NOANN":
