@@ -453,10 +453,10 @@ Operational guidance: enable `auto_delete_corrupt_db` only if the archive is tru
 
 ## Path Reliability (telnet)
 
-- Uses recent CW/RTTY/PSK/FT8/FT4 spots to maintain directional FT8-equivalent quality on a 2×2 grid per Maidenhead field (plus coarse grid2), with per-band half-lives and staleness purging.
+- Maintains two directional FT8-equivalent buckets per path: baseline (FT8/FT4) and narrowband (CW/RTTY/PSK). Voice modes (LSB/USB) are display-only. Buckets use a 2x2 grid per Maidenhead field plus coarse grid2, per-band half-lives, and staleness purging.
 - Telnet lines show a single glyph in the comment area when enabled, reflecting a merged path estimate adjusted for the user's noise class. Glyph symbols are configurable via `glyph_symbols` (defaults: `+` high, `=` medium, `-` low, `!` unlikely); insufficient data uses `glyph_symbols.insufficient` (default `?`).
-- Commands: `SET GRID <grid>` to set/confirm your location (4-6 char), `SET NOISE <QUIET|RURAL|SUBURBAN|URBAN>` to apply a DX→you noise penalty. Defaults: QUIET/0 dB.
-- Config: `data/config/path_reliability.yaml` controls clamps (-25..15 dB FT8-equiv), per-band half-life, min fine weight blending (`min_fine_weight`), neighbor fallback, reverse hint discount, merge weights, per-mode glyph thresholds (`mode_thresholds` with `high/medium/low/unlikely` keys) and fallback `glyph_thresholds`, glyph symbols (`glyph_symbols`), beacon weight cap (default 1), mode offsets (FT4/CW/RTTY/PSK; CW/RTTY/PSK defaults assume 500 Hz -> 2500 Hz bandwidth correction of -7 dB), and noise offsets.
+- Commands: `SET GRID <grid>` to set/confirm your location (4-6 char), `SET NOISE <QUIET|RURAL|SUBURBAN|URBAN>` to apply a DX->you noise penalty. Defaults: QUIET/0 dB.
+- Config: `data/config/path_reliability.yaml` controls clamps (-25..15 dB FT8-equiv), per-band half-life, min fine weight blending (`min_fine_weight`), neighbor fallback, reverse hint discount, merge weights, per-mode glyph thresholds (`mode_thresholds` with `high/medium/low/unlikely` keys, including LSB/USB), fallback `glyph_thresholds`, glyph symbols (`glyph_symbols`), beacon weight cap (default 1), mode offsets (FT4/CW/RTTY/PSK; CW/RTTY/PSK defaults assume 500 Hz -> 2500 Hz bandwidth correction of -7 dB), and noise offsets.
 
 ## Configuration Loader Defaults
 

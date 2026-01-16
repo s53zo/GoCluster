@@ -121,3 +121,50 @@ func TestFT8EquivalentBandwidthOffsets(t *testing.T) {
 		t.Fatalf("expected FT8 0 dB to map to 0 dB, got %v (ok=%v)", got, ok)
 	}
 }
+
+func TestBucketForIngest(t *testing.T) {
+	if got := BucketForIngest("FT8"); got != BucketBaseline {
+		t.Fatalf("expected FT8 to map to baseline bucket")
+	}
+	if got := BucketForIngest("CW"); got != BucketNarrowband {
+		t.Fatalf("expected CW to map to narrowband bucket")
+	}
+	if got := BucketForIngest("USB"); got != BucketNone {
+		t.Fatalf("expected USB to skip ingest")
+	}
+}
+
+func TestPredictNarrowbandFallsBackToBaseline(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MinEffectiveWeight = 0.1
+	predictor := NewPredictor(cfg, []string{"20m"})
+	userCell := EncodeCell("FN31")
+	dxCell := EncodeCell("FN32")
+	now := time.Now().UTC()
+
+	predictor.Update(BucketBaseline, userCell, dxCell, "FN", "FN", "20m", -5, 1.0, now, false)
+
+	res := predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "CW", 0, now)
+	if res.Glyph == cfg.GlyphSymbols.Insufficient {
+		t.Fatalf("expected fallback glyph, got insufficient")
+	}
+	if res.Glyph != GlyphForDB(-5, "CW", cfg) {
+		t.Fatalf("unexpected glyph for fallback: %q", res.Glyph)
+	}
+}
+
+func TestPredictBaselineIgnoresNarrowband(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MinEffectiveWeight = 0.1
+	predictor := NewPredictor(cfg, []string{"20m"})
+	userCell := EncodeCell("FN31")
+	dxCell := EncodeCell("FN32")
+	now := time.Now().UTC()
+
+	predictor.Update(BucketNarrowband, userCell, dxCell, "FN", "FN", "20m", -5, 1.0, now, false)
+
+	res := predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "FT8", 0, now)
+	if res.Glyph != cfg.GlyphSymbols.Insufficient {
+		t.Fatalf("expected insufficient when baseline is empty, got %q", res.Glyph)
+	}
+}

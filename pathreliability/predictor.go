@@ -4,9 +4,9 @@ import "time"
 
 // Predictor coordinates store access and presentation mapping.
 type Predictor struct {
-	store     *Store
-	cfg       Config
-	neighbors map[string][]string
+	baseline   *Store
+	narrowband *Store
+	cfg        Config
 }
 
 // NewPredictor builds a predictor with precomputed neighbors.
@@ -14,9 +14,9 @@ func NewPredictor(cfg Config, bands []string) *Predictor {
 	cfg.normalize()
 	neighbors := BuildNeighborTable()
 	return &Predictor{
-		store:     NewStore(cfg, bands, neighbors),
-		cfg:       cfg,
-		neighbors: neighbors,
+		baseline:   NewStore(cfg, bands, neighbors),
+		narrowband: NewStore(cfg, bands, neighbors),
+		cfg:        cfg,
 	}
 }
 
@@ -29,15 +29,26 @@ func (p *Predictor) Config() Config {
 }
 
 // Update ingests a spot contribution (FT8-equiv) with optional beacon weight cap.
-func (p *Predictor) Update(receiverCell, senderCell CellID, receiverGrid2, senderGrid2 string, band string, ft8dB float64, weight float64, now time.Time, isBeacon bool) {
-	if p == nil || p.store == nil || !p.cfg.Enabled {
+func (p *Predictor) Update(bucket BucketClass, receiverCell, senderCell CellID, receiverGrid2, senderGrid2 string, band string, ft8dB float64, weight float64, now time.Time, isBeacon bool) {
+	if p == nil || !p.cfg.Enabled {
 		return
 	}
 	w := weight
 	if isBeacon && p.cfg.BeaconWeightCap > 0 && w > p.cfg.BeaconWeightCap {
 		w = p.cfg.BeaconWeightCap
 	}
-	p.store.Update(receiverCell, senderCell, receiverGrid2, senderGrid2, band, ft8dB, w, now)
+	switch bucket {
+	case BucketBaseline:
+		if p.baseline != nil {
+			p.baseline.Update(receiverCell, senderCell, receiverGrid2, senderGrid2, band, ft8dB, w, now)
+		}
+	case BucketNarrowband:
+		if p.narrowband != nil {
+			p.narrowband.Update(receiverCell, senderCell, receiverGrid2, senderGrid2, band, ft8dB, w, now)
+		}
+	default:
+		return
+	}
 }
 
 // Result carries merged glyph and diagnostics.
@@ -53,26 +64,34 @@ func (p *Predictor) Predict(userCell, dxCell CellID, userGrid2, dxGrid2 string, 
 	if p != nil && p.cfg.GlyphSymbols.Insufficient != "" {
 		insufficient = p.cfg.GlyphSymbols.Insufficient
 	}
-	if p == nil || p.store == nil || !p.cfg.Enabled {
+	if p == nil || !p.cfg.Enabled {
 		return Result{Glyph: insufficient}
 	}
 
-	// Receive (DX->user): receiver=user, sender=dx.
-	rFine, rCoarse, rNbr, _ := p.store.Lookup(userCell, dxCell, userGrid2, dxGrid2, band, now)
-	receive := SelectSample(rFine, rCoarse, rNbr, p.cfg.MinFineWeight)
-
-	// Transmit (user->DX): receiver=dx, sender=user.
-	tFine, tCoarse, tNbr, _ := p.store.Lookup(dxCell, userCell, dxGrid2, userGrid2, band, now)
-	transmit := SelectSample(tFine, tCoarse, tNbr, p.cfg.MinFineWeight)
-
-	mergedDB, mergedWeight, ok := mergeSamples(receive, transmit, p.cfg, noisePenalty)
-	if !ok || mergedWeight < p.cfg.MinEffectiveWeight {
+	modeKey := normalizeMode(mode)
+	switch {
+	case IsNarrowbandMode(modeKey):
+		mergedDB, mergedWeight, ok := p.mergeFromStore(p.narrowband, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
+		if ok && mergedWeight >= p.cfg.MinEffectiveWeight {
+			return Result{Glyph: GlyphForDB(mergedDB, modeKey, p.cfg), Value: mergedDB, Weight: mergedWeight}
+		}
+		mergedDB, mergedWeight, ok = p.mergeFromStore(p.baseline, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
+		if ok && mergedWeight >= p.cfg.MinEffectiveWeight {
+			return Result{Glyph: GlyphForDB(mergedDB, modeKey, p.cfg), Value: mergedDB, Weight: mergedWeight}
+		}
 		return Result{Glyph: insufficient, Value: mergedDB, Weight: mergedWeight}
-	}
-	return Result{
-		Glyph:  GlyphForDB(mergedDB, mode, p.cfg),
-		Value:  mergedDB,
-		Weight: mergedWeight,
+	case IsVoiceMode(modeKey):
+		mergedDB, mergedWeight, ok := p.mergeFromStore(p.baseline, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
+		if ok && mergedWeight >= p.cfg.MinEffectiveWeight {
+			return Result{Glyph: GlyphForDB(mergedDB, modeKey, p.cfg), Value: mergedDB, Weight: mergedWeight}
+		}
+		return Result{Glyph: insufficient, Value: mergedDB, Weight: mergedWeight}
+	default:
+		mergedDB, mergedWeight, ok := p.mergeFromStore(p.baseline, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
+		if ok && mergedWeight >= p.cfg.MinEffectiveWeight {
+			return Result{Glyph: GlyphForDB(mergedDB, modeKey, p.cfg), Value: mergedDB, Weight: mergedWeight}
+		}
+		return Result{Glyph: insufficient, Value: mergedDB, Weight: mergedWeight}
 	}
 }
 
@@ -97,18 +116,55 @@ func mergeSamples(receive Sample, transmit Sample, cfg Config, noisePenalty floa
 	return transmit.Value, transmit.Weight * cfg.ReverseHintDiscount, true
 }
 
-// PurgeStale runs a stale purge and returns removed count.
-func (p *Predictor) PurgeStale(now time.Time) int {
-	if p == nil || p.store == nil {
-		return 0
+func (p *Predictor) mergeFromStore(store *Store, userCell, dxCell CellID, userGrid2, dxGrid2, band string, noisePenalty float64, now time.Time) (float64, float64, bool) {
+	if store == nil {
+		return 0, 0, false
 	}
-	return p.store.PurgeStale(now)
+	// Receive (DX->user): receiver=user, sender=dx.
+	rFine, rCoarse, rNbr, _ := store.Lookup(userCell, dxCell, userGrid2, dxGrid2, band, now)
+	receive := SelectSample(rFine, rCoarse, rNbr, p.cfg.MinFineWeight)
+
+	// Transmit (user->DX): receiver=dx, sender=user.
+	tFine, tCoarse, tNbr, _ := store.Lookup(dxCell, userCell, dxGrid2, userGrid2, band, now)
+	transmit := SelectSample(tFine, tCoarse, tNbr, p.cfg.MinFineWeight)
+
+	return mergeSamples(receive, transmit, p.cfg, noisePenalty)
 }
 
-// Stats returns counts of active fine/coarse buckets (non-stale).
-func (p *Predictor) Stats(now time.Time) (fine int, coarse int) {
-	if p == nil || p.store == nil || !p.cfg.Enabled {
-		return 0, 0
+// PurgeStale runs a stale purge and returns removed count.
+func (p *Predictor) PurgeStale(now time.Time) int {
+	if p == nil {
+		return 0
 	}
-	return p.store.Stats(now)
+	removed := 0
+	if p.baseline != nil {
+		removed += p.baseline.PurgeStale(now)
+	}
+	if p.narrowband != nil {
+		removed += p.narrowband.PurgeStale(now)
+	}
+	return removed
+}
+
+// PredictorStats returns counts of active fine/coarse buckets (non-stale).
+type PredictorStats struct {
+	BaselineFine   int
+	BaselineCoarse int
+	NarrowFine     int
+	NarrowCoarse   int
+}
+
+// Stats returns counts of active fine/coarse buckets for each bucket class.
+func (p *Predictor) Stats(now time.Time) PredictorStats {
+	if p == nil || !p.cfg.Enabled {
+		return PredictorStats{}
+	}
+	stats := PredictorStats{}
+	if p.baseline != nil {
+		stats.BaselineFine, stats.BaselineCoarse = p.baseline.Stats(now)
+	}
+	if p.narrowband != nil {
+		stats.NarrowFine, stats.NarrowCoarse = p.narrowband.Stats(now)
+	}
+	return stats
 }

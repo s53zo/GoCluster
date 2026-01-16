@@ -1215,10 +1215,10 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 		combinedRBN := rbnTotal + rbnFTTotal
 		lines := []string{
 			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, secondary, metaCache, knownPtr)), // 1
-			formatGridLineOrPlaceholder(gridStats, gridDB, pathPredictor),  // 2
-			formatCTYLineOrPlaceholder(ctyLookup, ctyState), // 3
-			formatFCCLineOrPlaceholder(fccSnap),             // 4
-			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4), // 5
+			formatGridLineOrPlaceholder(gridStats, gridDB, pathPredictor),                                                               // 2
+			formatCTYLineOrPlaceholder(ctyLookup, ctyState),                                                                             // 3
+			formatFCCLineOrPlaceholder(fccSnap),                                                                                         // 4
+			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4),               // 5
 			fmt.Sprintf("PSKReporter: %s TOTAL / %s CW / %s RTTY / %s FT8 / %s FT4 / %s MSK144",
 				humanize.Comma(int64(pskTotal)),
 				humanize.Comma(int64(pskCW)),
@@ -1604,7 +1604,11 @@ func processOutputSpots(
 					s.DECellID = uint16(pathreliability.EncodeCell(strings.TrimSpace(s.DEMetadata.Grid)))
 				}
 				if s.HasReport {
-					if ft8, ok := pathreliability.FT8Equivalent(s.ModeNorm, s.Report, pathPredictor.Config()); ok {
+					mode := s.ModeNorm
+					if strings.TrimSpace(mode) == "" {
+						mode = s.Mode
+					}
+					if ft8, ok := pathreliability.FT8Equivalent(mode, s.Report, pathPredictor.Config()); ok {
 						dxCell := pathreliability.CellID(s.DXCellID)
 						deCell := pathreliability.CellID(s.DECellID)
 						dxGrid2 := pathreliability.EncodeGrid2(s.DXMetadata.Grid)
@@ -1617,8 +1621,11 @@ func processOutputSpots(
 						if spotTime.IsZero() {
 							spotTime = time.Now().UTC()
 						}
-						// Spot SNR reflects DX -> DE (spotter is the receiver).
-						pathPredictor.Update(deCell, dxCell, deGrid2, dxGrid2, band, ft8, 1.0, spotTime, s.IsBeacon)
+						bucket := pathreliability.BucketForIngest(mode)
+						if bucket != pathreliability.BucketNone {
+							// Spot SNR reflects DX -> DE (spotter is the receiver).
+							pathPredictor.Update(bucket, deCell, dxCell, deGrid2, dxGrid2, band, ft8, 1.0, spotTime, s.IsBeacon)
+						}
 					}
 				}
 			}
@@ -2641,11 +2648,13 @@ func formatGridLine(metrics *gridMetrics, store *gridstore.Store, predictor *pat
 
 	var propPairs string
 	if predictor != nil {
-		fine, coarse := predictor.Stats(time.Now().UTC())
-		if fine > 0 || coarse > 0 {
-			propPairs = fmt.Sprintf(" | Prop pairs: %s fine / %s coarse",
-				humanize.Comma(int64(fine)),
-				humanize.Comma(int64(coarse)))
+		stats := predictor.Stats(time.Now().UTC())
+		if stats.BaselineFine > 0 || stats.BaselineCoarse > 0 || stats.NarrowFine > 0 || stats.NarrowCoarse > 0 {
+			propPairs = fmt.Sprintf(" | Prop pairs: base %s/%s nb %s/%s",
+				humanize.Comma(int64(stats.BaselineFine)),
+				humanize.Comma(int64(stats.BaselineCoarse)),
+				humanize.Comma(int64(stats.NarrowFine)),
+				humanize.Comma(int64(stats.NarrowCoarse)))
 		}
 	}
 	if dbTotal >= 0 {

@@ -10,25 +10,25 @@ import (
 
 // Config holds tuning knobs for path reliability aggregation and display.
 type Config struct {
-	Enabled             bool               `yaml:"enabled"`
-	ClampMin            float64            `yaml:"clamp_min"`                 // FT8-equiv floor (dB)
-	ClampMax            float64            `yaml:"clamp_max"`                 // FT8-equiv ceiling (dB)
-	DefaultHalfLifeSec  int                `yaml:"default_half_life_seconds"` // fallback half-life when band not listed
-	BandHalfLifeSec     map[string]int     `yaml:"band_half_life_seconds"`    // per-band overrides
-	StaleAfterSeconds   int                `yaml:"stale_after_seconds"`       // purge when older than this
-	MinEffectiveWeight  float64            `yaml:"min_effective_weight"`      // minimum decayed weight to report
-	MinFineWeight       float64            `yaml:"min_fine_weight"`           // minimum fine weight to blend with coarse
-	NeighborRadius      int                `yaml:"neighbor_radius"`           // 0 or 1 (N/S/E/W)
-	ReverseHintDiscount float64            `yaml:"reverse_hint_discount"`     // multiplier when using reverse direction
-	MergeReceiveWeight  float64            `yaml:"merge_receive_weight"`      // merge weight for DX->user
-	MergeTransmitWeight float64            `yaml:"merge_transmit_weight"`     // merge weight for user->DX
-	BeaconWeightCap     float64            `yaml:"beacon_weight_cap"`         // cap per-beacon contribution
-	DisplayEnabled      bool               `yaml:"display_enabled"`           // toggle glyph rendering
-	ModeOffsets         ModeOffsets        `yaml:"mode_offsets"`              // per-mode FT8-equiv offsets
-	ModeThresholds      map[string]GlyphThresholds `yaml:"mode_thresholds"`   // per-mode glyph thresholds in FT8-equiv dB
-	GlyphThresholds     GlyphThresholds    `yaml:"glyph_thresholds"`          // fallback glyph thresholds in FT8-equiv dB
-	GlyphSymbols        GlyphSymbols       `yaml:"glyph_symbols"`             // glyph mapping for high/medium/low/unlikely/insufficient
-	NoiseOffsets        map[string]float64 `yaml:"noise_offsets"`             // noise class -> dB penalty
+	Enabled             bool                       `yaml:"enabled"`
+	ClampMin            float64                    `yaml:"clamp_min"`                 // FT8-equiv floor (dB)
+	ClampMax            float64                    `yaml:"clamp_max"`                 // FT8-equiv ceiling (dB)
+	DefaultHalfLifeSec  int                        `yaml:"default_half_life_seconds"` // fallback half-life when band not listed
+	BandHalfLifeSec     map[string]int             `yaml:"band_half_life_seconds"`    // per-band overrides
+	StaleAfterSeconds   int                        `yaml:"stale_after_seconds"`       // purge when older than this
+	MinEffectiveWeight  float64                    `yaml:"min_effective_weight"`      // minimum decayed weight to report
+	MinFineWeight       float64                    `yaml:"min_fine_weight"`           // minimum fine weight to blend with coarse
+	NeighborRadius      int                        `yaml:"neighbor_radius"`           // 0 or 1 (N/S/E/W)
+	ReverseHintDiscount float64                    `yaml:"reverse_hint_discount"`     // multiplier when using reverse direction
+	MergeReceiveWeight  float64                    `yaml:"merge_receive_weight"`      // merge weight for DX->user
+	MergeTransmitWeight float64                    `yaml:"merge_transmit_weight"`     // merge weight for user->DX
+	BeaconWeightCap     float64                    `yaml:"beacon_weight_cap"`         // cap per-beacon contribution
+	DisplayEnabled      bool                       `yaml:"display_enabled"`           // toggle glyph rendering
+	ModeOffsets         ModeOffsets                `yaml:"mode_offsets"`              // per-mode FT8-equiv offsets
+	ModeThresholds      map[string]GlyphThresholds `yaml:"mode_thresholds"`           // per-mode glyph thresholds in FT8-equiv dB
+	GlyphThresholds     GlyphThresholds            `yaml:"glyph_thresholds"`          // fallback glyph thresholds in FT8-equiv dB
+	GlyphSymbols        GlyphSymbols               `yaml:"glyph_symbols"`             // glyph mapping for high/medium/low/unlikely/insufficient
+	NoiseOffsets        map[string]float64         `yaml:"noise_offsets"`             // noise class -> dB penalty
 }
 
 // ModeOffsets normalizes non-FT8 modes to FT8-equivalent dB.
@@ -169,6 +169,8 @@ func DefaultConfig() Config {
 			"CW":   {High: 5, Medium: -1, Low: -5, Unlikely: -5, hasHigh: true, hasMedium: true, hasLow: true, hasUnlikely: true},
 			"RTTY": {High: 5, Medium: -1, Low: -5, Unlikely: -5, hasHigh: true, hasMedium: true, hasLow: true, hasUnlikely: true},
 			"PSK":  {High: 5, Medium: -1, Low: -5, Unlikely: -5, hasHigh: true, hasMedium: true, hasLow: true, hasUnlikely: true},
+			"USB":  {High: 5, Medium: -1, Low: -5, Unlikely: -5, hasHigh: true, hasMedium: true, hasLow: true, hasUnlikely: true},
+			"LSB":  {High: 5, Medium: -1, Low: -5, Unlikely: -5, hasHigh: true, hasMedium: true, hasLow: true, hasUnlikely: true},
 		},
 		GlyphThresholds: GlyphThresholds{
 			High:        -13,
