@@ -17,6 +17,7 @@ type Config struct {
 	BandHalfLifeSec     map[string]int     `yaml:"band_half_life_seconds"`    // per-band overrides
 	StaleAfterSeconds   int                `yaml:"stale_after_seconds"`       // purge when older than this
 	MinEffectiveWeight  float64            `yaml:"min_effective_weight"`      // minimum decayed weight to report
+	MinFineWeight       float64            `yaml:"min_fine_weight"`           // minimum fine weight to blend with coarse
 	NeighborRadius      int                `yaml:"neighbor_radius"`           // 0 or 1 (N/S/E/W)
 	ReverseHintDiscount float64            `yaml:"reverse_hint_discount"`     // multiplier when using reverse direction
 	MergeReceiveWeight  float64            `yaml:"merge_receive_weight"`      // merge weight for DX->user
@@ -149,6 +150,7 @@ func DefaultConfig() Config {
 		BandHalfLifeSec:     map[string]int{},
 		StaleAfterSeconds:   1800,
 		MinEffectiveWeight:  1.0,
+		MinFineWeight:       5.0,
 		NeighborRadius:      1,
 		ReverseHintDiscount: 0.5,
 		MergeReceiveWeight:  0.6,
@@ -212,6 +214,9 @@ func (c *Config) normalize() {
 	}
 	if c.MinEffectiveWeight <= 0 {
 		c.MinEffectiveWeight = def.MinEffectiveWeight
+	}
+	if c.MinFineWeight <= 0 {
+		c.MinFineWeight = def.MinFineWeight
 	}
 	if c.NeighborRadius < 0 {
 		c.NeighborRadius = 0

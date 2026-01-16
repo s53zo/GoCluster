@@ -1566,11 +1566,6 @@ func processOutputSpots(
 				}
 			}
 
-			// Broadcast-only dedupe: ring/history already updated above.
-			if secondary != nil && !secondary.ShouldForward(s) {
-				return
-			}
-
 			// Final fan-out guards (symmetry with peer belt-and-suspenders): do not
 			// deliver stale spots to any downstream sink, even if an upstream stage
 			// failed to drop them.
@@ -1578,7 +1573,7 @@ func processOutputSpots(
 				return
 			}
 
-			// Backfill grids only for spots that will be forwarded, to reduce cache/DB churn.
+			// Backfill grids before secondary dedupe so path reliability can use them.
 			if gridLookup != nil {
 				dxCall := s.DXCallNorm
 				if dxCall == "" {
@@ -1618,10 +1613,19 @@ func processOutputSpots(
 						if strings.TrimSpace(band) == "" {
 							band = s.Band
 						}
+						spotTime := s.Time.UTC()
+						if spotTime.IsZero() {
+							spotTime = time.Now().UTC()
+						}
 						// Spot SNR reflects DX -> DE (spotter is the receiver).
-						pathPredictor.Update(deCell, dxCell, deGrid2, dxGrid2, band, ft8, 1.0, time.Now().UTC(), s.IsBeacon)
+						pathPredictor.Update(deCell, dxCell, deGrid2, dxGrid2, band, ft8, 1.0, spotTime, s.IsBeacon)
 					}
 				}
+			}
+
+			// Broadcast-only dedupe: ring/history already updated above.
+			if secondary != nil && !secondary.ShouldForward(s) {
+				return
 			}
 
 			if gridUpdate != nil {

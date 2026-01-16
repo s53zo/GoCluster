@@ -59,11 +59,11 @@ func (p *Predictor) Predict(userCell, dxCell CellID, userGrid2, dxGrid2 string, 
 
 	// Receive (DX->user): receiver=user, sender=dx.
 	rFine, rCoarse, rNbr, _ := p.store.Lookup(userCell, dxCell, userGrid2, dxGrid2, band, now)
-	receive := SelectSample(rFine, rCoarse, rNbr)
+	receive := SelectSample(rFine, rCoarse, rNbr, p.cfg.MinFineWeight)
 
 	// Transmit (user->DX): receiver=dx, sender=user.
 	tFine, tCoarse, tNbr, _ := p.store.Lookup(dxCell, userCell, dxGrid2, userGrid2, band, now)
-	transmit := SelectSample(tFine, tCoarse, tNbr)
+	transmit := SelectSample(tFine, tCoarse, tNbr, p.cfg.MinFineWeight)
 
 	mergedDB, mergedWeight, ok := mergeSamples(receive, transmit, p.cfg, noisePenalty)
 	if !ok || mergedWeight < p.cfg.MinEffectiveWeight {

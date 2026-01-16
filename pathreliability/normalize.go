@@ -63,20 +63,41 @@ func thresholdsForMode(mode string, cfg Config) GlyphThresholds {
 	return DefaultConfig().GlyphThresholds
 }
 
-// SelectSample picks the best available sample in priority order.
-// Fine > coarse > neighbors.
-func SelectSample(fine Sample, coarse Sample, neighbors []Sample) Sample {
-	if fine.Weight > 0 {
+// SelectSample blends fine/coarse samples by confidence weight.
+// If fine is below minFineWeight, coarse wins to prevent weak fine data
+// from overriding stronger regional evidence. Neighbor fallback is used
+// only when the coarse bucket has no data.
+func SelectSample(fine Sample, coarse Sample, neighbors []Sample, minFineWeight float64) Sample {
+	coarseCandidate := coarse
+	if coarseCandidate.Weight <= 0 {
+		coarseCandidate = combineNeighborSamples(neighbors)
+	}
+	hasFine := fine.Weight > 0
+	hasCoarse := coarseCandidate.Weight > 0
+	switch {
+	case hasFine && !hasCoarse:
 		return fine
+	case !hasFine && hasCoarse:
+		return coarseCandidate
+	case !hasFine && !hasCoarse:
+		return Sample{}
 	}
-	if coarse.Weight > 0 {
-		return coarse
+	if minFineWeight > 0 && fine.Weight < minFineWeight {
+		return coarseCandidate
 	}
-	combined := combineNeighborSamples(neighbors)
-	if combined.Weight > 0 {
-		return combined
+	sum := fine.Weight + coarseCandidate.Weight
+	if sum <= 0 {
+		return Sample{}
 	}
-	return Sample{}
+	age := fine.AgeSec
+	if coarseCandidate.AgeSec < age {
+		age = coarseCandidate.AgeSec
+	}
+	return Sample{
+		Value:  (fine.Value*fine.Weight + coarseCandidate.Value*coarseCandidate.Weight) / sum,
+		Weight: sum,
+		AgeSec: age,
+	}
 }
 
 func combineNeighborSamples(neighbors []Sample) Sample {
