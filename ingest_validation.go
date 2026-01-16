@@ -160,6 +160,9 @@ func (v *ingestValidator) validateSpot(s *spot.Spot) bool {
 	if deGrid != "" {
 		s.DEMetadata.Grid = deGrid
 	}
+	// Metadata refresh can change continent/grid; clear cached norms and rebuild.
+	s.InvalidateMetadataCache()
+	s.EnsureNormalized()
 
 	if v.isLicensedUS != nil {
 		deLicenseCall := strings.TrimSpace(uls.NormalizeForLicense(deCall))

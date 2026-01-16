@@ -323,6 +323,23 @@ func (s *Spot) EnsureNormalized() {
 	}
 }
 
+// InvalidateMetadataCache clears cached fields derived from DXMetadata/DEMetadata.
+// Call after mutating metadata so a subsequent EnsureNormalized repopulates
+// continent/grid values. Caller must ensure no concurrent readers of cached fields.
+func (s *Spot) InvalidateMetadataCache() {
+	if s == nil {
+		return
+	}
+	s.DXContinentNorm = ""
+	s.DEContinentNorm = ""
+	s.DXGridNorm = ""
+	s.DEGridNorm = ""
+	s.DXGrid2 = ""
+	s.DEGrid2 = ""
+	s.DXCellID = 0
+	s.DECellID = 0
+}
+
 // Purpose: Return the current length of the builder buffer.
 // Key aspects: Thin wrapper around len.
 // Upstream: FormatDXCluster and helpers.

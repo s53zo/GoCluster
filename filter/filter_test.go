@@ -114,6 +114,34 @@ func TestContinentFilters(t *testing.T) {
 	}
 }
 
+func TestContinentFilterAfterMetadataRefresh(t *testing.T) {
+	f := NewFilter()
+	f.SetDXContinent("NA", false)
+
+	s := &spot.Spot{
+		Mode: "CW",
+		Band: "20m",
+		DXMetadata: spot.CallMetadata{
+			Continent: "EU",
+		},
+		DEMetadata: spot.CallMetadata{
+			Continent: "EU",
+		},
+	}
+	s.EnsureNormalized()
+	if !f.Matches(s) {
+		t.Fatalf("expected EU DX continent to pass before metadata refresh")
+	}
+
+	// Simulate call correction updating CTY metadata to NA.
+	s.DXMetadata.Continent = "NA"
+	s.InvalidateMetadataCache()
+	s.EnsureNormalized()
+	if f.Matches(s) {
+		t.Fatalf("expected NA DX continent to be rejected after metadata refresh")
+	}
+}
+
 func TestZoneFilters(t *testing.T) {
 	f := NewFilter()
 	f.SetDXZone(14, true)

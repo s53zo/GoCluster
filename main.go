@@ -1560,6 +1560,9 @@ func processOutputSpots(
 					if deGrid != "" {
 						s.DEMetadata.Grid = deGrid
 					}
+					// Metadata refresh can change continent/grid; clear cached norms and rebuild.
+					s.InvalidateMetadataCache()
+					s.EnsureNormalized()
 				}
 			}
 
@@ -1851,6 +1854,9 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, metaCache *callMetaC
 		if deGrid != "" {
 			s.DEMetadata.Grid = deGrid
 		}
+		// Metadata refresh can change continent/grid; clear cached norms and rebuild.
+		s.InvalidateMetadataCache()
+		s.EnsureNormalized()
 	}
 
 	// License checks use the base callsign (portable segment order-independent) so
