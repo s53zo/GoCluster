@@ -836,7 +836,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryDeduper, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath)
+	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryDeduper, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath, pathPredictor)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -1117,7 +1117,7 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string, pathPredictor *pathreliability.Predictor) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -1215,7 +1215,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 		combinedRBN := rbnTotal + rbnFTTotal
 		lines := []string{
 			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, secondary, metaCache, knownPtr)), // 1
-			formatGridLineOrPlaceholder(gridStats, gridDB),  // 2
+			formatGridLineOrPlaceholder(gridStats, gridDB, pathPredictor),  // 2
 			formatCTYLineOrPlaceholder(ctyLookup, ctyState), // 3
 			formatFCCLineOrPlaceholder(fccSnap),             // 4
 			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4), // 5
@@ -2620,7 +2620,7 @@ func ctyRefreshHourMinute(cfg config.CTYConfig) (int, int) {
 // Key aspects: Uses cache hit rate and DB counts when available.
 // Upstream: displayStatsWithFCC.
 // Downstream: gridstore.Store.Count and humanize.Comma.
-func formatGridLine(metrics *gridMetrics, store *gridstore.Store) string {
+func formatGridLine(metrics *gridMetrics, store *gridstore.Store, predictor *pathreliability.Predictor) string {
 	updatesSinceStart := metrics.learnedTotal.Load()
 	cacheLookups := metrics.cacheLookups.Load()
 	cacheHits := metrics.cacheHits.Load()
@@ -2639,14 +2639,25 @@ func formatGridLine(metrics *gridMetrics, store *gridstore.Store) string {
 	}
 	hitPercent := int(math.Ceil(hitRate))
 
-	if dbTotal >= 0 {
-		return fmt.Sprintf("Grid database: %s TOTAL / %d%%",
-			humanize.Comma(dbTotal),
-			hitPercent)
+	var propPairs string
+	if predictor != nil {
+		fine, coarse := predictor.Stats(time.Now().UTC())
+		if fine > 0 || coarse > 0 {
+			propPairs = fmt.Sprintf(" | Prop pairs: %s fine / %s coarse",
+				humanize.Comma(int64(fine)),
+				humanize.Comma(int64(coarse)))
+		}
 	}
-	return fmt.Sprintf("Grid database: %s UPDATED / %d%%",
+	if dbTotal >= 0 {
+		return fmt.Sprintf("Grid database: %s TOTAL / %d%%%s",
+			humanize.Comma(dbTotal),
+			hitPercent,
+			propPairs)
+	}
+	return fmt.Sprintf("Grid database: %s UPDATED / %d%%%s",
 		humanize.Comma(int64(updatesSinceStart)),
-		hitPercent)
+		hitPercent,
+		propPairs)
 }
 
 type fccSnapshot struct {
@@ -2736,11 +2747,11 @@ func formatFCCLine(fcc *fccSnapshot) string {
 // Key aspects: Falls back to a placeholder when metrics/store missing.
 // Upstream: displayStatsWithFCC.
 // Downstream: formatGridLine.
-func formatGridLineOrPlaceholder(metrics *gridMetrics, store *gridstore.Store) string {
+func formatGridLineOrPlaceholder(metrics *gridMetrics, store *gridstore.Store, predictor *pathreliability.Predictor) string {
 	if metrics == nil {
 		return "Grid database: (not available)"
 	}
-	return formatGridLine(metrics, store)
+	return formatGridLine(metrics, store, predictor)
 }
 
 // Purpose: Format FCC status or a placeholder when disabled/unavailable.

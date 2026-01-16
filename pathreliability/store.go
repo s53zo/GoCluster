@@ -191,6 +191,38 @@ func (s *Store) PurgeStale(now time.Time) int {
 	return removed
 }
 
+// Stats returns counts of active fine/coarse buckets (non-stale).
+func (s *Store) Stats(now time.Time) (fine int, coarse int) {
+	if s == nil || !s.cfg.Enabled {
+		return 0, 0
+	}
+	nowSec := now.Unix()
+	staleAfter := int64(s.cfg.StaleAfterSeconds)
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		for key, b := range sh.buckets {
+			if b == nil {
+				continue
+			}
+			age := nowSec - b.lastUpdate
+			if age < 0 {
+				age = 0
+			}
+			if staleAfter > 0 && age > staleAfter {
+				continue
+			}
+			if key&0xFFFF != 0 {
+				coarse++
+			} else {
+				fine++
+			}
+		}
+		sh.mu.RUnlock()
+	}
+	return fine, coarse
+}
+
 func decayFactor(ageSec int64, halfLifeSec int) float64 {
 	if halfLifeSec <= 0 || ageSec <= 0 {
 		return 1

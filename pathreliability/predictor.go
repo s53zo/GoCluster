@@ -104,3 +104,11 @@ func (p *Predictor) PurgeStale(now time.Time) int {
 	}
 	return p.store.PurgeStale(now)
 }
+
+// Stats returns counts of active fine/coarse buckets (non-stale).
+func (p *Predictor) Stats(now time.Time) (fine int, coarse int) {
+	if p == nil || p.store == nil || !p.cfg.Enabled {
+		return 0, 0
+	}
+	return p.store.Stats(now)
+}
