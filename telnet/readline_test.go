@@ -78,9 +78,41 @@ func TestReadLineUppercasesInput(t *testing.T) {
 	}
 }
 
+func TestReadLineStripsIACNegotiation(t *testing.T) {
+	input := []byte{IAC, WILL, 1, 'S', '5', '3', 'Z', 'O', '\n'}
+	got, echoed := readLineWithEchoBytes(t, input, false)
+	if got != "S53ZO" {
+		t.Fatalf("expected line %q, got %q", "S53ZO", got)
+	}
+	if echoed != "" {
+		t.Fatalf("expected no echo output, got %q", echoed)
+	}
+}
+
+func TestReadLineStripsIACSubnegotiation(t *testing.T) {
+	input := []byte{'S', '5', IAC, SB, 31, 0, 80, IAC, SE, '3', 'Z', 'O', '\n'}
+	got, _ := readLineWithEchoBytes(t, input, false)
+	if got != "S53ZO" {
+		t.Fatalf("expected line %q, got %q", "S53ZO", got)
+	}
+}
+
+func TestReadLineIgnoresEscapedIAC(t *testing.T) {
+	input := []byte{'S', '5', '3', IAC, IAC, 'Z', 'O', '\n'}
+	got, _ := readLineWithEchoBytes(t, input, false)
+	if got != "S53ZO" {
+		t.Fatalf("expected line %q, got %q", "S53ZO", got)
+	}
+}
+
 func readLineWithEcho(t *testing.T, input string, echo bool) (string, string) {
 	t.Helper()
-	reader := bufio.NewReader(bytes.NewBufferString(input))
+	return readLineWithEchoBytes(t, []byte(input), echo)
+}
+
+func readLineWithEchoBytes(t *testing.T, input []byte, echo bool) (string, string) {
+	t.Helper()
+	reader := bufio.NewReader(bytes.NewBuffer(input))
 	var out bytes.Buffer
 	writer := bufio.NewWriter(&out)
 	client := &Client{

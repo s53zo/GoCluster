@@ -17,6 +17,7 @@
 package filter
 
 import (
+	"fmt"
 	"errors"
 	"os"
 	"sort"
@@ -307,7 +308,7 @@ func EnsureUserDataDir() error {
 // The filter maintains several types of criteria that can be combined:
 //  1. Band filters: Which amateur radio bands to accept (20m, 40m, 160m)
 //  2. Mode filters: Which operating modes to accept (CW, USB, JS8, SSTV, FT8, etc.)
-//  3. Callsign patterns: Which DX/DE callsigns to accept (W1*, LZ5VV, etc.)
+//  3. Callsign patterns: Allow/block DX/DE callsigns (W1*, LZ5VV, etc.)
 //  4. Confidence glyphs: Which consensus indicators (?, S, C, P, V, B) to accept.
 //  5. Beacon inclusion: Whether DX calls ending in /B (beacons) should be delivered.
 //  6. Source category: Whether to deliver HUMAN spots, SKIMMER (automated) spots, or both.
@@ -315,7 +316,7 @@ func EnsureUserDataDir() error {
 // Default Behavior:
 //   - AllBands=true: accept every band
 //   - AllModes=false with the curated default mode list pre-enabled
-//   - Callsign patterns: Only applied if non-empty (no impact on band/mode filters)
+//   - Callsign patterns: Allowlist applies only if non-empty; blocklist always denies
 //   - AllConfidence=true: accept every consensus glyph until specific ones are enabled
 //   - IncludeBeacons=true: beacon spots are delivered unless explicitly disabled
 //   - AllSources=true: accept both HUMAN and SKIMMER spots (unless overridden for new users)
@@ -331,7 +332,9 @@ type Filter struct {
 	Sources              map[string]bool // Allowed source categories (HUMAN/SKIMMER)
 	BlockSources         map[string]bool // Blocked source categories
 	DXCallsigns          []string        `yaml:"callsigns,omitempty"`   // DX callsign patterns (e.g., ["W1*", "LZ5VV"])
+	BlockDXCallsigns     []string        `yaml:"block_callsigns,omitempty"`
 	DECallsigns          []string        `yaml:"decallsigns,omitempty"` // DE callsign patterns
+	BlockDECallsigns     []string        `yaml:"block_decallsigns,omitempty"`
 	AllBands             bool            // If true, accept all bands (except blocked)
 	BlockAllBands        bool            // If true, reject all bands
 	AllModes             bool            // If true, accept all modes (except blocked)
@@ -397,7 +400,9 @@ func NewFilter() *Filter {
 		Sources:              make(map[string]bool),
 		BlockSources:         make(map[string]bool),
 		DXCallsigns:          make([]string, 0),
+		BlockDXCallsigns:     make([]string, 0),
 		DECallsigns:          make([]string, 0),
+		BlockDECallsigns:     make([]string, 0),
 		Confidence:           make(map[string]bool),
 		BlockConfidence:      make(map[string]bool),
 		DXContinents:         make(map[string]bool),
@@ -543,8 +548,12 @@ func (f *Filter) SetSource(source string, enabled bool) {
 // Upstream: Telnet PASS DXCALL commands.
 // Downstream: None.
 func (f *Filter) AddDXCallsignPattern(pattern string) {
-	pattern = strings.ToUpper(pattern)
-	f.DXCallsigns = append(f.DXCallsigns, pattern)
+	pattern = normalizeCallsignPattern(pattern)
+	if pattern == "" {
+		return
+	}
+	f.DXCallsigns = addPatternUnique(f.DXCallsigns, pattern)
+	f.BlockDXCallsigns = removePattern(f.BlockDXCallsigns, pattern)
 }
 
 // Purpose: Add a DE callsign pattern to the allowlist.
@@ -552,8 +561,66 @@ func (f *Filter) AddDXCallsignPattern(pattern string) {
 // Upstream: Telnet PASS DECALL commands.
 // Downstream: None.
 func (f *Filter) AddDECallsignPattern(pattern string) {
-	pattern = strings.ToUpper(pattern)
-	f.DECallsigns = append(f.DECallsigns, pattern)
+	pattern = normalizeCallsignPattern(pattern)
+	if pattern == "" {
+		return
+	}
+	f.DECallsigns = addPatternUnique(f.DECallsigns, pattern)
+	f.BlockDECallsigns = removePattern(f.BlockDECallsigns, pattern)
+}
+
+// Purpose: Add a DX callsign pattern to the blocklist.
+// Key aspects: Stores uppercase patterns; blocklist wins over allowlist.
+// Upstream: Telnet REJECT DXCALL list commands.
+// Downstream: None.
+func (f *Filter) AddBlockDXCallsignPattern(pattern string) {
+	pattern = normalizeCallsignPattern(pattern)
+	if pattern == "" {
+		return
+	}
+	f.BlockDXCallsigns = addPatternUnique(f.BlockDXCallsigns, pattern)
+	f.DXCallsigns = removePattern(f.DXCallsigns, pattern)
+}
+
+// Purpose: Add a DE callsign pattern to the blocklist.
+// Key aspects: Stores uppercase patterns; blocklist wins over allowlist.
+// Upstream: Telnet REJECT DECALL list commands.
+// Downstream: None.
+func (f *Filter) AddBlockDECallsignPattern(pattern string) {
+	pattern = normalizeCallsignPattern(pattern)
+	if pattern == "" {
+		return
+	}
+	f.BlockDECallsigns = addPatternUnique(f.BlockDECallsigns, pattern)
+	f.DECallsigns = removePattern(f.DECallsigns, pattern)
+}
+
+func normalizeCallsignPattern(pattern string) string {
+	pattern = strings.ToUpper(strings.TrimSpace(pattern))
+	return pattern
+}
+
+func addPatternUnique(list []string, pattern string) []string {
+	for _, existing := range list {
+		if existing == pattern {
+			return list
+		}
+	}
+	return append(list, pattern)
+}
+
+func removePattern(list []string, pattern string) []string {
+	if len(list) == 0 {
+		return list
+	}
+	out := list[:0]
+	for _, existing := range list {
+		if existing == pattern {
+			continue
+		}
+		out = append(out, existing)
+	}
+	return out
 }
 
 // Purpose: Allow or block a DX continent code.
@@ -720,29 +787,47 @@ func (f *Filter) SetDEDXCC(code int, enabled bool) {
 	f.AllDEDXCC = len(f.DEDXCC) == 0
 }
 
-// Purpose: Clear all DX callsign patterns.
-// Key aspects: Resets the DX pattern slice to empty.
-// Upstream: Telnet RESET/REJECT DXCALL ALL flows.
+// Purpose: Clear all DX callsign allowlist patterns.
+// Key aspects: Resets the DX allowlist slice to empty.
+// Upstream: Telnet REJECT DXCALL (no args) flows.
 // Downstream: None.
 func (f *Filter) ClearDXCallsignPatterns() {
 	f.DXCallsigns = make([]string, 0)
 }
 
-// Purpose: Clear all DE callsign patterns.
-// Key aspects: Resets the DE pattern slice to empty.
-// Upstream: Telnet RESET/REJECT DECALL ALL flows.
+// Purpose: Clear all DE callsign allowlist patterns.
+// Key aspects: Resets the DE allowlist slice to empty.
+// Upstream: Telnet REJECT DECALL (no args) flows.
 // Downstream: None.
 func (f *Filter) ClearDECallsignPatterns() {
 	f.DECallsigns = make([]string, 0)
 }
 
-// Purpose: Clear both DX and DE callsign patterns.
+// Purpose: Clear all DX callsign blocklist patterns.
+// Key aspects: Resets the DX blocklist slice to empty.
+// Upstream: Telnet reset flows.
+// Downstream: None.
+func (f *Filter) ClearDXCallsignBlockPatterns() {
+	f.BlockDXCallsigns = make([]string, 0)
+}
+
+// Purpose: Clear all DE callsign blocklist patterns.
+// Key aspects: Resets the DE blocklist slice to empty.
+// Upstream: Telnet reset flows.
+// Downstream: None.
+func (f *Filter) ClearDECallsignBlockPatterns() {
+	f.BlockDECallsigns = make([]string, 0)
+}
+
+// Purpose: Clear both DX and DE callsign patterns (allow + block).
 // Key aspects: Delegates to the per-direction clear helpers.
 // Upstream: Telnet RESET CALLSIGN filters.
 // Downstream: ClearDXCallsignPatterns, ClearDECallsignPatterns.
 func (f *Filter) ClearCallsignPatterns() {
 	f.ClearDXCallsignPatterns()
 	f.ClearDECallsignPatterns()
+	f.ClearDXCallsignBlockPatterns()
+	f.ClearDECallsignBlockPatterns()
 }
 
 // Purpose: Allow or block a confidence glyph.
@@ -1137,7 +1222,16 @@ func (f *Filter) Matches(s *spot.Spot) bool {
 		return false
 	}
 
-	// Check DX callsign patterns (if any are set)
+	// Apply DX callsign blocklist first (deny wins).
+	if len(f.BlockDXCallsigns) > 0 {
+		for _, pattern := range f.BlockDXCallsigns {
+			if matchesCallsignPattern(s.DXCall, pattern) {
+				return false
+			}
+		}
+	}
+
+	// Check DX callsign allowlist (if any are set).
 	if len(f.DXCallsigns) > 0 {
 		matched := false
 		for _, pattern := range f.DXCallsigns {
@@ -1156,6 +1250,16 @@ func (f *Filter) Matches(s *spot.Spot) bool {
 	if s.DECallStripped != "" {
 		deCall = s.DECallStripped
 	}
+
+	// Apply DE callsign blocklist first (deny wins).
+	if len(f.BlockDECallsigns) > 0 {
+		for _, pattern := range f.BlockDECallsigns {
+			if matchesCallsignPattern(deCall, pattern) {
+				return false
+			}
+		}
+	}
+
 	if len(f.DECallsigns) > 0 {
 		matched := false
 		for _, pattern := range f.DECallsigns {
@@ -1321,7 +1425,7 @@ func isConfidenceExemptMode(mode string) bool {
 //   - Default (no filters): "No active filters"
 //   - Band filter: "Bands: 20m, 40m" or "Bands: ALL"
 //   - Mode filter: "Modes: CW, FT8" or "Modes: ALL"
-//   - Callsign filter: "Callsigns: W1*, LZ5VV"
+//   - Callsign filter: "DXCallsigns: allow=W1* block=K1*"
 //   - Empty filter: "Bands: NONE (no spots will pass)"
 //
 // This is a legacy summary and does not include the full SHOW FILTER snapshot output.
@@ -1397,11 +1501,11 @@ func (f *Filter) String() string {
 	}
 
 	// Describe callsign patterns (if any)
-	if len(f.DXCallsigns) > 0 {
-		parts = append(parts, "DXCallsigns: "+strings.Join(f.DXCallsigns, ", "))
+	if len(f.DXCallsigns) > 0 || len(f.BlockDXCallsigns) > 0 {
+		parts = append(parts, formatCallsignSummary("DXCallsigns", f.DXCallsigns, f.BlockDXCallsigns))
 	}
-	if len(f.DECallsigns) > 0 {
-		parts = append(parts, "DECallsigns: "+strings.Join(f.DECallsigns, ", "))
+	if len(f.DECallsigns) > 0 || len(f.BlockDECallsigns) > 0 {
+		parts = append(parts, formatCallsignSummary("DECallsigns", f.DECallsigns, f.BlockDECallsigns))
 	}
 
 	// Describe continent filters
@@ -1487,6 +1591,24 @@ func (f *Filter) String() string {
 	}
 
 	return strings.Join(parts, " | ")
+}
+
+func formatCallsignSummary(label string, allow, block []string) string {
+	allowLabel := "ALL"
+	if len(allow) > 0 {
+		allowLabel = strings.Join(allow, ", ")
+	}
+	blockLabel := "NONE"
+	if len(block) > 0 {
+		blockLabel = strings.Join(block, ", ")
+	}
+	for _, pattern := range block {
+		if strings.TrimSpace(pattern) == "*" {
+			blockLabel = "ALL"
+			break
+		}
+	}
+	return fmt.Sprintf("%s: allow=%s block=%s", label, allowLabel, blockLabel)
 }
 
 // Purpose: Return whitelisted confidence glyphs in display order.
@@ -1743,6 +1865,18 @@ func (f *Filter) normalizeDefaults() {
 	}
 	if f.BlockSources == nil {
 		f.BlockSources = make(map[string]bool)
+	}
+	if f.DXCallsigns == nil {
+		f.DXCallsigns = make([]string, 0)
+	}
+	if f.BlockDXCallsigns == nil {
+		f.BlockDXCallsigns = make([]string, 0)
+	}
+	if f.DECallsigns == nil {
+		f.DECallsigns = make([]string, 0)
+	}
+	if f.BlockDECallsigns == nil {
+		f.BlockDECallsigns = make([]string, 0)
 	}
 	if f.Confidence == nil {
 		f.Confidence = make(map[string]bool)

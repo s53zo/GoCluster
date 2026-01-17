@@ -550,6 +550,45 @@ func buildComment(tokens []spotToken, consumed []bool) string {
 	return strings.Join(parts, " ")
 }
 
+func isAllDigitsASCII(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func stripRBNSpeedCQComment(mode, comment string) string {
+	// Purpose: Remove the exact "<number> WPM CQ" or "<number> BPS CQ" payload for RBN-only spots.
+	// Key aspects: Exact 3-token match, digit-only speed, mode-specific unit gating.
+	// Upstream: parseSpot (RBN path only).
+	// Downstream: Spot.Comment assignment and fixed-width output formatting.
+	if comment == "" || mode == "" {
+		return comment
+	}
+	fields := strings.Fields(comment)
+	if len(fields) != 3 {
+		return comment
+	}
+	if !isAllDigitsASCII(fields[0]) {
+		return comment
+	}
+	if !strings.EqualFold(fields[2], "CQ") {
+		return comment
+	}
+	if strings.EqualFold(mode, "CW") && strings.EqualFold(fields[1], "WPM") {
+		return ""
+	}
+	if strings.EqualFold(mode, "RTTY") && strings.EqualFold(fields[1], "BPS") {
+		return ""
+	}
+	return comment
+}
+
 // Purpose: Parse a DX line into a canonical Spot.
 // Key aspects: Extracts DE/DX/freq/time locally and delegates comment parsing.
 // Upstream: readLoop for RBN/minimal feeds.
@@ -624,6 +663,9 @@ func (c *Client) parseSpot(line string) {
 	}
 
 	comment := parsed.Comment
+	if !c.minimalParse {
+		comment = stripRBNSpeedCQComment(mode, comment)
+	}
 	report := parsed.Report
 	hasReport := parsed.HasReport
 

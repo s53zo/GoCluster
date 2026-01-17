@@ -129,6 +129,64 @@ func TestACParserPositiveSNRNoComment(t *testing.T) {
 	}
 }
 
+func TestACParserDropsCWSpeedCQCommentForRBN(t *testing.T) {
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
+	line := "DX de K1ABC: 3547.0 OZ4ADX CW 5 dB 22 WPM CQ 0318Z"
+	c.parseSpot(line)
+
+	var s *spot.Spot
+	select {
+	case s = <-c.spotChan:
+	default:
+		t.Fatalf("expected a parsed spot")
+	}
+
+	if s.Mode != "CW" {
+		t.Fatalf("expected mode CW, got %q", s.Mode)
+	}
+	if strings.TrimSpace(s.Comment) != "" {
+		t.Fatalf("expected empty comment, got %q", s.Comment)
+	}
+}
+
+func TestACParserDropsRTTYSpeedCQCommentForRBN(t *testing.T) {
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
+	line := "DX de K1ABC: 10131.0 DL1ABC RTTY 3 dB 45 BPS CQ 0318Z"
+	c.parseSpot(line)
+
+	var s *spot.Spot
+	select {
+	case s = <-c.spotChan:
+	default:
+		t.Fatalf("expected a parsed spot")
+	}
+
+	if s.Mode != "RTTY" {
+		t.Fatalf("expected mode RTTY, got %q", s.Mode)
+	}
+	if strings.TrimSpace(s.Comment) != "" {
+		t.Fatalf("expected empty comment, got %q", s.Comment)
+	}
+}
+
+func TestACParserKeepsSpeedCQCommentForMinimalParse(t *testing.T) {
+	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
+	c.UseMinimalParser()
+	line := "DX de K1ABC: 3547.0 OZ4ADX CW 5 dB 22 WPM CQ 0318Z"
+	c.parseSpot(line)
+
+	var s *spot.Spot
+	select {
+	case s = <-c.spotChan:
+	default:
+		t.Fatalf("expected a parsed spot")
+	}
+
+	if strings.TrimSpace(s.Comment) != "22 WPM CQ" {
+		t.Fatalf("expected comment to retain speed/CQ, got %q", s.Comment)
+	}
+}
+
 func TestACParserDropsZeroSNRForRBN(t *testing.T) {
 	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	line := "DX de UA3RF: 144360.0 R1BPV MSK144 0 dB 1943Z"

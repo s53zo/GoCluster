@@ -163,13 +163,19 @@ func TestHelpPerDialect(t *testing.T) {
 	p := NewProcessor(nil, nil, nil, nil, nil, nil)
 
 	classic := p.ProcessCommandForClient("HELP", "", "", nil, "classic")
-	if !strings.Contains(classic, "PASS BAND") || !strings.Contains(classic, "SHOW DX") || !strings.Contains(classic, "Current dialect: GO") {
+	if !strings.Contains(classic, "Filter core rules:") || !strings.Contains(classic, "SHOW DX") {
 		t.Fatalf("classic help missing expected content: %q", classic)
+	}
+	if !strings.Contains(classic, "List types:") || !strings.Contains(classic, "Supported bands:") {
+		t.Fatalf("classic help missing list sections: %q", classic)
 	}
 
 	cc := p.ProcessCommandForClient("HELP", "", "", nil, "cc")
-	if !strings.Contains(strings.ToUpper(cc), "SET/ANN") || !strings.Contains(strings.ToUpper(cc), "SHOW/DX") || !strings.Contains(strings.ToUpper(cc), "RESET FILTER") {
+	if !strings.Contains(strings.ToUpper(cc), "CC SHORTCUTS:") || !strings.Contains(strings.ToUpper(cc), "SHOW/DX") || !strings.Contains(strings.ToUpper(cc), "RESET FILTER") {
 		t.Fatalf("cc help missing cc aliases: %q", cc)
+	}
+	if !strings.Contains(cc, "SET/FILTER <type>/ON") || !strings.Contains(cc, "SET/FILTER <type>/OFF") {
+		t.Fatalf("cc help missing ON/OFF mapping: %q", cc)
 	}
 }
 

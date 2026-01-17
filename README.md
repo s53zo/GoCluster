@@ -189,25 +189,24 @@ Effective labels in the snapshot use a fixed vocabulary: `all pass`, `all except
 - `PASS DXZONE <zone>[,<zone>...]` / `DEZONE <zone>[,<zone>...]` - enable only the listed DX/spotter CQ zones (1-40), or `ALL`.
 - `PASS DXGRID2 <grid>[,<grid>...]` - enable only the listed 2-character DX grid prefixes. Tokens longer than two characters are truncated (e.g., `FN05` -> `FN`); `ALL` resets to accept every DX 2-character grid.
 - `PASS DEGRID2 <grid>[,<grid>...]` - enable only the listed 2-character DE grid prefixes (same parsing/truncation as DXGRID2); `ALL` resets to accept every DE 2-character grid.
-- `PASS DXCALL <pattern>` - begins delivering only spots with DX calls matching the supplied pattern.
-- `PASS DECALL <pattern>` - begins delivering only spots with DE/spotter calls matching the supplied pattern.
+- `PASS DXCALL <pattern>[,<pattern>...]` - begins delivering only spots with DX calls matching the supplied patterns.
+- `PASS DECALL <pattern>[,<pattern>...]` - begins delivering only spots with DE/spotter calls matching the supplied patterns.
 - `PASS CONFIDENCE <symbol>[,<symbol>...]` - enables the comma- or space-separated list of consensus glyphs (valid symbols: `?`, `S`, `C`, `P`, `V`, `B`; use `ALL` to accept every glyph).
 - `PASS BEACON` - explicitly enable delivery of beacon spots (DX calls ending `/B`; enabled by default).
-- `REJECT ALL` - resets every filter back to the default (no filtering).
 - `REJECT BAND <band>[,<band>...]` - disables only the comma- or space-separated list of bands provided (use `ALL` to block every band).
 - `REJECT MODE <mode>[,<mode>...]` - disables only the comma- or space-separated list of modes provided (specify `ALL` to block every mode).
-- `REJECT SOURCE <HUMAN|SKIMMER>` - blocks one origin category (human/operator spots vs automated/skimmer spots).
+- `REJECT SOURCE <HUMAN|SKIMMER|ALL>` - blocks one origin category (human/operator spots vs automated/skimmer spots), or `ALL`.
 - `REJECT DXCONT` / `DECONT` / `DXZONE` / `DEZONE` - block continent/zone filters (use `ALL` to block all).
 - `REJECT DXGRID2 <grid>[,<grid>...]` - remove specific 2-character DX grid prefixes (tokens truncated to two characters); `ALL` blocks every DX 2-character grid.
 - `REJECT DEGRID2 <grid>[,<grid>...]` - remove specific 2-character DE grid prefixes (tokens truncated to two characters); `ALL` blocks every DE 2-character grid.
-- `REJECT DXCALL` - clears all DX callsign patterns (arguments ignored).
-- `REJECT DECALL` - clears all DE callsign patterns (arguments ignored).
+- `REJECT DXCALL <pattern>[,<pattern>...]` - blocks the supplied DX callsign patterns.
+- `REJECT DECALL <pattern>[,<pattern>...]` - blocks the supplied DE callsign patterns.
 - `REJECT CONFIDENCE <symbol>[,<symbol>...]` - disables only the comma- or space-separated list of glyphs provided (use `ALL` to block every glyph).
 - `REJECT BEACON` - drop beacon spots entirely (they remain tagged internally for future processing).
 
 Confidence glyphs are only emitted for modes that run consensus-based correction (CW/RTTY/USB/LSB voice modes). FT8/FT4 spots carry no confidence glyphs, so confidence filters do not affect them. After correction assigns `P`/`V`/`C`/`?`, any remaining `?` is upgraded to `S` when the DX call is present in `MASTER.SCP`.
 
-Band, mode, confidence, and DXGRID2/DEGRID2 commands share identical semantics: they accept comma- or space-separated lists, ignore duplicates/case, and treat the literal `ALL` as a shorthand to reset that filter back to "allow every band/mode/confidence glyph/2-character grid." DXGRID2 applies only to the DX grid when it is exactly two characters long; DEGRID2 applies only to the DE grid when it is exactly two characters long. 4/6-character or empty grids are unaffected, and longer tokens provided by the user are truncated to their first two characters before validation.
+Band, mode, confidence, and DXGRID2/DEGRID2 commands share identical semantics: they accept comma- or space-separated lists, ignore duplicates/case, and treat the literal `ALL` as a shorthand to allow or block everything for that type. PASS/REJECT add to allow/block lists and remove the same items from the opposite list. DXGRID2 applies only to the DX grid when it is exactly two characters long; DEGRID2 applies only to the DE grid when it is exactly two characters long. 4/6-character or empty grids are unaffected, and longer tokens provided by the user are truncated to their first two characters before validation.
 
 Confidence indicator legend in telnet output:
 
@@ -373,8 +372,8 @@ CONFIDENCE: allow=P, V block=NONE (effective: only: P, V)
 ...
 REJECT MODE FT4
 Mode filters disabled: FT4
-REJECT ALL
-All filters cleared
+RESET FILTER
+Filters reset to defaults
 BYE
 73!
 ```

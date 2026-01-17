@@ -140,7 +140,6 @@ type Client struct {
 	recentIPs    []string               // Most-recent-first IP history for this callsign
 	spotChan     chan *spot.Spot        // Buffered channel for spot delivery (configurable capacity)
 	bulletinChan chan bulletin          // Buffered channel for WWV/WCY bulletin delivery
-	handleIAC    bool                   // True when we parse IAC sequences in ReadLine
 	echoInput    bool                   // True when we should echo typed characters back to the client
 	dialect      DialectName            // Active command dialect for filter commands
 	grid         string                 // User grid (4+ chars) for path reliability
@@ -396,6 +395,8 @@ const (
 	DO   = 253 // Request client to enable an option
 	WONT = 252 // Client refuses to enable an option
 	WILL = 251 // Client agrees to enable an option
+	SB   = 250 // Subnegotiation begins
+	SE   = 240 // Subnegotiation ends
 )
 
 const (
@@ -416,10 +417,10 @@ const (
 )
 
 const (
-	passFilterUsageMsg      = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern>[,<pattern>...] | PASS DECALL <pattern>[,<pattern>...] | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
-	rejectFilterUsageMsg    = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER> | REJECT DXCALL (clears all patterns; args ignored) | REJECT DECALL (clears all patterns; args ignored) | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
+	passFilterUsageMsg      = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern>[,<pattern>...] | PASS DECALL <pattern>[,<pattern>...] | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; removes from block list; ALL allows all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
+	rejectFilterUsageMsg    = "Usage: REJECT <type> ...\nREJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER|ALL> | REJECT DXCALL <pattern>[,<pattern>...] | REJECT DECALL <pattern>[,<pattern>...] | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; removes from allow list; ALL blocks all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
 	unknownPassTypeMsg      = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
-	unknownRejectTypeMsg    = "Unknown filter type. Use: ALL, BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
+	unknownRejectTypeMsg    = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 	invalidFilterCommandMsg = "Invalid filter command. Type HELP for usage.\n"
 )
 
@@ -1010,7 +1011,6 @@ func (s *Server) handleClient(conn net.Conn) {
 		spotChan:     make(chan *spot.Spot, spotQueueSize),
 		bulletinChan: make(chan bulletin, spotQueueSize),
 		filter:       filter.NewFilter(), // Start with no filters (accept all)
-		handleIAC:    !s.useZiutek,
 		dialect:      s.filterEngine.defaultDialect,
 		gridCell:     pathreliability.InvalidCell,
 		noiseClass:   "QUIET",
@@ -1716,7 +1716,8 @@ func (c *Client) Send(message string) error {
 
 // ReadLine reads a single logical line from the telnet client while enforcing
 // three invariants:
-//  1. Telnet IAC negotiations are consumed without leaking into user input.
+//  1. Telnet IAC negotiations are consumed without leaking into user input,
+//     including subnegotiation payloads (IAC SB ... IAC SE).
 //  2. User-supplied characters are bounded to maxLen bytes to prevent
 //     unbounded growth (e.g., 32 bytes for login, 128 for commands).
 //  3. Only the whitelisted character set (letters, digits, space, '/', '#',
@@ -1746,16 +1747,11 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 			return "", err
 		}
 
-		// Handle telnet IAC (Interpret As Command) sequences when using the native backend.
-		if c.handleIAC && b == IAC {
-			cmd, err := c.reader.ReadByte()
-			if err != nil {
+		// Always consume telnet IAC sequences so negotiation bytes never reach
+		// the input validator. This keeps behavior consistent across transports.
+		if b == IAC {
+			if err := c.consumeIACSequence(); err != nil {
 				return "", err
-			}
-			if cmd == DO || cmd == DONT || cmd == WILL || cmd == WONT {
-				if _, err := c.reader.ReadByte(); err != nil {
-					return "", err
-				}
 			}
 			continue
 		}
@@ -1828,6 +1824,52 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 	}
 
 	return string(line), nil
+}
+
+// consumeIACSequence drains a single telnet IAC sequence. Data bytes embedded
+// in negotiations are discarded so they cannot trip input validation.
+func (c *Client) consumeIACSequence() error {
+	cmd, err := c.reader.ReadByte()
+	if err != nil {
+		return err
+	}
+	switch cmd {
+	case IAC:
+		// Escaped 0xFF byte; ignore because telnet input is ASCII-only here.
+		return nil
+	case DO, DONT, WILL, WONT:
+		_, err = c.reader.ReadByte()
+		return err
+	case SB:
+		return c.consumeSubnegotiation()
+	default:
+		// Single-byte command; ignore.
+		return nil
+	}
+}
+
+// consumeSubnegotiation drains bytes until IAC SE, honoring IAC escapes.
+func (c *Client) consumeSubnegotiation() error {
+	for {
+		b, err := c.reader.ReadByte()
+		if err != nil {
+			return err
+		}
+		if b != IAC {
+			continue
+		}
+		next, err := c.reader.ReadByte()
+		if err != nil {
+			return err
+		}
+		if next == IAC {
+			continue
+		}
+		if next == SE {
+			return nil
+		}
+		// Ignore unexpected bytes and continue scanning for IAC SE.
+	}
 }
 
 func (c *Client) echoErase(count int) error {

@@ -99,7 +99,7 @@ func (e *filterCommandEngine) registerDomains() {
 		newDXBMHandler(),
 		newModeHandler(),
 		newSourceHandler(),
-		newSourceOffHandler(),
+		newNoFilterHandler(),
 		newCallPatternHandler("DXCALL"),
 		newCallPatternHandler("DECALL"),
 		newConfidenceHandler(),
@@ -139,7 +139,6 @@ func (e *filterCommandEngine) registerDomains() {
 		newFeatureToggleHandler("WWV", func(f *filter.Filter, enabled bool) { f.SetWWVEnabled(enabled) }),
 		newFeatureToggleHandler("WCY", func(f *filter.Filter, enabled bool) { f.SetWCYEnabled(enabled) }),
 		newFeatureToggleHandler("ANNOUNCE", func(f *filter.Filter, enabled bool) { f.SetAnnounceEnabled(enabled) }, "PC93"),
-		newAllResetHandler(),
 	}
 	for _, h := range handlers {
 		e.registerDomain(h)
@@ -363,8 +362,8 @@ func parseCCDialect(tokens, upper []string) (parsedFilterCommand, bool, string) 
 	case "SET/NOSKIMMER":
 		return parsedFilterCommand{action: actionBlock, domain: "SOURCE", args: []string{"SKIMMER"}}, true, ""
 	case "SET/NOFILTER":
-		// CC "no filter" means permissive defaults.
-		return parsedFilterCommand{action: actionBlock, domain: "ALL"}, true, ""
+		// CC "no filter" means allow everything.
+		return parsedFilterCommand{action: actionAllow, domain: "NOFILTER"}, true, ""
 	case "SET/FILTER":
 		if len(upper) < 2 {
 			return parsedFilterCommand{}, true, passFilterUsageMsg
@@ -374,15 +373,13 @@ func parseCCDialect(tokens, upper []string) (parsedFilterCommand, bool, string) 
 		// Recognize inline /OFF to disable a domain quickly.
 		if strings.HasSuffix(domain, "/OFF") {
 			domain = strings.TrimSuffix(domain, "/OFF")
-			switch strings.ToUpper(domain) {
-			case "SOURCE":
-				return parsedFilterCommand{action: actionBlock, domain: "SOURCEOFF"}, true, ""
-			case "DXCALL", "DECALL":
-				return parsedFilterCommand{action: actionBlock, domain: domain}, true, ""
-			default:
-				args = []string{"ALL"}
-				return parsedFilterCommand{action: actionBlock, domain: domain, args: args}, true, ""
-			}
+			args = []string{"ALL"}
+			return parsedFilterCommand{action: actionBlock, domain: domain, args: args}, true, ""
+		}
+		if strings.HasSuffix(domain, "/ON") {
+			domain = strings.TrimSuffix(domain, "/ON")
+			args = []string{"ALL"}
+			return parsedFilterCommand{action: actionAllow, domain: domain, args: args}, true, ""
 		}
 		return parsedFilterCommand{action: actionAllow, domain: domain, args: args}, true, ""
 	case "UNSET/FILTER":
@@ -574,7 +571,15 @@ func newSourceHandler() *domainHandler {
 				return fmt.Sprintf("Filter set: Source %s\n", value), true
 			case actionBlock:
 				if value == "" {
-					return "Usage: REJECT SOURCE <HUMAN|SKIMMER>\nType HELP for usage.\n", false
+					return "Usage: REJECT SOURCE <HUMAN|SKIMMER|ALL>\nType HELP for usage.\n", false
+				}
+				if strings.EqualFold(value, "ALL") {
+					c.updateFilter(func(f *filter.Filter) {
+						f.ResetSources()
+						f.BlockAllSources = true
+						f.AllSources = false
+					})
+					return "All sources blocked\n", true
 				}
 				if !filter.IsSupportedSource(value) {
 					return fmt.Sprintf("Unknown source: %s\nValid sources: %s\n", value, strings.Join(filter.SupportedSources, ", ")), false
@@ -588,30 +593,44 @@ func newSourceHandler() *domainHandler {
 	}
 }
 
-func newSourceOffHandler() *domainHandler {
+func newNoFilterHandler() *domainHandler {
 	return &domainHandler{
-		name: "SOURCEOFF",
+		name: "NOFILTER",
 		apply: func(c *Client, action filterAction, args []string) (string, bool) {
-			if action != actionBlock {
+			if action != actionAllow {
 				return invalidFilterCommandMsg, false
 			}
-			c.updateFilter(func(f *filter.Filter) {
-				f.ResetSources()
-				f.BlockAllSources = true
-				f.AllSources = false
-			})
-			return "All sources blocked\n", true
+			c.updateFilter(func(f *filter.Filter) { f.Reset() })
+			return "All filters disabled\n", true
 		},
 	}
 }
-
 func newCallPatternHandler(name string) *domainHandler {
 	return &domainHandler{
 		name: name,
 		apply: func(c *Client, action filterAction, args []string) (string, bool) {
 			switch action {
 			case actionAllow:
-				patterns := splitListValues(strings.Join(args, " "))
+				value := strings.TrimSpace(strings.Join(args, " "))
+				if value == "" {
+					return passFilterUsageMsg, false
+				}
+				if strings.EqualFold(value, "ALL") {
+					c.updateFilter(func(f *filter.Filter) {
+						if name == "DXCALL" {
+							f.ClearDXCallsignPatterns()
+							f.ClearDXCallsignBlockPatterns()
+						} else {
+							f.ClearDECallsignPatterns()
+							f.ClearDECallsignBlockPatterns()
+						}
+					})
+					if name == "DXCALL" {
+						return "All DX callsigns enabled\n", true
+					}
+					return "All DE callsigns enabled\n", true
+				}
+				patterns := splitListValues(value)
 				if len(patterns) == 0 {
 					return passFilterUsageMsg, false
 				}
@@ -635,25 +654,50 @@ func newCallPatternHandler(name string) *domainHandler {
 				}
 				return fmt.Sprintf("Filter set: DE callsigns %s\n", strings.Join(stringsUpper(patterns), ", ")), true
 			case actionBlock:
-				warn := ""
-				if len(args) > 0 {
+				value := strings.TrimSpace(strings.Join(args, " "))
+				if value == "" {
+					return rejectFilterUsageMsg, false
+				}
+				if strings.EqualFold(value, "ALL") {
+					c.updateFilter(func(f *filter.Filter) {
+						if name == "DXCALL" {
+							f.ClearDXCallsignPatterns()
+							f.ClearDXCallsignBlockPatterns()
+							f.AddBlockDXCallsignPattern("*")
+						} else {
+							f.ClearDECallsignPatterns()
+							f.ClearDECallsignBlockPatterns()
+							f.AddBlockDECallsignPattern("*")
+						}
+					})
 					if name == "DXCALL" {
-						warn = "Note: REJECT DXCALL clears ALL patterns. Arguments ignored; use REJECT DXCALL without arguments.\n"
-					} else {
-						warn = "Note: REJECT DECALL clears ALL patterns. Arguments ignored; use REJECT DECALL without arguments.\n"
+						return "All DX callsigns blocked\n", true
 					}
+					return "All DE callsigns blocked\n", true
+				}
+				patterns := splitListValues(value)
+				if len(patterns) == 0 {
+					return rejectFilterUsageMsg, false
 				}
 				c.updateFilter(func(f *filter.Filter) {
-					if name == "DXCALL" {
-						f.ClearDXCallsignPatterns()
-					} else {
-						f.ClearDECallsignPatterns()
+					for _, pattern := range patterns {
+						if name == "DXCALL" {
+							f.AddBlockDXCallsignPattern(pattern)
+						} else {
+							f.AddBlockDECallsignPattern(pattern)
+						}
 					}
 				})
 				if name == "DXCALL" {
-					return "DX callsign filters cleared\n" + warn, true
+					if len(patterns) == 1 {
+						return fmt.Sprintf("DX callsign blocklist: %s\n", strings.ToUpper(patterns[0])), true
+					}
+					return fmt.Sprintf("DX callsign blocklist: %s\n", strings.Join(stringsUpper(patterns), ", ")), true
 				}
-				return "DE callsign filters cleared\n" + warn, true
+				if len(patterns) == 1 {
+					return fmt.Sprintf("DE callsign blocklist: %s\n", strings.ToUpper(patterns[0])), true
+				}
+				return fmt.Sprintf("DE callsign blocklist: %s\n", strings.Join(stringsUpper(patterns), ", ")), true
 			default:
 				return invalidFilterCommandMsg, false
 			}
@@ -1042,11 +1086,7 @@ func newAllResetHandler() *domainHandler {
 		name:    "ALL",
 		aliases: []string{},
 		apply: func(c *Client, action filterAction, args []string) (string, bool) {
-			if action != actionBlock {
-				return invalidFilterCommandMsg, false
-			}
-			c.updateFilter(func(f *filter.Filter) { f.Reset() })
-			return "All filters cleared\n", true
+			return invalidFilterCommandMsg, false
 		},
 	}
 }
@@ -1205,8 +1245,8 @@ func formatFilterSnapshot(f *filter.Filter, ctyLookup func() *cty.CTYDatabase) s
 	dxGrid2 := snapshotAllowBlockStrings(f.AllDXGrid2, f.BlockAllDXGrid2, f.DXGrid2Prefixes, f.BlockDXGrid2, nil)
 	deGrid2 := snapshotAllowBlockStrings(f.AllDEGrid2, f.BlockAllDEGrid2, f.DEGrid2Prefixes, f.BlockDEGrid2, nil)
 
-	dxCallSummary, dxCallLine := callsignSnapshot("DXCALL", f.DXCallsigns)
-	deCallSummary, deCallLine := callsignSnapshot("DECALL", f.DECallsigns)
+	dxCallSummary, dxCallLine := callsignSnapshot("DXCALL", f.DXCallsigns, f.BlockDXCallsigns)
+	deCallSummary, deCallLine := callsignSnapshot("DECALL", f.DECallsigns, f.BlockDECallsigns)
 
 	beaconSummary, beaconLine := toggleSnapshot("BEACON", f.BeaconsEnabled(), f.IncludeBeacons)
 	wwvSummary, wwvLine := toggleSnapshot("WWV", f.WWVEnabled(), f.AllowWWV)
@@ -1520,15 +1560,53 @@ func supportedDXCCCodes(db *cty.CTYDatabase) []int {
 	return codes
 }
 
-func callsignSnapshot(name string, patterns []string) (summary string, line string) {
-	if len(patterns) == 0 {
-		summary = fmt.Sprintf("%s=all pass", name)
-		line = fmt.Sprintf("%s: patterns=NONE (allowlist OR; REJECT clears all; all pass)\n", name)
-		return summary, line
+func callsignSnapshot(name string, allow, block []string) (summary string, line string) {
+	allowLabel := "ALL"
+	blockLabel := "NONE"
+	if len(allow) > 0 {
+		allowLabel = strings.Join(allow, ", ")
 	}
-	summary = fmt.Sprintf("%s=allowlist(%d)", name, len(patterns))
-	line = fmt.Sprintf("%s: patterns=%s (allowlist OR; REJECT clears all)\n", name, strings.Join(patterns, ", "))
+	if len(block) > 0 {
+		blockLabel = strings.Join(block, ", ")
+	}
+	if patternListHasAll(block) {
+		blockLabel = "ALL"
+	}
+
+	switch {
+	case len(allow) == 0 && len(block) == 0:
+		summary = fmt.Sprintf("%s=all pass", name)
+	case len(allow) == 0:
+		summary = fmt.Sprintf("%s=blocklist(%d)", name, len(block))
+	case len(block) == 0:
+		summary = fmt.Sprintf("%s=allowlist(%d)", name, len(allow))
+	default:
+		summary = fmt.Sprintf("%s=allow(%d) block(%d)", name, len(allow), len(block))
+	}
+
+	effective := "all pass"
+	if len(allow) > 0 {
+		effective = "allowlist"
+	}
+	if patternListHasAll(block) {
+		effective = "none pass"
+	} else if len(block) > 0 && len(allow) == 0 {
+		effective = "all except blocklist"
+	} else if len(block) > 0 && len(allow) > 0 {
+		effective = "allowlist minus blocklist"
+	}
+
+	line = fmt.Sprintf("%s: allow=%s block=%s (effective: %s)\n", name, allowLabel, blockLabel, effective)
 	return summary, line
+}
+
+func patternListHasAll(patterns []string) bool {
+	for _, pattern := range patterns {
+		if strings.TrimSpace(pattern) == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 func toggleSnapshot(name string, enabled bool, raw *bool) (summary string, line string) {

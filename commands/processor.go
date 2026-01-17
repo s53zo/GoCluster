@@ -146,98 +146,57 @@ func (p *Processor) handleHelp(dialect string) string {
 		"SET NOISE <class> - Set noise class (QUIET|RURAL|SUBURBAN|URBAN)",
 		"BYE - Disconnect",
 		"DIALECT [name|LIST] - Show or set filter command dialect (go, cc)",
-		"",
-		fmt.Sprintf("Current dialect: %s", strings.ToUpper(dialect)),
-		"",
 	)
 	lines = append(lines, filterHelpLines(dialect)...)
-	lines = append(lines, wrapListLines("Supported modes:", "  ", filter.SupportedModes, helpMaxWidth)...)
-	lines = append(lines, wrapListLines("Supported bands:", "  ", spot.SupportedBandNames(), helpMaxWidth)...)
-	lines = append(lines,
-		"",
-		"Examples:",
-		showExampleForDialect(dialect),
-		filterExampleForDialect(dialect),
-	)
+	lines = append(lines, "")
+	lines = append(lines, "List types:")
+	lines = append(lines, wrapListLines("", "  ", filterListTypes(), helpMaxWidth)...)
+	lines = append(lines, "")
+	lines = append(lines, "Supported modes:")
+	lines = append(lines, wrapListLines("", "  ", filter.SupportedModes, helpMaxWidth)...)
+	lines = append(lines, "")
+	lines = append(lines, "Supported bands:")
+	lines = append(lines, wrapListLines("", "  ", spot.SupportedBandNames(), helpMaxWidth)...)
 	return strings.Join(lines, "\n") + "\n"
 }
 
 func filterHelpLines(dialect string) []string {
-	switch strings.ToLower(strings.TrimSpace(dialect)) {
-	case "cc":
-		lines := []string{
-			"Filter commands (CC subset):",
+	lines := []string{
+		"",
+		"Filter core rules:",
+		"PASS <type> <list> adds to allowlist and removes from blocklist.",
+		"REJECT <type> <list> adds to blocklist and removes from allowlist.",
+		"If an item appears in both lists, block wins.",
+		"",
+		"ALL keyword (type-scoped):",
+		"PASS <type> ALL - allow everything for that type",
+		"REJECT <type> ALL - block everything for that type",
+		"RESET FILTER resets all filters to configured defaults for new users.",
+		"",
+		"Feature toggles (not list-based):",
+		"PASS BEACON | REJECT BEACON",
+		"PASS WWV | REJECT WWV",
+		"PASS WCY | REJECT WCY",
+		"PASS ANNOUNCE | REJECT ANNOUNCE",
+	}
+	if strings.EqualFold(strings.TrimSpace(dialect), "cc") {
+		lines = append(lines,
+			"",
+			"CC shortcuts:",
 			"SET/ANN | SET/NOANN",
 			"SET/BEACON | SET/NOBEACON",
 			"SET/WWV | SET/NOWWV",
 			"SET/WCY | SET/NOWCY",
 			"SET/SKIMMER | SET/NOSKIMMER",
 			"SET/<MODE> | SET/NO<MODE> (CW, FT4, FT8, RTTY)",
-			"SET/FILTER DXBM/PASS <band>[,<band>...]",
-			"SET/FILTER DXBM/REJECT <band>[,<band>...]",
-			"SET/NOFILTER",
-			"RESET FILTER",
-			"SET/FILTER <type> [...]",
-			"SET/FILTER DXCALL <pattern>[,<pattern>...]",
-			"SET/FILTER DECALL <pattern>[,<pattern>...]",
-			"UNSET/FILTER <type> [...]",
-			"SET/FILTER <type>/OFF",
-			"SET/FILTER SOURCE/OFF - Block all sources",
-			"SET/FILTER DXCALL/OFF - Clear DX callsign patterns",
-			"SET/FILTER DECALL/OFF - Clear DE callsign patterns",
+			"SET/FILTER <type> <list>",
+			"UNSET/FILTER <type> <list>",
+			"SET/FILTER <type>/ON  -> PASS <type> ALL",
+			"SET/FILTER <type>/OFF -> REJECT <type> ALL",
 			"SHOW/FILTER | SH/FILTER",
-		}
-		types := []string{
-			"BAND", "MODE", "SOURCE", "DXCALL", "DECALL", "CONFIDENCE",
-			"DXGRID2", "DEGRID2", "DXCONT", "DECONT", "DXZONE", "DEZONE",
-			"DXDXCC", "DEDXCC", "BEACON", "WWV", "WCY", "ANNOUNCE",
-		}
-		lines = append(lines, wrapListLines("Types:", "  ", types, helpMaxWidth)...)
-		return lines
-	default:
-		return []string{
-			"Filter commands (allow + block, block wins):",
-			"PASS BAND <band>[,<band>...]",
-			"PASS MODE <mode>[,<mode>...]",
-			"PASS SOURCE <HUMAN|SKIMMER|ALL>",
-			"PASS DXCONT <cont>[,<cont>...]",
-			"PASS DECONT <cont>[,<cont>...]",
-			"PASS DXZONE <zone>[,<zone>...]",
-			"PASS DEZONE <zone>[,<zone>...]",
-			"PASS DXDXCC <code>[,<code>...]",
-			"PASS DEDXCC <code>[,<code>...]",
-			"PASS DXGRID2 <grid>[,<grid>...]",
-			"PASS DEGRID2 <grid>[,<grid>...]",
-			"PASS DXCALL <pattern>[,<pattern>...]",
-			"PASS DECALL <pattern>[,<pattern>...]",
-			"PASS CONFIDENCE <symbol>[,<symbol>...]",
-			"PASS BEACON",
-			"PASS WWV",
-			"PASS WCY",
-			"PASS ANNOUNCE",
-			"REJECT ALL",
-			"REJECT BAND <band>[,<band>...]",
-			"REJECT MODE <mode>[,<mode>...]",
-			"REJECT SOURCE <HUMAN|SKIMMER>",
-			"REJECT DXCONT <cont>[,<cont>...]",
-			"REJECT DECONT <cont>[,<cont>...]",
-			"REJECT DXZONE <zone>[,<zone>...]",
-			"REJECT DEZONE <zone>[,<zone>...]",
-			"REJECT DXDXCC <code>[,<code>...]",
-			"REJECT DEDXCC <code>[,<code>...]",
-			"REJECT DXGRID2 <grid>[,<grid>...]",
-			"REJECT DEGRID2 <grid>[,<grid>...]",
-			"REJECT DXCALL",
-			"REJECT DECALL",
-			"REJECT CONFIDENCE <symbol>[,<symbol>...]",
-			"REJECT BEACON",
-			"REJECT WWV",
-			"REJECT WCY",
-			"REJECT ANNOUNCE",
-			"RESET FILTER",
-			"SHOW FILTER",
-		}
+		)
 	}
+	return lines
 }
 
 func normalizeDialectString(dialect string) string {
@@ -249,24 +208,6 @@ func normalizeDialectString(dialect string) string {
 	}
 }
 
-func showExampleForDialect(dialect string) string {
-	switch strings.ToLower(strings.TrimSpace(dialect)) {
-	case "cc":
-		return "SHOW/DX"
-	default:
-		return "SHOW DX"
-	}
-}
-
-func filterExampleForDialect(dialect string) string {
-	switch strings.ToLower(strings.TrimSpace(dialect)) {
-	case "cc":
-		return "SET/FILTER MODE FT8"
-	default:
-		return "PASS MODE FT8"
-	}
-}
-
 func showDXUsage(dialect string) string {
 	if normalizeDialectString(dialect) == "cc" {
 		return "Usage: SHOW/DX [count]\n"
@@ -275,6 +216,14 @@ func showDXUsage(dialect string) string {
 }
 
 const helpMaxWidth = 78
+
+func filterListTypes() []string {
+	return []string{
+		"BAND", "MODE", "SOURCE", "DXCALL", "DECALL", "DXGRID2",
+		"DEGRID2", "DXCONT", "DECONT", "DXZONE", "DEZONE", "DXDXCC",
+		"DEDXCC", "CONFIDENCE",
+	}
+}
 
 func wrapListLines(title, indent string, items []string, width int) []string {
 	lines := []string{}

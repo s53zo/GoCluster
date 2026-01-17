@@ -61,6 +61,44 @@ func TestDECallsignPatternUsesStrippedCall(t *testing.T) {
 	}
 }
 
+func TestDXCallsignBlocklistRejects(t *testing.T) {
+	f := NewFilter()
+	f.BlockDXCallsigns = []string{"K1*"}
+
+	s := spot.NewSpot("K1ABC", "DE1AA", 14074.0, "CW")
+	if f.Matches(s) {
+		t.Fatalf("expected DX blocklist to reject K1ABC")
+	}
+}
+
+func TestCallsignBlocklistWinsOverAllowlist(t *testing.T) {
+	f := NewFilter()
+	f.DXCallsigns = []string{"K1*"}
+	f.BlockDXCallsigns = []string{"K1ABC"}
+
+	blocked := spot.NewSpot("K1ABC", "DE1AA", 14074.0, "CW")
+	if f.Matches(blocked) {
+		t.Fatalf("expected blocklist to win over allowlist")
+	}
+
+	allowed := spot.NewSpot("K1XYZ", "DE1AA", 14074.0, "CW")
+	if !f.Matches(allowed) {
+		t.Fatalf("expected allowlist to pass when not blocked")
+	}
+}
+
+func TestDECallsignBlocklistUsesStrippedCall(t *testing.T) {
+	f := NewFilter()
+	f.BlockDECallsigns = []string{"W1XYZ"}
+
+	s := spot.NewSpot("K1ABC", "W1XYZ-1", 14074.0, "CW")
+	s.DECallStripped = "W1XYZ"
+	s.DECallNormStripped = "W1XYZ"
+	if f.Matches(s) {
+		t.Fatalf("expected DE blocklist to reject stripped call")
+	}
+}
+
 func TestContinentFilters(t *testing.T) {
 	f := NewFilter()
 	f.SetDXContinent("EU", true)

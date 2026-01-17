@@ -357,6 +357,15 @@ func TestRejectCommands(t *testing.T) {
 			},
 		},
 		{
+			name: "reject source all blocks",
+			cmd:  "REJECT SOURCE ALL",
+			check: func(t *testing.T, f *filter.Filter) {
+				if !f.BlockAllSources || f.AllSources {
+					t.Fatalf("expected all sources blocked after REJECT SOURCE ALL")
+				}
+			},
+		},
+		{
 			name: "reject beacon disables",
 			cmd:  "REJECT BEACON",
 			check: func(t *testing.T, f *filter.Filter) {
@@ -393,36 +402,41 @@ func TestRejectCommands(t *testing.T) {
 			},
 		},
 		{
-			name: "reject dxcall clears patterns",
+			name: "reject dxcall requires args",
 			cmd:  "REJECT DXCALL",
 			setup: func(c *Client) {
 				c.filter.AddDXCallsignPattern("K1*")
 			},
 			check: func(t *testing.T, f *filter.Filter) {
-				if len(f.DXCallsigns) != 0 {
-					t.Fatalf("expected DX callsign patterns cleared")
+				if len(f.DXCallsigns) != 1 || f.DXCallsigns[0] != "K1*" {
+					t.Fatalf("expected DX callsign patterns unchanged")
 				}
 			},
 		},
 		{
-			name: "reject decall clears patterns",
+			name: "reject decall requires args",
 			cmd:  "REJECT DECALL",
 			setup: func(c *Client) {
 				c.filter.AddDECallsignPattern("W1*")
 			},
 			check: func(t *testing.T, f *filter.Filter) {
-				if len(f.DECallsigns) != 0 {
-					t.Fatalf("expected DE callsign patterns cleared")
+				if len(f.DECallsigns) != 1 || f.DECallsigns[0] != "W1*" {
+					t.Fatalf("expected DE callsign patterns unchanged")
 				}
 			},
 		},
 		{
-			name: "reject all resets filters",
+			name: "reject all invalid",
 			cmd:  "REJECT ALL",
 			check: func(t *testing.T, f *filter.Filter) {
-				if !f.AllBands || !f.AllModes || !f.AllConfidence || !f.AllSources {
-					t.Fatalf("expected REJECT ALL to reset filter to defaults")
-				}
+				assertFilterMatchesDefaults(t, f)
+			},
+		},
+		{
+			name: "pass all invalid",
+			cmd:  "PASS ALL",
+			check: func(t *testing.T, f *filter.Filter) {
+				assertFilterMatchesDefaults(t, f)
 			},
 		},
 	}
@@ -463,8 +477,8 @@ func TestShowFilterSnapshotDefault(t *testing.T) {
 	if !strings.Contains(resp, "MODE: allow=CW, LSB, USB, RTTY") {
 		t.Fatalf("expected default mode list in snapshot, got: %q", resp)
 	}
-	if !strings.Contains(resp, "DXCALL: patterns=NONE") {
-		t.Fatalf("expected DXCALL line to show patterns=NONE, got: %q", resp)
+	if !strings.Contains(resp, "DXCALL: allow=ALL block=NONE") {
+		t.Fatalf("expected DXCALL line to show allow/block defaults, got: %q", resp)
 	}
 }
 
@@ -531,7 +545,7 @@ func TestShowFilterDeprecatedForms(t *testing.T) {
 	}
 }
 
-func TestRejectCallsignWarnsOnArgs(t *testing.T) {
+func TestRejectCallsignUsesBlocklist(t *testing.T) {
 	client := newTestClient()
 	engine := newFilterCommandEngine()
 	client.filter.AddDXCallsignPattern("K1*")
@@ -540,19 +554,25 @@ func TestRejectCallsignWarnsOnArgs(t *testing.T) {
 	if !handled {
 		t.Fatalf("expected REJECT DXCALL with args to be handled")
 	}
-	if !strings.Contains(strings.ToLower(resp), "arguments ignored") {
-		t.Fatalf("expected warning about ignored arguments, got: %q", resp)
+	if strings.Contains(strings.ToLower(resp), "arguments ignored") {
+		t.Fatalf("did not expect ignored-argument warning, got: %q", resp)
 	}
-	if len(client.filter.DXCallsigns) != 0 {
-		t.Fatalf("expected DX callsign patterns cleared")
+	if len(client.filter.DXCallsigns) != 1 || client.filter.DXCallsigns[0] != "K1*" {
+		t.Fatalf("expected DX allowlist to remain intact")
+	}
+	if len(client.filter.BlockDXCallsigns) != 1 || client.filter.BlockDXCallsigns[0] != "W1*" {
+		t.Fatalf("expected DX blocklist to contain W1*")
 	}
 
 	resp, handled = engine.Handle(client, "REJECT DXCALL")
 	if !handled {
 		t.Fatalf("expected REJECT DXCALL to be handled")
 	}
-	if strings.Contains(strings.ToLower(resp), "arguments ignored") {
-		t.Fatalf("did not expect warning without arguments, got: %q", resp)
+	if len(client.filter.DXCallsigns) != 1 || client.filter.DXCallsigns[0] != "K1*" {
+		t.Fatalf("expected DX allowlist unchanged without args")
+	}
+	if len(client.filter.BlockDXCallsigns) != 1 || client.filter.BlockDXCallsigns[0] != "W1*" {
+		t.Fatalf("expected DX blocklist unchanged without args")
 	}
 }
 
@@ -665,6 +685,14 @@ func TestCCDialectCallsignList(t *testing.T) {
 	}
 	if len(client.filter.DXCallsigns) != 2 {
 		t.Fatalf("expected two DX callsign patterns, got %d", len(client.filter.DXCallsigns))
+	}
+
+	resp, handled = engine.Handle(client, "UNSET/FILTER DXCALL W1*")
+	if !handled || resp == "" {
+		t.Fatalf("expected UNSET/FILTER DXCALL handled, got handled=%v resp=%q", handled, resp)
+	}
+	if len(client.filter.BlockDXCallsigns) != 1 || client.filter.BlockDXCallsigns[0] != "W1*" {
+		t.Fatalf("expected DX blocklist to contain W1*")
 	}
 }
 
@@ -782,20 +810,28 @@ func TestCCDialectOffSpecialCases(t *testing.T) {
 
 	client.filter.AddDXCallsignPattern("K1*")
 	resp, handled = engine.Handle(client, "SET/FILTER DXCALL/OFF")
-	if !handled || !strings.Contains(strings.ToLower(resp), "cleared") {
-		t.Fatalf("expected DXCALL/OFF to clear patterns, got handled=%v resp=%q", handled, resp)
+	if !handled || !strings.Contains(strings.ToLower(resp), "blocked") {
+		t.Fatalf("expected DXCALL/OFF to block all callsigns, got handled=%v resp=%q", handled, resp)
 	}
-	if len(client.filter.DXCallsigns) != 0 {
-		t.Fatalf("expected DXCALL/OFF to clear patterns")
+	if len(client.filter.BlockDXCallsigns) != 1 || client.filter.BlockDXCallsigns[0] != "*" {
+		t.Fatalf("expected DXCALL/OFF to block all callsigns")
 	}
 
 	client.filter.AddDECallsignPattern("W1*")
 	resp, handled = engine.Handle(client, "SET/FILTER DECALL/OFF")
-	if !handled || !strings.Contains(strings.ToLower(resp), "cleared") {
-		t.Fatalf("expected DECALL/OFF to clear patterns, got handled=%v resp=%q", handled, resp)
+	if !handled || !strings.Contains(strings.ToLower(resp), "blocked") {
+		t.Fatalf("expected DECALL/OFF to block all callsigns, got handled=%v resp=%q", handled, resp)
 	}
-	if len(client.filter.DECallsigns) != 0 {
-		t.Fatalf("expected DECALL/OFF to clear patterns")
+	if len(client.filter.BlockDECallsigns) != 1 || client.filter.BlockDECallsigns[0] != "*" {
+		t.Fatalf("expected DECALL/OFF to block all callsigns")
+	}
+
+	resp, handled = engine.Handle(client, "SET/FILTER DECALL/ON")
+	if !handled || !strings.Contains(strings.ToLower(resp), "enabled") {
+		t.Fatalf("expected DECALL/ON to allow all callsigns, got handled=%v resp=%q", handled, resp)
+	}
+	if len(client.filter.BlockDECallsigns) != 0 {
+		t.Fatalf("expected DECALL/ON to clear blocklist")
 	}
 }
 
