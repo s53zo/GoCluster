@@ -421,7 +421,7 @@ func displayDXCall(call string) string {
 //	28-?:  DX callsign (left-aligned; padded to 8 chars when shorter; display truncates to 10)
 //	40:    Mode starts at column 40
 //	67-70: DX grid (4 chars; blank if unknown)
-//	72:    Confidence glyph (1 char; blank if unknown)
+//	72:    Confidence glyph (1 char; blank if unknown; non-ASCII replaced with '?')
 //	74-78: Time in HHMMZ (Z ends at column 78)
 //
 // Anything between Mode and the fixed tail is treated as a free-form comment
@@ -560,7 +560,7 @@ func (s *Spot) FormatDXCluster() string {
 
 		confLabel := " "
 		if trimmed := strings.TrimSpace(s.Confidence); trimmed != "" {
-			confLabel = trimmed[:1]
+			confLabel = firstPrintableASCIIOrQuestion(trimmed)
 		}
 
 		// Ensure the last comment column (1-based col 66, 0-based idx 65) is a
@@ -736,4 +736,21 @@ func sanitizeDXClusterComment(comment string) string {
 		lastSpace = false
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// Purpose: Return the first printable ASCII rune or "?" for non-ASCII.
+// Key aspects: Ensures telnet output remains ASCII-only.
+// Upstream: FormatDXCluster (confidence glyph).
+// Downstream: None.
+func firstPrintableASCIIOrQuestion(s string) string {
+	if s == "" {
+		return "?"
+	}
+	for _, r := range s {
+		if r >= 0x20 && r <= 0x7e {
+			return string(r)
+		}
+		return "?"
+	}
+	return "?"
 }

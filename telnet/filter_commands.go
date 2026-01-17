@@ -99,6 +99,7 @@ func (e *filterCommandEngine) registerDomains() {
 		newDXBMHandler(),
 		newModeHandler(),
 		newSourceHandler(),
+		newSourceOffHandler(),
 		newCallPatternHandler("DXCALL"),
 		newCallPatternHandler("DECALL"),
 		newConfidenceHandler(),
@@ -373,8 +374,15 @@ func parseCCDialect(tokens, upper []string) (parsedFilterCommand, bool, string) 
 		// Recognize inline /OFF to disable a domain quickly.
 		if strings.HasSuffix(domain, "/OFF") {
 			domain = strings.TrimSuffix(domain, "/OFF")
-			args = []string{"ALL"}
-			return parsedFilterCommand{action: actionBlock, domain: domain, args: args}, true, ""
+			switch strings.ToUpper(domain) {
+			case "SOURCE":
+				return parsedFilterCommand{action: actionBlock, domain: "SOURCEOFF"}, true, ""
+			case "DXCALL", "DECALL":
+				return parsedFilterCommand{action: actionBlock, domain: domain}, true, ""
+			default:
+				args = []string{"ALL"}
+				return parsedFilterCommand{action: actionBlock, domain: domain, args: args}, true, ""
+			}
 		}
 		return parsedFilterCommand{action: actionAllow, domain: domain, args: args}, true, ""
 	case "UNSET/FILTER":
@@ -580,27 +588,52 @@ func newSourceHandler() *domainHandler {
 	}
 }
 
+func newSourceOffHandler() *domainHandler {
+	return &domainHandler{
+		name: "SOURCEOFF",
+		apply: func(c *Client, action filterAction, args []string) (string, bool) {
+			if action != actionBlock {
+				return invalidFilterCommandMsg, false
+			}
+			c.updateFilter(func(f *filter.Filter) {
+				f.ResetSources()
+				f.BlockAllSources = true
+				f.AllSources = false
+			})
+			return "All sources blocked\n", true
+		},
+	}
+}
+
 func newCallPatternHandler(name string) *domainHandler {
 	return &domainHandler{
 		name: name,
 		apply: func(c *Client, action filterAction, args []string) (string, bool) {
 			switch action {
 			case actionAllow:
-				if len(args) == 0 {
+				patterns := splitListValues(strings.Join(args, " "))
+				if len(patterns) == 0 {
 					return passFilterUsageMsg, false
 				}
-				value := strings.ToUpper(args[0])
 				c.updateFilter(func(f *filter.Filter) {
-					if name == "DXCALL" {
-						f.AddDXCallsignPattern(value)
-					} else {
-						f.AddDECallsignPattern(value)
+					for _, pattern := range patterns {
+						if name == "DXCALL" {
+							f.AddDXCallsignPattern(pattern)
+						} else {
+							f.AddDECallsignPattern(pattern)
+						}
 					}
 				})
 				if name == "DXCALL" {
-					return fmt.Sprintf("Filter set: DX callsign %s\n", value), true
+					if len(patterns) == 1 {
+						return fmt.Sprintf("Filter set: DX callsign %s\n", strings.ToUpper(patterns[0])), true
+					}
+					return fmt.Sprintf("Filter set: DX callsigns %s\n", strings.Join(stringsUpper(patterns), ", ")), true
 				}
-				return fmt.Sprintf("Filter set: DE callsign %s\n", value), true
+				if len(patterns) == 1 {
+					return fmt.Sprintf("Filter set: DE callsign %s\n", strings.ToUpper(patterns[0])), true
+				}
+				return fmt.Sprintf("Filter set: DE callsigns %s\n", strings.Join(stringsUpper(patterns), ", ")), true
 			case actionBlock:
 				warn := ""
 				if len(args) > 0 {
@@ -626,6 +659,17 @@ func newCallPatternHandler(name string) *domainHandler {
 			}
 		},
 	}
+}
+
+func stringsUpper(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, strings.ToUpper(strings.TrimSpace(value)))
+	}
+	return out
 }
 
 func newConfidenceHandler() *domainHandler {

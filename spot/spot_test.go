@@ -341,6 +341,30 @@ func TestFormatDXClusterAlignmentWithConfidence(t *testing.T) {
 	}
 }
 
+func TestFormatDXClusterNonASCIIConfidenceReplaced(t *testing.T) {
+	s := &Spot{
+		DXCall:     "KE0UI",
+		DECall:     "W2NAF",
+		Frequency:  7014.0,
+		Mode:       "CW",
+		Report:     27,
+		HasReport:  true,
+		Time:       time.Date(2025, time.November, 22, 4, 54, 0, 0, time.UTC),
+		Confidence: "\u2605",
+		DXMetadata: CallMetadata{
+			Grid: "fn20",
+		},
+	}
+
+	got := s.FormatDXCluster()
+	if len(got) != 78 {
+		t.Fatalf("expected FormatDXCluster to return 78 chars (CRLF added by telnet), got %d: %q", len(got), got)
+	}
+	if got[71] != '?' {
+		t.Fatalf("expected non-ASCII confidence to be replaced with '?', got %q in %q", got[71], got)
+	}
+}
+
 func TestFormatDXClusterTruncatesCommentAndKeepsTailFixed(t *testing.T) {
 	s := &Spot{
 		DXCall:     "R4WD",

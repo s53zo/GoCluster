@@ -84,15 +84,32 @@ func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterI
 	// Split into parts
 	parts := strings.Fields(strings.ToUpper(cmd))
 	command := parts[0]
+	dialect = normalizeDialectString(dialect)
+
+	if dialect == "cc" {
+		switch command {
+		case "SHOW/DX", "SH/DX":
+			return p.handleShow(append([]string{"DX"}, parts[1:]...), filterFn, dialect)
+		case "SHOW", "SH":
+			if len(parts) >= 2 && parts[1] == "DX" {
+				return "Use SHOW/DX or SH/DX for DX history.\n"
+			}
+		}
+	} else {
+		switch command {
+		case "SHOW/DX", "SH/DX":
+			return "Use SHOW DX or SH DX for DX history.\n"
+		}
+	}
 
 	switch command {
 	case "HELP", "H":
 		return p.handleHelp(dialect)
 	case "SH", "SHOW":
 		if len(parts) < 2 {
-			return "Usage: SHOW/DX [count]\n"
+			return showDXUsage(dialect)
 		}
-		return p.handleShow(parts[1:], filterFn)
+		return p.handleShow(parts[1:], filterFn, dialect)
 	case "BYE", "QUIT", "EXIT":
 		return "BYE"
 	default:
@@ -105,89 +122,121 @@ func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterI
 // Upstream: ProcessCommandForClient (HELP/H).
 // Downstream: filter.SupportedModes, spot.SupportedBandNames.
 func (p *Processor) handleHelp(dialect string) string {
-	dialect = strings.ToLower(strings.TrimSpace(dialect))
-	filterHelp := filterHelpText(dialect)
-	return fmt.Sprintf(`Available commands:
-HELP                 - Show this help
-DX <freq> <call> [comment] - Post a spot (frequency in kHz)
-SHOW/DX [count]      - Show last N DX spots (default: 10)
-SHOW MYDX [count]    - Show last N DX spots that match your active filters
-SHOW DXCC <prefix|callsign> - Look up DXCC/ADIF and zones for a prefix or callsign
-SET GRID <grid>      - Set your grid (4-6 chars) for path reliability glyphs
-SET NOISE <class>    - Set noise class (QUIET|RURAL|SUBURBAN|URBAN) for glyph penalties
-BYE                  - Disconnect
-DIALECT [name|LIST]  - Show or set the filter command dialect (go, cc)
-
-Current dialect: %s
-
-%s
-Supported modes: %s
-Supported bands: %s
-
-Examples:
-	SHOW/DX            - Show last 10 spots
-	%s
-`, strings.ToUpper(normalizeDialectString(dialect)), filterHelp, strings.Join(filter.SupportedModes, ", "), strings.Join(spot.SupportedBandNames(), ", "), exampleForDialect(dialect))
+	dialect = normalizeDialectString(dialect)
+	lines := []string{
+		"Available commands:",
+		"HELP - Show this help",
+		"DX <freq> <call> [comment] - Post a spot (kHz)",
+	}
+	if dialect == "cc" {
+		lines = append(lines,
+			"SHOW/DX [count] - Show last N DX spots (default: 10)",
+			"SH/DX [count] - Alias for SHOW/DX",
+		)
+	} else {
+		lines = append(lines,
+			"SHOW DX [count] - Show last N DX spots (default: 10)",
+			"SH DX [count] - Alias for SHOW DX",
+		)
+	}
+	lines = append(lines,
+		"SHOW MYDX [count] - Show last N DX spots matching your filters",
+		"SHOW DXCC <prefix|callsign> - Look up DXCC/ADIF and zones",
+		"SET GRID <grid> - Set your grid (4-6 chars) for glyphs",
+		"SET NOISE <class> - Set noise class (QUIET|RURAL|SUBURBAN|URBAN)",
+		"BYE - Disconnect",
+		"DIALECT [name|LIST] - Show or set filter command dialect (go, cc)",
+		"",
+		fmt.Sprintf("Current dialect: %s", strings.ToUpper(dialect)),
+		"",
+	)
+	lines = append(lines, filterHelpLines(dialect)...)
+	lines = append(lines, wrapListLines("Supported modes:", "  ", filter.SupportedModes, helpMaxWidth)...)
+	lines = append(lines, wrapListLines("Supported bands:", "  ", spot.SupportedBandNames(), helpMaxWidth)...)
+	lines = append(lines,
+		"",
+		"Examples:",
+		showExampleForDialect(dialect),
+		filterExampleForDialect(dialect),
+	)
+	return strings.Join(lines, "\n") + "\n"
 }
 
-func filterHelpText(dialect string) string {
+func filterHelpLines(dialect string) []string {
 	switch strings.ToLower(strings.TrimSpace(dialect)) {
 	case "cc":
-		return `Filter commands (CC subset):
-	SET/ANN | SET/NOANN      - Enable/disable announcements
-	SET/BEACON | SET/NOBEACON - Enable/disable beacon spots
-	SET/WWV | SET/NOWWV      - Enable/disable WWV bulletins
-	SET/WCY | SET/NOWCY      - Enable/disable WCY bulletins
-	SET/SKIMMER | SET/NOSKIMMER - Allow/block skimmer spots
-	SET/<MODE> | SET/NO<MODE> - Enable/disable mode (CW, FT4, FT8, RTTY)
-	SET/FILTER DXBM/PASS <band>[,...]   - Map CC DXBM bands to allow (bands: 160, 80, 40, 30, 20, 17, 15, 12, 10, 6, 2, 1). Mode suffix ignored; use SET/NO<MODE>. Approximate: per-band only, not band-mode.
-	SET/FILTER DXBM/REJECT <band>[,...] - Map CC DXBM bands to block (same mapping; PASS takes precedence over REJECT in overlaps)
-	SET/NOFILTER             - Reset filters to permissive defaults
-	RESET FILTER             - Reset filters to configured defaults
-	SET/FILTER <type> [...]  - Allow (BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, DEDXCC, BEACON, WWV, WCY, ANNOUNCE)
-	SET/FILTER <type>/OFF    - Block the specified type (ALL)
-	UNSET/FILTER <type> [...] - Block/clear for the specified type
-	SHOW/FILTER              - Show the full filter snapshot (tokenized forms deprecated)`
+		lines := []string{
+			"Filter commands (CC subset):",
+			"SET/ANN | SET/NOANN",
+			"SET/BEACON | SET/NOBEACON",
+			"SET/WWV | SET/NOWWV",
+			"SET/WCY | SET/NOWCY",
+			"SET/SKIMMER | SET/NOSKIMMER",
+			"SET/<MODE> | SET/NO<MODE> (CW, FT4, FT8, RTTY)",
+			"SET/FILTER DXBM/PASS <band>[,<band>...]",
+			"SET/FILTER DXBM/REJECT <band>[,<band>...]",
+			"SET/NOFILTER",
+			"RESET FILTER",
+			"SET/FILTER <type> [...]",
+			"SET/FILTER DXCALL <pattern>[,<pattern>...]",
+			"SET/FILTER DECALL <pattern>[,<pattern>...]",
+			"UNSET/FILTER <type> [...]",
+			"SET/FILTER <type>/OFF",
+			"SET/FILTER SOURCE/OFF - Block all sources",
+			"SET/FILTER DXCALL/OFF - Clear DX callsign patterns",
+			"SET/FILTER DECALL/OFF - Clear DE callsign patterns",
+			"SHOW/FILTER | SH/FILTER",
+		}
+		types := []string{
+			"BAND", "MODE", "SOURCE", "DXCALL", "DECALL", "CONFIDENCE",
+			"DXGRID2", "DEGRID2", "DXCONT", "DECONT", "DXZONE", "DEZONE",
+			"DXDXCC", "DEDXCC", "BEACON", "WWV", "WCY", "ANNOUNCE",
+		}
+		lines = append(lines, wrapListLines("Types:", "  ", types, helpMaxWidth)...)
+		return lines
 	default:
-		return `Filter commands (allow + block, deny wins):
-	PASS BAND <band>[,<band>...] - Allow specific bands (comma/space). ALL clears blocklist and allows all.
-	PASS MODE <mode>[,<mode>...] - Allow specific modes. ALL clears blocklist and allows all.
-	PASS SOURCE <HUMAN|SKIMMER|ALL> - Filter by spot origin: HUMAN=IsHuman true, SKIMMER=IsHuman false. ALL disables SOURCE filtering.
-	PASS DXCONT <cont>[,<cont>...] - Allow DX continents (AF, AN, AS, EU, NA, OC, SA). ALL clears blocklist.
-	PASS DECONT <cont>[,<cont>...] - Allow DE continents. ALL clears blocklist.
-	PASS DXZONE <zone>[,<zone>...] - Allow DX CQ zones (1-40). ALL clears blocklist.
-	PASS DEZONE <zone>[,<zone>...] - Allow DE CQ zones. ALL clears blocklist.
-	PASS DXDXCC <code>[,<code>...] - Allow DX ADIF/DXCC codes. ALL clears blocklist.
-	PASS DEDXCC <code>[,<code>...] - Allow DE ADIF/DXCC codes. ALL clears blocklist.
-	PASS DXGRID2 <grid>[,<grid>...] - Allow 2-char DX grids (truncates longer tokens); ALL clears blocklist.
-	PASS DEGRID2 <grid>[,<grid>...] - Allow 2-char DE grids; ALL clears blocklist.
-	PASS DXCALL <pattern> - Allow DX calls matching the pattern (supports prefix/suffix * wildcard).
-	PASS DECALL <pattern> - Allow DE/spotter calls matching the pattern (supports prefix/suffix * wildcard).
-	PASS CONFIDENCE <symbol>[,<symbol>...] - Allow confidence glyphs (?,S,C,P,V,B or ALL). FT8/FT4 ignore confidence filtering.
-	PASS BEACON - Deliver DX beacons (/B)
-	PASS WWV - Deliver WWV bulletins
-	PASS WCY - Deliver WCY bulletins
-	PASS ANNOUNCE - Deliver PC93 announcements
-	REJECT BAND <band>[,<band>...]      - Block listed bands; ALL blocks all bands.
-	REJECT MODE <mode>[,<mode>...]      - Block listed modes; ALL blocks all modes.
-	REJECT SOURCE <HUMAN|SKIMMER>       - Block human or automated spots.
-	REJECT DXCONT <cont>[,<cont>...]    - Block DX continents; ALL blocks all DX continents.
-	REJECT DECONT <cont>[,<cont>...]    - Block DE continents; ALL blocks all DE continents.
-	REJECT DXZONE <zone>[,<zone>...]    - Block DX CQ zones; ALL blocks all DX zones.
-	REJECT DEZONE <zone>[,<zone>...]    - Block DE CQ zones; ALL blocks all DE zones.
-	REJECT DXDXCC <code>[,<code>...]    - Block DX ADIF/DXCC codes; ALL blocks all DX DXCCs.
-	REJECT DEDXCC <code>[,<code>...]    - Block DE ADIF/DXCC codes; ALL blocks all DE DXCCs.
-	REJECT DXGRID2 <grid>[,<grid>...]    - Block 2-char DX grids; ALL blocks all DX grids.
-	REJECT DEGRID2 <grid>[,<grid>...]    - Block 2-char DE grids; ALL blocks all DE grids.
-	REJECT DXCALL - Clear all DX callsign patterns (arguments ignored; allows any DX call, subject to other filters).
-	REJECT DECALL - Clear all DE callsign patterns (arguments ignored; allows any DE call, subject to other filters).
-	REJECT CONFIDENCE <symbol>[,<symbol>...] - Block glyphs; ALL blocks all glyphs (non-exempt modes).
-	REJECT BEACON - Suppress DX beacons
-	REJECT WWV - Suppress WWV bulletins
-	REJECT WCY - Suppress WCY bulletins
-	REJECT ANNOUNCE - Suppress PC93 announcements
-	RESET FILTER               - Reset filters to configured defaults
-	SHOW FILTER                 - Show the full filter snapshot (tokenized forms deprecated)`
+		return []string{
+			"Filter commands (allow + block, block wins):",
+			"PASS BAND <band>[,<band>...]",
+			"PASS MODE <mode>[,<mode>...]",
+			"PASS SOURCE <HUMAN|SKIMMER|ALL>",
+			"PASS DXCONT <cont>[,<cont>...]",
+			"PASS DECONT <cont>[,<cont>...]",
+			"PASS DXZONE <zone>[,<zone>...]",
+			"PASS DEZONE <zone>[,<zone>...]",
+			"PASS DXDXCC <code>[,<code>...]",
+			"PASS DEDXCC <code>[,<code>...]",
+			"PASS DXGRID2 <grid>[,<grid>...]",
+			"PASS DEGRID2 <grid>[,<grid>...]",
+			"PASS DXCALL <pattern>[,<pattern>...]",
+			"PASS DECALL <pattern>[,<pattern>...]",
+			"PASS CONFIDENCE <symbol>[,<symbol>...]",
+			"PASS BEACON",
+			"PASS WWV",
+			"PASS WCY",
+			"PASS ANNOUNCE",
+			"REJECT ALL",
+			"REJECT BAND <band>[,<band>...]",
+			"REJECT MODE <mode>[,<mode>...]",
+			"REJECT SOURCE <HUMAN|SKIMMER>",
+			"REJECT DXCONT <cont>[,<cont>...]",
+			"REJECT DECONT <cont>[,<cont>...]",
+			"REJECT DXZONE <zone>[,<zone>...]",
+			"REJECT DEZONE <zone>[,<zone>...]",
+			"REJECT DXDXCC <code>[,<code>...]",
+			"REJECT DEDXCC <code>[,<code>...]",
+			"REJECT DXGRID2 <grid>[,<grid>...]",
+			"REJECT DEGRID2 <grid>[,<grid>...]",
+			"REJECT DXCALL",
+			"REJECT DECALL",
+			"REJECT CONFIDENCE <symbol>[,<symbol>...]",
+			"REJECT BEACON",
+			"REJECT WWV",
+			"REJECT WCY",
+			"REJECT ANNOUNCE",
+			"RESET FILTER",
+			"SHOW FILTER",
+		}
 	}
 }
 
@@ -200,13 +249,61 @@ func normalizeDialectString(dialect string) string {
 	}
 }
 
-func exampleForDialect(dialect string) string {
+func showExampleForDialect(dialect string) string {
+	switch strings.ToLower(strings.TrimSpace(dialect)) {
+	case "cc":
+		return "SHOW/DX"
+	default:
+		return "SHOW DX"
+	}
+}
+
+func filterExampleForDialect(dialect string) string {
 	switch strings.ToLower(strings.TrimSpace(dialect)) {
 	case "cc":
 		return "SET/FILTER MODE FT8"
 	default:
 		return "PASS MODE FT8"
 	}
+}
+
+func showDXUsage(dialect string) string {
+	if normalizeDialectString(dialect) == "cc" {
+		return "Usage: SHOW/DX [count]\n"
+	}
+	return "Usage: SHOW DX [count]\n"
+}
+
+const helpMaxWidth = 78
+
+func wrapListLines(title, indent string, items []string, width int) []string {
+	lines := []string{}
+	if title != "" {
+		lines = append(lines, title)
+	}
+	if len(items) == 0 {
+		return lines
+	}
+	if indent == "" {
+		indent = "  "
+	}
+	line := indent
+	for _, item := range items {
+		candidate := indent + item
+		if line != indent {
+			candidate = line + ", " + item
+		}
+		if len(candidate) > width && line != indent {
+			lines = append(lines, line)
+			line = indent + item
+			continue
+		}
+		line = candidate
+	}
+	if strings.TrimSpace(line) != "" {
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 // Purpose: Handle the DX command and enqueue a human spot.
@@ -297,9 +394,9 @@ func (p *Processor) handleDX(fields []string, spotter string, spotterIP string) 
 // Key aspects: Supports SHOW/DX, SHOW/MYDX, and SHOW DXCC lookups.
 // Upstream: ProcessCommandForClient (SHOW/SH).
 // Downstream: handleShowDX, handleShowMYDX, handleShowDXCC.
-func (p *Processor) handleShow(args []string, filterFn func(*spot.Spot) bool) string {
+func (p *Processor) handleShow(args []string, filterFn func(*spot.Spot) bool, dialect string) string {
 	if len(args) == 0 {
-		return "Usage: SHOW/DX [count]\n"
+		return showDXUsage(dialect)
 	}
 
 	subCmd := args[0]

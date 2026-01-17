@@ -146,11 +146,35 @@ func TestPassCommands(t *testing.T) {
 			},
 		},
 		{
+			name: "pass dxcall pattern list",
+			cmd:  "PASS DXCALL K1*,W1*",
+			check: func(t *testing.T, f *filter.Filter) {
+				if len(f.DXCallsigns) != 2 {
+					t.Fatalf("expected two DX callsign patterns, got %d", len(f.DXCallsigns))
+				}
+				if f.DXCallsigns[0] != "K1*" || f.DXCallsigns[1] != "W1*" {
+					t.Fatalf("expected DX callsign patterns K1*, W1*, got %v", f.DXCallsigns)
+				}
+			},
+		},
+		{
 			name: "pass decall pattern",
 			cmd:  "PASS DECALL W1*",
 			check: func(t *testing.T, f *filter.Filter) {
 				if len(f.DECallsigns) != 1 || f.DECallsigns[0] != "W1*" {
 					t.Fatalf("expected DE callsign pattern W1* to be stored")
+				}
+			},
+		},
+		{
+			name: "pass decall pattern list",
+			cmd:  "PASS DECALL W1*,K1*",
+			check: func(t *testing.T, f *filter.Filter) {
+				if len(f.DECallsigns) != 2 {
+					t.Fatalf("expected two DE callsign patterns, got %d", len(f.DECallsigns))
+				}
+				if f.DECallsigns[0] != "W1*" || f.DECallsigns[1] != "K1*" {
+					t.Fatalf("expected DE callsign patterns W1*, K1*, got %v", f.DECallsigns)
 				}
 			},
 		},
@@ -630,6 +654,20 @@ func TestCCDialectSetFilterExecutes(t *testing.T) {
 	}
 }
 
+func TestCCDialectCallsignList(t *testing.T) {
+	engine := newFilterCommandEngine()
+	client := newTestClient()
+	client.dialect = DialectCC
+
+	resp, handled := engine.Handle(client, "SET/FILTER DXCALL K1*,W1*")
+	if !handled || resp == "" {
+		t.Fatalf("expected SET/FILTER DXCALL handled, got handled=%v resp=%q", handled, resp)
+	}
+	if len(client.filter.DXCallsigns) != 2 {
+		t.Fatalf("expected two DX callsign patterns, got %d", len(client.filter.DXCallsigns))
+	}
+}
+
 func TestCCDialectAliases(t *testing.T) {
 	engine := newFilterCommandEngine()
 	client := newTestClient()
@@ -726,6 +764,38 @@ func TestCCDialectNoFilterReset(t *testing.T) {
 	}
 	if !client.filter.AllBands || client.filter.BlockAllBands {
 		t.Fatalf("expected filters reset to permissive defaults")
+	}
+}
+
+func TestCCDialectOffSpecialCases(t *testing.T) {
+	engine := newFilterCommandEngine()
+	client := newTestClient()
+	client.dialect = DialectCC
+
+	resp, handled := engine.Handle(client, "SET/FILTER SOURCE/OFF")
+	if !handled || !strings.Contains(resp, "sources") {
+		t.Fatalf("expected SOURCE/OFF handled, got handled=%v resp=%q", handled, resp)
+	}
+	if !client.filter.BlockAllSources || client.filter.AllSources {
+		t.Fatalf("expected SOURCE/OFF to block all sources")
+	}
+
+	client.filter.AddDXCallsignPattern("K1*")
+	resp, handled = engine.Handle(client, "SET/FILTER DXCALL/OFF")
+	if !handled || !strings.Contains(strings.ToLower(resp), "cleared") {
+		t.Fatalf("expected DXCALL/OFF to clear patterns, got handled=%v resp=%q", handled, resp)
+	}
+	if len(client.filter.DXCallsigns) != 0 {
+		t.Fatalf("expected DXCALL/OFF to clear patterns")
+	}
+
+	client.filter.AddDECallsignPattern("W1*")
+	resp, handled = engine.Handle(client, "SET/FILTER DECALL/OFF")
+	if !handled || !strings.Contains(strings.ToLower(resp), "cleared") {
+		t.Fatalf("expected DECALL/OFF to clear patterns, got handled=%v resp=%q", handled, resp)
+	}
+	if len(client.filter.DECallsigns) != 0 {
+		t.Fatalf("expected DECALL/OFF to clear patterns")
 	}
 }
 

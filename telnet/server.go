@@ -416,7 +416,7 @@ const (
 )
 
 const (
-	passFilterUsageMsg      = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern> | PASS DECALL <pattern> | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
+	passFilterUsageMsg      = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern>[,<pattern>...] | PASS DECALL <pattern>[,<pattern>...] | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; clears block-all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
 	rejectFilterUsageMsg    = "Usage: REJECT <type> ...\nREJECT ALL | REJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER> | REJECT DXCALL (clears all patterns; args ignored) | REJECT DECALL (clears all patterns; args ignored) | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; ALL resets to defaults). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
 	unknownPassTypeMsg      = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 	unknownRejectTypeMsg    = "Unknown filter type. Use: ALL, BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
@@ -1364,12 +1364,27 @@ func injectGlyphs(base string, glyph string) string {
 	if pos >= len(b) {
 		return base
 	}
+	asciiGlyph := firstPrintableASCIIOrQuestion(glyph)
 	// Ensure a single space separates any comment text from the glyph.
 	if pos-1 >= 0 {
 		b[pos-1] = ' '
 	}
-	b[pos] = glyph[0]
+	b[pos] = asciiGlyph
 	return string(b)
+}
+
+// Purpose: Return the first printable ASCII byte or '?' for non-ASCII.
+// Key aspects: Enforces ASCII-only telnet output for glyph injection.
+// Upstream: injectGlyphs.
+// Downstream: None.
+func firstPrintableASCIIOrQuestion(s string) byte {
+	for _, r := range s {
+		if r >= 0x20 && r <= 0x7e {
+			return byte(r)
+		}
+		return '?'
+	}
+	return '?'
 }
 
 // applyWelcomeTokens remains for compatibility; it now delegates to the full token replacer.

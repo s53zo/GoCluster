@@ -163,13 +163,62 @@ func TestHelpPerDialect(t *testing.T) {
 	p := NewProcessor(nil, nil, nil, nil, nil, nil)
 
 	classic := p.ProcessCommandForClient("HELP", "", "", nil, "classic")
-	if !strings.Contains(classic, "PASS BAND") || !strings.Contains(classic, "RESET FILTER") || !strings.Contains(classic, "Current dialect: GO") {
+	if !strings.Contains(classic, "PASS BAND") || !strings.Contains(classic, "SHOW DX") || !strings.Contains(classic, "Current dialect: GO") {
 		t.Fatalf("classic help missing expected content: %q", classic)
 	}
 
 	cc := p.ProcessCommandForClient("HELP", "", "", nil, "cc")
-	if !strings.Contains(strings.ToUpper(cc), "SET/ANN") || !strings.Contains(strings.ToUpper(cc), "SET/NOFILTER") || !strings.Contains(strings.ToUpper(cc), "RESET FILTER") {
+	if !strings.Contains(strings.ToUpper(cc), "SET/ANN") || !strings.Contains(strings.ToUpper(cc), "SHOW/DX") || !strings.Contains(strings.ToUpper(cc), "RESET FILTER") {
 		t.Fatalf("cc help missing cc aliases: %q", cc)
+	}
+}
+
+func TestShowDXDialectVariants(t *testing.T) {
+	p := NewProcessor(nil, nil, nil, nil, nil, nil)
+
+	resp := p.ProcessCommandForClient("SHOW DX", "", "", nil, "go")
+	if strings.Contains(resp, "Unknown command") {
+		t.Fatalf("expected SHOW DX accepted for go dialect, got %q", resp)
+	}
+
+	resp = p.ProcessCommandForClient("SHOW/DX", "", "", nil, "cc")
+	if strings.Contains(resp, "Unknown command") {
+		t.Fatalf("expected SHOW/DX accepted for cc dialect, got %q", resp)
+	}
+
+	resp = p.ProcessCommandForClient("SH/DX 5", "", "", nil, "cc")
+	if strings.Contains(resp, "Unknown command") {
+		t.Fatalf("expected SH/DX accepted for cc dialect, got %q", resp)
+	}
+
+	resp = p.ProcessCommandForClient("SHOW/DX", "", "", nil, "go")
+	if !strings.Contains(resp, "SHOW DX") {
+		t.Fatalf("expected go dialect to reject SHOW/DX with guidance, got %q", resp)
+	}
+
+	resp = p.ProcessCommandForClient("SHOW DX", "", "", nil, "cc")
+	if !strings.Contains(resp, "SHOW/DX") {
+		t.Fatalf("expected cc dialect to reject SHOW DX with guidance, got %q", resp)
+	}
+}
+
+func TestHelpLineWidth(t *testing.T) {
+	p := NewProcessor(nil, nil, nil, nil, nil, nil)
+	helps := []string{
+		p.ProcessCommandForClient("HELP", "", "", nil, "classic"),
+		p.ProcessCommandForClient("HELP", "", "", nil, "cc"),
+	}
+	for _, help := range helps {
+		lines := strings.Split(help, "\n")
+		for _, line := range lines {
+			line = strings.TrimRight(line, "\r")
+			if line == "" {
+				continue
+			}
+			if len(line) > 78 {
+				t.Fatalf("help line exceeds 78 chars: %q", line)
+			}
+		}
 	}
 }
 
