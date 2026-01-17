@@ -258,6 +258,9 @@ func main() {
 		log.Fatalf("Error loading config: %v", err)
 	}
 	log.Printf("Loaded configuration from %s", configSource)
+	if err := spot.SetDXClusterLineLength(cfg.Telnet.OutputLineLength); err != nil {
+		log.Fatalf("Invalid telnet output line length: %v", err)
+	}
 
 	// Load path reliability config from dedicated file in the config directory.
 	pathCfgPath := filepath.Join(configSource, pathReliabilityConfigFile)

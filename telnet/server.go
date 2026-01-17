@@ -146,6 +146,7 @@ type Client struct {
 	gridCell     pathreliability.CellID // Cached cell for path reliability
 	noiseClass   string                 // Noise class token (e.g., QUIET, URBAN)
 	noisePenalty float64                // dB penalty applied DX->user
+	skipNextEOL  bool                   // Consume a single LF/NUL after CR (RFC 854 compliance)
 
 	// filterMu guards filter, which is read by telnet broadcast workers while the
 	// client session goroutine mutates it in response to PASS/REJECT commands.
@@ -1354,19 +1355,18 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 }
 
 func injectGlyphs(base string, glyph string) string {
-	if len(base) < 66 || len(glyph) < 1 {
+	layout := spot.CurrentDXClusterLayout()
+	if layout.LineLength <= 0 || len(glyph) < 1 || len(base) < layout.LineLength {
+		return base
+	}
+	// Glyph column is anchored to the configured tail layout.
+	pos := layout.GlyphColumn - 1
+	if pos < 0 || pos >= len(base) {
 		return base
 	}
 	b := []byte(base)
-	// Place the glyph at column 65 (0-based index 64) so there is exactly one
-	// space (column 66) before the grid starts at column 67.
-	pos := 64
-	if pos >= len(b) {
-		return base
-	}
 	asciiGlyph := firstPrintableASCIIOrQuestion(glyph)
-	// Ensure a single space separates any comment text from the glyph.
-	if pos-1 >= 0 {
+	if pos-1 >= 0 && pos-1 < len(b) {
 		b[pos-1] = ' '
 	}
 	b[pos] = asciiGlyph
@@ -1727,10 +1727,10 @@ func (c *Client) Send(message string) error {
 //     character is immediately rejected, logged, and returned as an error so
 //     the caller can tear down the session before state is mutated.
 //
-// The CRLF terminator is always allowed: '\r' is skipped and '\n' ends the
-// input. Editing controls are handled inline: BS/DEL remove one byte, Ctrl+U
-// clears the line, and Ctrl+W removes the last word. maxLen is measured in
-// bytes because telnet input is ASCII-oriented.
+// The CRLF terminator is always allowed: '\r' ends the line and a following
+// '\n' (or NUL) is consumed per RFC 854. Editing controls are handled inline:
+// BS/DEL remove one byte, Ctrl+U clears the line, and Ctrl+W removes the last
+// word. maxLen is measured in bytes because telnet input is ASCII-oriented.
 func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard, allowConfidence, allowDot bool) (string, error) {
 	if maxLen <= 0 {
 		maxLen = defaultCommandLineLimit
@@ -1747,6 +1747,14 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 			return "", err
 		}
 
+		// Consume the LF/NUL byte that may follow a CR terminator (RFC 854).
+		if c.skipNextEOL {
+			c.skipNextEOL = false
+			if b == '\n' || b == 0x00 {
+				continue
+			}
+		}
+
 		// Always consume telnet IAC sequences so negotiation bytes never reach
 		// the input validator. This keeps behavior consistent across transports.
 		if b == IAC {
@@ -1756,7 +1764,7 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 			continue
 		}
 
-		// End of line once LF is observed (CR was already skipped).
+		// End of line once LF is observed.
 		if b == '\n' {
 			if c.echoInput {
 				_, _ = c.writer.WriteString("\r\n")
@@ -1765,7 +1773,12 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 			break
 		}
 		if b == '\r' {
-			continue
+			if c.echoInput {
+				_, _ = c.writer.WriteString("\r\n")
+				_ = c.writer.Flush()
+			}
+			c.skipNextEOL = true
+			break
 		}
 
 		switch b {

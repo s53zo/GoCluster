@@ -7,6 +7,17 @@ import (
 	"time"
 )
 
+func setDXClusterLineLength(t *testing.T, lineLength int) {
+	t.Helper()
+	prev := CurrentDXClusterLayout()
+	if err := SetDXClusterLineLength(lineLength); err != nil {
+		t.Fatalf("set line length: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = SetDXClusterLineLength(prev.LineLength)
+	})
+}
+
 func TestNewSpotIsHumanByDefault(t *testing.T) {
 	dx := "W1ABC"
 	de := "K1XYZ"
@@ -264,6 +275,7 @@ func TestFormatDXClusterAlignmentNoConfidence(t *testing.T) {
 	}
 
 	got := s.FormatDXCluster()
+	layout := CurrentDXClusterLayout()
 
 	const freqStr = "7009.5"
 	freqIdx := strings.Index(got, freqStr)
@@ -281,13 +293,13 @@ func TestFormatDXClusterAlignmentNoConfidence(t *testing.T) {
 	}
 
 	timeIdx := strings.LastIndex(got, "0615Z")
-	if timeIdx != 73 {
-		t.Fatalf("expected time to start at 0-based index 73 (1-based column 74), got %d in %q", timeIdx, got)
+	if timeIdx != layout.TimeColumn-1 {
+		t.Fatalf("expected time to start at 0-based index %d (1-based column %d), got %d in %q", layout.TimeColumn-1, layout.TimeColumn, timeIdx, got)
 	}
 
 	gridIdx := strings.LastIndex(got, "FN20")
-	if gridIdx != 66 {
-		t.Fatalf("expected grid to start at 0-based index 66 (1-based column 67), got %d in %q", gridIdx, got)
+	if gridIdx != layout.GridColumn-1 {
+		t.Fatalf("expected grid to start at 0-based index %d (1-based column %d), got %d in %q", layout.GridColumn-1, layout.GridColumn, gridIdx, got)
 	}
 }
 
@@ -308,6 +320,7 @@ func TestFormatDXClusterAlignmentWithConfidence(t *testing.T) {
 	}
 
 	got := s.FormatDXCluster()
+	layout := CurrentDXClusterLayout()
 
 	const freqStr = "7014.0"
 	freqIdx := strings.Index(got, freqStr)
@@ -325,19 +338,57 @@ func TestFormatDXClusterAlignmentWithConfidence(t *testing.T) {
 	}
 
 	timeIdx := strings.LastIndex(got, "0454Z")
-	if timeIdx != 73 {
-		t.Fatalf("expected time to start at 0-based index 73 (1-based column 74), got %d in %q", timeIdx, got)
+	if timeIdx != layout.TimeColumn-1 {
+		t.Fatalf("expected time to start at 0-based index %d (1-based column %d), got %d in %q", layout.TimeColumn-1, layout.TimeColumn, timeIdx, got)
 	}
 
 	confIdx := strings.LastIndex(got, s.Confidence)
-	expectedConfIdx := 71
+	expectedConfIdx := layout.ConfidenceColumn - 1
 	if confIdx != expectedConfIdx {
-		t.Fatalf("expected confidence to start at 0-based index %d (1-based column %d), got %d in %q", expectedConfIdx, expectedConfIdx+1, confIdx, got)
+		t.Fatalf("expected confidence to start at 0-based index %d (1-based column %d), got %d in %q", expectedConfIdx, layout.ConfidenceColumn, confIdx, got)
 	}
 
 	gridIdx := strings.LastIndex(got, "FN20")
-	if gridIdx != 66 {
-		t.Fatalf("expected grid to start at 0-based index 66 (1-based column 67), got %d in %q", gridIdx, got)
+	if gridIdx != layout.GridColumn-1 {
+		t.Fatalf("expected grid to start at 0-based index %d (1-based column %d), got %d in %q", layout.GridColumn-1, layout.GridColumn, gridIdx, got)
+	}
+}
+
+func TestFormatDXClusterRespectsLineLength(t *testing.T) {
+	setDXClusterLineLength(t, 70)
+	s := &Spot{
+		DXCall:     "KE0UI",
+		DECall:     "W2NAF",
+		Frequency:  7014.0,
+		Mode:       "CW",
+		Report:     27,
+		HasReport:  true,
+		Time:       time.Date(2025, time.November, 22, 4, 54, 0, 0, time.UTC),
+		Confidence: "V",
+		DXMetadata: CallMetadata{
+			Grid: "FN20",
+		},
+	}
+
+	got := s.FormatDXCluster()
+	layout := CurrentDXClusterLayout()
+	if len(got) != layout.LineLength {
+		t.Fatalf("expected length %d, got %d: %q", layout.LineLength, len(got), got)
+	}
+	if got[layout.GlyphColumn-1] != ' ' {
+		t.Fatalf("expected glyph column %d to be a space, got %q", layout.GlyphColumn, got[layout.GlyphColumn-1])
+	}
+	gridIdx := strings.LastIndex(got, "FN20")
+	if gridIdx != layout.GridColumn-1 {
+		t.Fatalf("expected grid to start at 0-based index %d (1-based column %d), got %d in %q", layout.GridColumn-1, layout.GridColumn, gridIdx, got)
+	}
+	confIdx := strings.LastIndex(got, "V")
+	if confIdx != layout.ConfidenceColumn-1 {
+		t.Fatalf("expected confidence to start at 0-based index %d (1-based column %d), got %d in %q", layout.ConfidenceColumn-1, layout.ConfidenceColumn, confIdx, got)
+	}
+	timeIdx := strings.LastIndex(got, "0454Z")
+	if timeIdx != layout.TimeColumn-1 {
+		t.Fatalf("expected time to start at 0-based index %d (1-based column %d), got %d in %q", layout.TimeColumn-1, layout.TimeColumn, timeIdx, got)
 	}
 }
 
@@ -357,11 +408,13 @@ func TestFormatDXClusterNonASCIIConfidenceReplaced(t *testing.T) {
 	}
 
 	got := s.FormatDXCluster()
-	if len(got) != 78 {
-		t.Fatalf("expected FormatDXCluster to return 78 chars (CRLF added by telnet), got %d: %q", len(got), got)
+	layout := CurrentDXClusterLayout()
+	if len(got) != layout.LineLength {
+		t.Fatalf("expected FormatDXCluster to return %d chars (CRLF added by telnet), got %d: %q", layout.LineLength, len(got), got)
 	}
-	if got[71] != '?' {
-		t.Fatalf("expected non-ASCII confidence to be replaced with '?', got %q in %q", got[71], got)
+	confIdx := layout.ConfidenceColumn - 1
+	if got[confIdx] != '?' {
+		t.Fatalf("expected non-ASCII confidence to be replaced with '?', got %q in %q", got[confIdx], got)
 	}
 }
 
@@ -382,8 +435,9 @@ func TestFormatDXClusterTruncatesCommentAndKeepsTailFixed(t *testing.T) {
 	}
 
 	got := s.FormatDXCluster()
-	if len(got) != 78 {
-		t.Fatalf("expected FormatDXCluster to return 78 chars (CRLF added by telnet), got %d: %q", len(got), got)
+	layout := CurrentDXClusterLayout()
+	if len(got) != layout.LineLength {
+		t.Fatalf("expected FormatDXCluster to return %d chars (CRLF added by telnet), got %d: %q", layout.LineLength, len(got), got)
 	}
 
 	modeIdx := strings.Index(got, "CW")
@@ -399,18 +453,18 @@ func TestFormatDXClusterTruncatesCommentAndKeepsTailFixed(t *testing.T) {
 	}
 
 	gridIdx := strings.LastIndex(got, "EM96")
-	if gridIdx != 66 {
-		t.Fatalf("expected grid to start at 0-based index 66 (1-based column 67), got %d in %q", gridIdx, got)
+	if gridIdx != layout.GridColumn-1 {
+		t.Fatalf("expected grid to start at 0-based index %d (1-based column %d), got %d in %q", layout.GridColumn-1, layout.GridColumn, gridIdx, got)
 	}
 
 	confIdx := strings.LastIndex(got, "S")
-	if confIdx != 71 {
-		t.Fatalf("expected confidence to start at 0-based index 71 (1-based column 72), got %d in %q", confIdx, got)
+	if confIdx != layout.ConfidenceColumn-1 {
+		t.Fatalf("expected confidence to start at 0-based index %d (1-based column %d), got %d in %q", layout.ConfidenceColumn-1, layout.ConfidenceColumn, confIdx, got)
 	}
 
 	timeIdx := strings.LastIndex(got, "0304Z")
-	if timeIdx != 73 {
-		t.Fatalf("expected time to start at 0-based index 73 (1-based column 74), got %d in %q", timeIdx, got)
+	if timeIdx != layout.TimeColumn-1 {
+		t.Fatalf("expected time to start at 0-based index %d (1-based column %d), got %d in %q", layout.TimeColumn-1, layout.TimeColumn, timeIdx, got)
 	}
 }
 
@@ -431,24 +485,25 @@ func TestFormatDXClusterSanitizesTabsInComment(t *testing.T) {
 	}
 
 	got := s.FormatDXCluster()
-	if len(got) != 78 {
-		t.Fatalf("expected FormatDXCluster to return 78 chars (CRLF added by telnet), got %d: %q", len(got), got)
+	layout := CurrentDXClusterLayout()
+	if len(got) != layout.LineLength {
+		t.Fatalf("expected FormatDXCluster to return %d chars (CRLF added by telnet), got %d: %q", layout.LineLength, len(got), got)
 	}
 	if strings.Contains(got, "\t") {
 		t.Fatalf("expected tab characters to be sanitized from output, got %q", got)
 	}
 
 	gridIdx := strings.LastIndex(got, "EM96")
-	if gridIdx != 66 {
-		t.Fatalf("expected grid to start at 0-based index 66 (1-based column 67), got %d in %q", gridIdx, got)
+	if gridIdx != layout.GridColumn-1 {
+		t.Fatalf("expected grid to start at 0-based index %d (1-based column %d), got %d in %q", layout.GridColumn-1, layout.GridColumn, gridIdx, got)
 	}
 	confIdx := strings.LastIndex(got, "S")
-	if confIdx != 71 {
-		t.Fatalf("expected confidence to start at 0-based index 71 (1-based column 72), got %d in %q", confIdx, got)
+	if confIdx != layout.ConfidenceColumn-1 {
+		t.Fatalf("expected confidence to start at 0-based index %d (1-based column %d), got %d in %q", layout.ConfidenceColumn-1, layout.ConfidenceColumn, confIdx, got)
 	}
 	timeIdx := strings.LastIndex(got, "0304Z")
-	if timeIdx != 73 {
-		t.Fatalf("expected time to start at 0-based index 73 (1-based column 74), got %d in %q", timeIdx, got)
+	if timeIdx != layout.TimeColumn-1 {
+		t.Fatalf("expected time to start at 0-based index %d (1-based column %d), got %d in %q", layout.TimeColumn-1, layout.TimeColumn, timeIdx, got)
 	}
 }
 
@@ -469,24 +524,25 @@ func TestFormatDXClusterSanitizesNewlinesInComment(t *testing.T) {
 	}
 
 	got := s.FormatDXCluster()
-	if len(got) != 78 {
-		t.Fatalf("expected FormatDXCluster to return 78 chars (CRLF added by telnet), got %d: %q", len(got), got)
+	layout := CurrentDXClusterLayout()
+	if len(got) != layout.LineLength {
+		t.Fatalf("expected FormatDXCluster to return %d chars (CRLF added by telnet), got %d: %q", layout.LineLength, len(got), got)
 	}
 	if strings.ContainsAny(got, "\r\n") {
 		t.Fatalf("expected newline characters to be sanitized from output, got %q", got)
 	}
 
 	gridIdx := strings.LastIndex(got, "EM96")
-	if gridIdx != 66 {
-		t.Fatalf("expected grid to start at 0-based index 66 (1-based column 67), got %d in %q", gridIdx, got)
+	if gridIdx != layout.GridColumn-1 {
+		t.Fatalf("expected grid to start at 0-based index %d (1-based column %d), got %d in %q", layout.GridColumn-1, layout.GridColumn, gridIdx, got)
 	}
 	confIdx := strings.LastIndex(got, "S")
-	if confIdx != 71 {
-		t.Fatalf("expected confidence to start at 0-based index 71 (1-based column 72), got %d in %q", confIdx, got)
+	if confIdx != layout.ConfidenceColumn-1 {
+		t.Fatalf("expected confidence to start at 0-based index %d (1-based column %d), got %d in %q", layout.ConfidenceColumn-1, layout.ConfidenceColumn, confIdx, got)
 	}
 	timeIdx := strings.LastIndex(got, "0304Z")
-	if timeIdx != 73 {
-		t.Fatalf("expected time to start at 0-based index 73 (1-based column 74), got %d in %q", timeIdx, got)
+	if timeIdx != layout.TimeColumn-1 {
+		t.Fatalf("expected time to start at 0-based index %d (1-based column %d), got %d in %q", layout.TimeColumn-1, layout.TimeColumn, timeIdx, got)
 	}
 }
 
@@ -507,15 +563,16 @@ func TestFormatDXClusterLeavesSpaceBeforeGrid(t *testing.T) {
 	}
 
 	got := s.FormatDXCluster()
-	if len(got) != 78 {
-		t.Fatalf("expected FormatDXCluster to return 78 chars (CRLF added by telnet), got %d: %q", len(got), got)
+	layout := CurrentDXClusterLayout()
+	if len(got) != layout.LineLength {
+		t.Fatalf("expected FormatDXCluster to return %d chars (CRLF added by telnet), got %d: %q", layout.LineLength, len(got), got)
 	}
 	gridIdx := strings.LastIndex(got, "DM04")
-	if gridIdx != 66 {
-		t.Fatalf("expected grid to start at 0-based index 66 (1-based column 67), got %d in %q", gridIdx, got)
+	if gridIdx != layout.GridColumn-1 {
+		t.Fatalf("expected grid to start at 0-based index %d (1-based column %d), got %d in %q", layout.GridColumn-1, layout.GridColumn, gridIdx, got)
 	}
-	if got[65] != ' ' {
-		t.Fatalf("expected at least one space between comment and grid (byte 65), got %q in %q", got[65], got)
+	if got[gridIdx-1] != ' ' {
+		t.Fatalf("expected at least one space between comment and grid (byte %d), got %q in %q", gridIdx-1, got[gridIdx-1], got)
 	}
 }
 

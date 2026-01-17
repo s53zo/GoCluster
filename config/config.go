@@ -167,6 +167,9 @@ type TelnetConfig struct {
 	// CommandLineLimit bounds how many bytes post-login commands may include.
 	// Raising this can help workflows that need larger filter strings.
 	CommandLineLimit int `yaml:"command_line_limit"`
+	// OutputLineLength controls the DX-cluster output line length (no CRLF).
+	// Length uses 1-based columns and must be >= 65.
+	OutputLineLength int `yaml:"output_line_length"`
 }
 
 // ReputationConfig controls the passwordless telnet reputation gate.
@@ -1147,6 +1150,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Telnet.CommandLineLimit <= 0 {
 		cfg.Telnet.CommandLineLimit = 128
+	}
+	if cfg.Telnet.OutputLineLength <= 0 {
+		cfg.Telnet.OutputLineLength = 78
+	}
+	if cfg.Telnet.OutputLineLength < 65 {
+		return nil, fmt.Errorf("invalid telnet.output_line_length %d (minimum 65)", cfg.Telnet.OutputLineLength)
 	}
 	if transport, ok := normalizeTelnetTransport(cfg.Telnet.Transport); ok {
 		cfg.Telnet.Transport = transport

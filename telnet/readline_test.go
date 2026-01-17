@@ -105,6 +105,32 @@ func TestReadLineIgnoresEscapedIAC(t *testing.T) {
 	}
 }
 
+func TestReadLineHandlesCRLFAndCRNUL(t *testing.T) {
+	t.Run("crlf", func(t *testing.T) {
+		input := []byte{'S', '5', '3', 'Z', 'O', '\r', '\n', 'S', '5', '3', 'M', '\n'}
+		lines, _ := readLinesWithEchoBytes(t, input, false, 2)
+		if lines[0] != "S53ZO" || lines[1] != "S53M" {
+			t.Fatalf("expected lines %q and %q, got %q", "S53ZO", "S53M", lines)
+		}
+	})
+
+	t.Run("crnul", func(t *testing.T) {
+		input := []byte{'S', '5', '3', 'Z', 'O', '\r', 0x00, 'S', '5', '3', 'M', '\n'}
+		lines, _ := readLinesWithEchoBytes(t, input, false, 2)
+		if lines[0] != "S53ZO" || lines[1] != "S53M" {
+			t.Fatalf("expected lines %q and %q, got %q", "S53ZO", "S53M", lines)
+		}
+	})
+}
+
+func TestReadLineCRThenDataStartsNextLine(t *testing.T) {
+	input := []byte{'A', '\r', 'B', '\n'}
+	lines, _ := readLinesWithEchoBytes(t, input, false, 2)
+	if lines[0] != "A" || lines[1] != "B" {
+		t.Fatalf("expected lines %q and %q, got %q", "A", "B", lines)
+	}
+}
+
 func readLineWithEcho(t *testing.T, input string, echo bool) (string, string) {
 	t.Helper()
 	return readLineWithEchoBytes(t, []byte(input), echo)
@@ -125,6 +151,27 @@ func readLineWithEchoBytes(t *testing.T, input []byte, echo bool) (string, strin
 		t.Fatalf("ReadLine failed: %v", err)
 	}
 	return line, out.String()
+}
+
+func readLinesWithEchoBytes(t *testing.T, input []byte, echo bool, count int) ([]string, string) {
+	t.Helper()
+	reader := bufio.NewReader(bytes.NewBuffer(input))
+	var out bytes.Buffer
+	writer := bufio.NewWriter(&out)
+	client := &Client{
+		reader:    reader,
+		writer:    writer,
+		echoInput: echo,
+	}
+	lines := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		line, err := client.ReadLine(128, "command", true, true, true, true)
+		if err != nil {
+			t.Fatalf("ReadLine failed: %v", err)
+		}
+		lines = append(lines, line)
+	}
+	return lines, out.String()
 }
 
 func stringsRepeat(s string, count int) string {

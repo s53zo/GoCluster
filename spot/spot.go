@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zeebo/xxh3"
@@ -229,18 +230,102 @@ func writeFixedNormalizedCall(dst []byte, call string) {
 //
 // The layout is intentionally fixed-width so telnet clients can treat the line
 // as a stable "record":
-//   - `Spot.FormatDXCluster` returns exactly 78 characters (no CRLF).
+//   - `Spot.FormatDXCluster` returns exactly the configured line length (no CRLF).
 //   - The telnet layer appends '\n' and `telnet.Client.Send` normalizes it to
-//     CRLF so clients receive 80 bytes per spot line (78 chars + CRLF).
+//     CRLF so clients receive (line length + CRLF) bytes per spot line.
 const (
 	freqFieldWidthToEnd = 25 // frequency ends at internal index 24 (1-based column 25)
 	dxCallFieldWidth    = 8  // DX callsign is padded to at least 8 characters
 	commentColumn       = 39 // mode starts at internal index 39 (1-based column 40)
-	timeColumnStart     = 73 // time starts at internal index 73 (1-based column 74)
 	minGapToSymbol      = 2  // minimum spaces before confidence symbol
 )
 
 const dxDisplayMaxLen = 10
+
+const (
+	dxClusterDefaultLineLength = 78
+	dxClusterMinLineLength     = 65
+	dxClusterTailLength        = 15
+)
+
+type dxClusterLayout struct {
+	lineLength   int
+	tailStartIdx int
+	glyphIdx     int
+	gridIdx      int
+	confIdx      int
+	timeIdx      int
+}
+
+var dxClusterLayoutValue atomic.Value
+
+func init() {
+	layout, err := newDXClusterLayout(dxClusterDefaultLineLength)
+	if err != nil {
+		panic(err)
+	}
+	dxClusterLayoutValue.Store(layout)
+}
+
+// DXClusterLayout exposes the current DX cluster line layout in 1-based columns.
+type DXClusterLayout struct {
+	LineLength       int
+	TailStartColumn  int
+	GlyphColumn      int
+	GridColumn       int
+	ConfidenceColumn int
+	TimeColumn       int
+}
+
+// SetDXClusterLineLength sets the DX cluster line length for formatting.
+// Length excludes CRLF and must be >= dxClusterMinLineLength.
+func SetDXClusterLineLength(lineLength int) error {
+	layout, err := newDXClusterLayout(lineLength)
+	if err != nil {
+		return err
+	}
+	dxClusterLayoutValue.Store(layout)
+	return nil
+}
+
+// CurrentDXClusterLayout reports the active layout using 1-based columns.
+func CurrentDXClusterLayout() DXClusterLayout {
+	layout := currentDXClusterLayout()
+	return DXClusterLayout{
+		LineLength:       layout.lineLength,
+		TailStartColumn:  layout.tailStartIdx + 1,
+		GlyphColumn:      layout.glyphIdx + 1,
+		GridColumn:       layout.gridIdx + 1,
+		ConfidenceColumn: layout.confIdx + 1,
+		TimeColumn:       layout.timeIdx + 1,
+	}
+}
+
+func newDXClusterLayout(lineLength int) (dxClusterLayout, error) {
+	if lineLength <= 0 {
+		lineLength = dxClusterDefaultLineLength
+	}
+	if lineLength < dxClusterMinLineLength {
+		return dxClusterLayout{}, fmt.Errorf("dx cluster line length %d is below minimum %d", lineLength, dxClusterMinLineLength)
+	}
+	tailStartIdx := lineLength - dxClusterTailLength
+	return dxClusterLayout{
+		lineLength:   lineLength,
+		tailStartIdx: tailStartIdx,
+		glyphIdx:     tailStartIdx + 1,
+		gridIdx:      tailStartIdx + 3,
+		confIdx:      tailStartIdx + 8,
+		timeIdx:      tailStartIdx + 10,
+	}, nil
+}
+
+func currentDXClusterLayout() dxClusterLayout {
+	if value := dxClusterLayoutValue.Load(); value != nil {
+		return value.(dxClusterLayout)
+	}
+	layout, _ := newDXClusterLayout(dxClusterDefaultLineLength)
+	return layout
+}
 
 type stringBuilder struct {
 	buf []byte
@@ -409,9 +494,8 @@ func displayDXCall(call string) string {
 // Downstream: formatZoneGridComment, writeSpaces, and stringBuilder helpers.
 // FormatDXCluster formats the spot as a fixed-width DX-cluster line.
 //
-// The returned string is always exactly 78 characters (no CRLF). Telnet output
-// appends '\n' and `telnet.Client.Send` normalizes to CRLF, so clients see 80
-// bytes on the wire (78 chars + CRLF).
+// The returned string is always exactly the configured line length (no CRLF).
+// Telnet output appends '\n' and `telnet.Client.Send` normalizes to CRLF.
 //
 // Column numbering below is 1-based (column 1 is the 'D' in "DX de "):
 //
@@ -420,9 +504,7 @@ func displayDXCall(call string) string {
 //	25:    Frequency ends at column 25 (right-aligned within the left padding)
 //	28-?:  DX callsign (left-aligned; padded to 8 chars when shorter; display truncates to 10)
 //	40:    Mode starts at column 40
-//	67-70: DX grid (4 chars; blank if unknown)
-//	72:    Confidence glyph (1 char; blank if unknown; non-ASCII replaced with '?')
-//	74-78: Time in HHMMZ (Z ends at column 78)
+//	Tail:  [space][prop glyph][space][grid4][space][conf][space][time5], anchored to line end
 //
 // Anything between Mode and the fixed tail is treated as a free-form comment
 // and is truncated so it can never push the grid/confidence/time columns.
@@ -433,6 +515,7 @@ func displayDXCall(call string) string {
 //   - All other modes: '+' is shown for non-negative values (e.g., "FT8 +12 dB")
 func (s *Spot) FormatDXCluster() string {
 	s.EnsureNormalized()
+	layout := currentDXClusterLayout()
 	// Purpose: Populate s.formatted once for reuse on repeat formatting.
 	// Key aspects: Uses sync.Once to avoid redundant allocations.
 	// Upstream: FormatDXCluster.
@@ -444,12 +527,8 @@ func (s *Spot) FormatDXCluster() string {
 		freqStr := strconv.FormatFloat(s.Frequency, 'f', 1, 64)
 		commentPayload := s.formatZoneGridComment()
 
-		const (
-			// tailStartIdx is the internal byte index where the fixed right-side
-			// tail begins (1-based column 67).
-			tailStartIdx = 66
-			gridWidth    = 4
-		)
+		tailStartIdx := layout.tailStartIdx
+		gridWidth := 4
 
 		// Keep the left side stable by truncating overly-long spotter calls so
 		// frequency and subsequent fields stay aligned.
@@ -473,14 +552,11 @@ func (s *Spot) FormatDXCluster() string {
 		}
 
 		// Estimate final length to reduce builder growth.
-		estimatedLen := timeColumnStart + len(timeStr) + len(s.Confidence) + 4
+		estimatedLen := layout.lineLength
 		if estimatedLen < len(prefix) {
 			estimatedLen = len(prefix)
 		}
 		var b stringBuilder
-		if estimatedLen < 80 {
-			estimatedLen = 80 // typical DX cluster line length; helps avoid Grow reallocations
-		}
 		b.Grow(estimatedLen)
 
 		b.AppendString(prefix)
@@ -542,13 +618,6 @@ func (s *Spot) FormatDXCluster() string {
 			}
 		}
 
-		// Fixed tail layout uses the following 1-based columns:
-		// - Grid: 67-70
-		// - Space: 71
-		// - Confidence: 72
-		// - Space: 73
-		// - Time: 74-78 (HHMMZ; 'Z' at column 78)
-
 		gridLabel := formatGridLabel(s.DXMetadata.Grid)
 		if gridLabel == "" {
 			gridLabel = strings.Repeat(" ", gridWidth)
@@ -563,21 +632,21 @@ func (s *Spot) FormatDXCluster() string {
 			confLabel = firstPrintableASCIIOrQuestion(trimmed)
 		}
 
-		// Ensure the last comment column (1-based col 66, 0-based idx 65) is a
-		// space separator before the fixed tail starts at column 67.
-		separatorIdx := tailStartIdx - 1
-		if b.Len() > separatorIdx {
-			b.Truncate(separatorIdx)
-		} else if b.Len() < separatorIdx {
-			writeSpaces(&b, separatorIdx-b.Len())
+		// Ensure the last comment column leaves room for the fixed tail.
+		if b.Len() > tailStartIdx {
+			b.Truncate(tailStartIdx)
+		} else if b.Len() < tailStartIdx {
+			writeSpaces(&b, tailStartIdx-b.Len())
 		}
-		b.AppendByte(' ') // col 66
+		b.AppendByte(' ') // space before glyph
+		b.AppendByte(' ') // glyph placeholder
+		b.AppendByte(' ') // space before grid
 
-		b.AppendString(gridLabel) // cols 67-70
-		b.AppendByte(' ')         // col 71
-		b.AppendString(confLabel) // col 72 (or space)
-		b.AppendByte(' ')         // col 73
-		b.AppendString(timeStr)   // cols 74-78 (Z ends at 78)
+		b.AppendString(gridLabel)
+		b.AppendByte(' ')
+		b.AppendString(confLabel)
+		b.AppendByte(' ')
+		b.AppendString(timeStr)
 
 		s.formatted = b.String()
 	})
