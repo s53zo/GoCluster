@@ -7,12 +7,13 @@ import (
 )
 
 func TestGridDBCheckOnMissDefaultsTrue(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "grid.yaml")
 	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := Load(path)
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -25,12 +26,13 @@ func TestGridDBCheckOnMissDefaultsTrue(t *testing.T) {
 }
 
 func TestGridDBCheckOnMissAllowsFalse(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "grid.yaml")
 	if err := os.WriteFile(path, []byte("grid_db_check_on_miss: false\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := Load(path)
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}

@@ -67,6 +67,17 @@ func TestReadLineNoEchoSkipsEraseOutput(t *testing.T) {
 	}
 }
 
+func TestReadLineUppercasesInput(t *testing.T) {
+	input := "dx de lz1v\n"
+	got, echoed := readLineWithEcho(t, input, true)
+	if got != "DX DE LZ1V" {
+		t.Fatalf("expected uppercased line %q, got %q", "DX DE LZ1V", got)
+	}
+	if echoed != "DX DE LZ1V\r\n" {
+		t.Fatalf("expected uppercased echo %q, got %q", "DX DE LZ1V\r\n", echoed)
+	}
+}
+
 func readLineWithEcho(t *testing.T, input string, echo bool) (string, string) {
 	t.Helper()
 	reader := bufio.NewReader(bytes.NewBufferString(input))

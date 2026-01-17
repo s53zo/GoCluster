@@ -59,7 +59,7 @@ import (
 // in real-time. Each client has its own goroutine for handling commands and receiving spots.
 //
 // Fields:
-//   - port: TCP port to listen on (configured via `telnet.port` in `config.yaml`)
+//   - port: TCP port to listen on (configured via `telnet.port` in `data/config/runtime.yaml`)
 //   - welcomeMessage: Initial message sent to connecting clients
 //   - maxConnections: Maximum concurrent client connections (typically 500)
 //   - listener: TCP listener for accepting new connections
@@ -79,6 +79,15 @@ type Server struct {
 	maxConnections    int                         // Maximum concurrent client connections
 	duplicateLoginMsg string                      // Message sent to evicted duplicate session
 	greetingTemplate  string                      // Post-login greeting with placeholders
+	loginPrompt       string                      // Login prompt before callsign entry
+	loginEmptyMessage string                      // Message for empty callsign
+	loginInvalidMsg   string                      // Message for invalid callsign
+	inputTooLongMsg   string                      // Template for input length violations
+	inputInvalidMsg   string                      // Template for invalid character violations
+	dialectWelcomeMsg string                      // Template for dialect welcome line
+	dialectSourceDef  string                      // Label for default dialect source
+	dialectSourcePers string                      // Label for persisted dialect source
+	pathStatusMsg     string                      // Template for path reliability status line
 	clusterCall       string                      // Cluster/node callsign for greeting substitution
 	listener          net.Listener                // TCP listener
 	clients           map[string]*Client          // Map of callsign → Client
@@ -153,21 +162,23 @@ type Client struct {
 // InputValidationError represents a non-fatal ingress violation (length or character guardrails).
 // Returning this error allows the caller to keep the connection open and prompt the user again.
 type InputValidationError struct {
-	reason      string
-	userMessage string
+	reason  string
+	context string
+	kind    inputErrorKind
+	maxLen  int
+	allowed string
 }
 
 func (e *InputValidationError) Error() string {
 	return e.reason
 }
 
-// UserMessage returns the friendly text that should be sent back to the telnet client.
-func (e *InputValidationError) UserMessage() string {
-	if e == nil || strings.TrimSpace(e.userMessage) == "" {
-		return "Input rejected. Please try again."
-	}
-	return e.userMessage
-}
+type inputErrorKind string
+
+const (
+	inputErrorTooLong     inputErrorKind = "too_long"
+	inputErrorInvalidChar inputErrorKind = "invalid_char"
+)
 
 func (c *Client) saveFilter() error {
 	if c == nil || c.filter == nil {
@@ -272,15 +283,50 @@ func (s *Server) handleDialectCommand(client *Client, line string) (string, bool
 	return fmt.Sprintf("Dialect set to %s\n", strings.ToUpper(string(selected))), true
 }
 
-func dialectWelcomeLine(active DialectName, created bool, loadErr error, defaultDialect DialectName) string {
-	source := "default"
+type dialectTemplateData struct {
+	dialect        string
+	source         string
+	defaultDialect string
+}
+
+func formatDialectWelcome(template string, data dialectTemplateData) string {
+	if strings.TrimSpace(template) == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(
+		"<DIALECT>", data.dialect,
+		"<DIALECT_SOURCE>", data.source,
+		"<DIALECT_DEFAULT>", data.defaultDialect,
+	)
+	return replacer.Replace(template)
+}
+
+func (s *Server) dialectSourceLabel(active DialectName, created bool, loadErr error, defaultDialect DialectName) string {
+	source := s.dialectSourceDef
 	if loadErr == nil && !created {
-		source = "persisted"
+		source = s.dialectSourcePers
 	}
 	if active != defaultDialect {
-		source = "persisted"
+		source = s.dialectSourcePers
 	}
-	return fmt.Sprintf("Current dialect: %s (%s). Use DIALECT LIST or DIALECT CC to switch. Type HELP for commands in this dialect.\n", strings.ToUpper(string(active)), source)
+	return source
+}
+
+func (s *Server) formatPathStatusMessage(client *Client) string {
+	if s == nil || client == nil {
+		return ""
+	}
+	template := s.pathStatusMsg
+	if strings.TrimSpace(template) == "" {
+		return ""
+	}
+	grid := strings.TrimSpace(client.grid)
+	noise := strings.TrimSpace(client.noiseClass)
+	replacer := strings.NewReplacer(
+		"<GRID>", grid,
+		"<NOISE>", noise,
+	)
+	return replacer.Replace(template)
 }
 
 // handlePathSettingsCommand processes SET GRID/SET NOISE commands.
@@ -364,7 +410,6 @@ const (
 	defaultBroadcastBatchInterval = 250 * time.Millisecond
 	defaultClientBufferSize       = 128
 	defaultWorkerQueueSize        = 128
-	defaultDuplicateLoginMessage  = "Another login for your callsign connected. This session is being closed (multiple logins are not allowed)."
 	defaultSendDeadline           = 2 * time.Second
 	defaultLoginLineLimit         = 32
 	defaultCommandLineLimit       = 128
@@ -380,29 +425,38 @@ const (
 
 // ServerOptions configures the telnet server instance.
 type ServerOptions struct {
-	Port                   int
-	WelcomeMessage         string
-	DuplicateLoginMsg      string
-	LoginGreeting          string
-	ClusterCall            string
-	MaxConnections         int
-	BroadcastWorkers       int
-	BroadcastQueue         int
-	WorkerQueue            int
-	ClientBuffer           int
-	BroadcastBatchInterval time.Duration
-	KeepaliveSeconds       int
-	SkipHandshake          bool
-	Transport              string
-	EchoMode               string
-	LoginLineLimit         int
-	CommandLineLimit       int
-	ReputationGate         *reputation.Gate
-	PathPredictor          *pathreliability.Predictor
-	PathDisplayEnabled     bool
-	NoiseOffsets           map[string]float64
-	GridLookup             func(string) (string, bool)
-	CTYLookup              func() *cty.CTYDatabase
+	Port                    int
+	WelcomeMessage          string
+	DuplicateLoginMsg       string
+	LoginGreeting           string
+	LoginPrompt             string
+	LoginEmptyMessage       string
+	LoginInvalidMessage     string
+	InputTooLongMessage     string
+	InputInvalidCharMessage string
+	DialectWelcomeMessage   string
+	DialectSourceDefault    string
+	DialectSourcePersisted  string
+	PathStatusMessage       string
+	ClusterCall             string
+	MaxConnections          int
+	BroadcastWorkers        int
+	BroadcastQueue          int
+	WorkerQueue             int
+	ClientBuffer            int
+	BroadcastBatchInterval  time.Duration
+	KeepaliveSeconds        int
+	SkipHandshake           bool
+	Transport               string
+	EchoMode                string
+	LoginLineLimit          int
+	CommandLineLimit        int
+	ReputationGate          *reputation.Gate
+	PathPredictor           *pathreliability.Predictor
+	PathDisplayEnabled      bool
+	NoiseOffsets            map[string]float64
+	GridLookup              func(string) (string, bool)
+	CTYLookup               func() *cty.CTYDatabase
 }
 
 // NewServer creates a new telnet server
@@ -415,6 +469,15 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		maxConnections:    config.MaxConnections,
 		duplicateLoginMsg: config.DuplicateLoginMsg,
 		greetingTemplate:  config.LoginGreeting,
+		loginPrompt:       config.LoginPrompt,
+		loginEmptyMessage: config.LoginEmptyMessage,
+		loginInvalidMsg:   config.LoginInvalidMessage,
+		inputTooLongMsg:   config.InputTooLongMessage,
+		inputInvalidMsg:   config.InputInvalidCharMessage,
+		dialectWelcomeMsg: config.DialectWelcomeMessage,
+		dialectSourceDef:  config.DialectSourceDefault,
+		dialectSourcePers: config.DialectSourcePersisted,
+		pathStatusMsg:     config.PathStatusMessage,
 		clusterCall:       config.ClusterCall,
 		clients:           make(map[string]*Client),
 		shutdown:          make(chan struct{}),
@@ -458,12 +521,6 @@ func normalizeServerOptions(opts ServerOptions) ServerOptions {
 	}
 	if config.BroadcastBatchInterval <= 0 {
 		config.BroadcastBatchInterval = defaultBroadcastBatchInterval
-	}
-	if strings.TrimSpace(config.DuplicateLoginMsg) == "" {
-		config.DuplicateLoginMsg = defaultDuplicateLoginMessage
-	}
-	if strings.TrimSpace(config.LoginGreeting) == "" {
-		config.LoginGreeting = "Hello <CALL>, you are now connected to <CLUSTER>. Type HELP for available commands."
 	}
 	if strings.TrimSpace(config.ClusterCall) == "" {
 		config.ClusterCall = "DXC"
@@ -967,8 +1024,8 @@ func (s *Server) handleClient(conn net.Conn) {
 
 	// Send welcome message with template tokens (uptime, user count, etc.).
 	loginTime := time.Now().UTC()
-	client.Send(applyTemplateTokens(s.welcomeMessage, s.preLoginTemplateData(loginTime)))
-	client.Send("\r\nEnter your callsign:\r\n")
+	s.sendPreLoginMessage(client, s.welcomeMessage, loginTime)
+	s.sendPreLoginMessage(client, s.loginPrompt, loginTime)
 
 	var callsign string
 	for {
@@ -980,8 +1037,10 @@ func (s *Server) handleClient(conn net.Conn) {
 		if err != nil {
 			var inputErr *InputValidationError
 			if errors.As(err, &inputErr) {
-				client.Send(inputErr.UserMessage() + "\n")
-				client.Send("Enter your callsign:\r\n")
+				if msg := s.formatInputValidationMessage(inputErr); strings.TrimSpace(msg) != "" {
+					_ = client.Send(msg)
+				}
+				s.sendPreLoginMessage(client, s.loginPrompt, loginTime)
 				continue
 			}
 			log.Printf("Error reading callsign from %s: %v", address, err)
@@ -990,14 +1049,14 @@ func (s *Server) handleClient(conn net.Conn) {
 
 		line = strings.ToUpper(strings.TrimSpace(line))
 		if line == "" {
-			client.Send("Callsign cannot be empty. Please try again.\n")
-			client.Send("Enter your callsign:\r\n")
+			s.sendPreLoginMessage(client, s.loginEmptyMessage, loginTime)
+			s.sendPreLoginMessage(client, s.loginPrompt, loginTime)
 			continue
 		}
 		normalized := spot.NormalizeCallsign(line)
 		if !spot.IsValidNormalizedCallsign(normalized) {
-			client.Send("Invalid callsign. Please try again.\n")
-			client.Send("Enter your callsign:\r\n")
+			s.sendPreLoginMessage(client, s.loginInvalidMsg, loginTime)
+			s.sendPreLoginMessage(client, s.loginPrompt, loginTime)
 			continue
 		}
 		callsign = normalized
@@ -1058,19 +1117,24 @@ func (s *Server) handleClient(conn net.Conn) {
 	defer s.unregisterClient(client)
 
 	// Send login confirmation
-	greeting := formatGreeting(s.greetingTemplate, s.postLoginTemplateData(loginTime, client, prevLogin, prevIP))
-	if strings.TrimSpace(greeting) == "" {
-		greeting = fmt.Sprintf("Hello %s, you are now connected.", client.callsign)
+	dialectSource := s.dialectSourceLabel(client.dialect, created, err, s.filterEngine.defaultDialect)
+	dialectDefault := strings.ToUpper(string(s.filterEngine.defaultDialect))
+	greeting := formatGreeting(s.greetingTemplate, s.postLoginTemplateData(loginTime, client, prevLogin, prevIP, dialectSource, dialectDefault))
+	if strings.TrimSpace(greeting) != "" {
+		client.Send(greeting)
 	}
-	client.Send(greeting + "\n")
-	client.Send(dialectWelcomeLine(client.dialect, created, err, s.filterEngine.defaultDialect))
+	dialectMsg := formatDialectWelcome(s.dialectWelcomeMsg, dialectTemplateData{
+		dialect:        strings.ToUpper(string(client.dialect)),
+		source:         dialectSource,
+		defaultDialect: dialectDefault,
+	})
+	if strings.TrimSpace(dialectMsg) != "" {
+		client.Send(dialectMsg)
+	}
 	if s.pathPredictor != nil && s.pathDisplay {
-		status := "Path reliability enabled"
-		gridNote := client.grid
-		if gridNote == "" {
-			gridNote = "unset"
+		if msg := s.formatPathStatusMessage(client); strings.TrimSpace(msg) != "" {
+			client.Send(msg)
 		}
-		client.Send(fmt.Sprintf("%s. Grid: %s (SET GRID <grid>), Noise: %s (SET NOISE QUIET|RURAL|SUBURBAN|URBAN)\n", status, gridNote, client.noiseClass))
 	}
 
 	// Start spot sender goroutine
@@ -1085,7 +1149,9 @@ func (s *Server) handleClient(conn net.Conn) {
 		if err != nil {
 			var inputErr *InputValidationError
 			if errors.As(err, &inputErr) {
-				client.Send(inputErr.UserMessage() + "\n")
+				if msg := s.formatInputValidationMessage(inputErr); strings.TrimSpace(msg) != "" {
+					_ = client.Send(msg)
+				}
 				continue
 			}
 			log.Printf("Client %s disconnected: %v", client.callsign, err)
@@ -1195,13 +1261,18 @@ func sendTelnetOption(conn net.Conn, command, option byte) {
 
 // templateData holds contextual values that can be substituted into operator-configured templates.
 type templateData struct {
-	now       time.Time
-	startTime time.Time
-	userCount int
-	callsign  string
-	cluster   string
-	lastLogin time.Time
-	lastIP    string
+	now            time.Time
+	startTime      time.Time
+	userCount      int
+	callsign       string
+	cluster        string
+	lastLogin      time.Time
+	lastIP         string
+	dialect        string
+	dialectSource  string
+	dialectDefault string
+	grid           string
+	noiseClass     string
 }
 
 // formatGreeting replaces placeholders using the provided template data.
@@ -1357,8 +1428,59 @@ func applyTemplateTokens(msg string, data templateData) string {
 		"<USER_COUNT>", userCount,
 		"<LAST_LOGIN>", lastLogin,
 		"<LAST_IP>", lastIP,
+		"<DIALECT>", data.dialect,
+		"<DIALECT_SOURCE>", data.dialectSource,
+		"<DIALECT_DEFAULT>", data.dialectDefault,
+		"<GRID>", data.grid,
+		"<NOISE>", data.noiseClass,
 	)
 	return replacer.Replace(msg)
+}
+
+type inputTemplateData struct {
+	context string
+	maxLen  int
+	allowed string
+}
+
+func applyInputTemplateTokens(msg string, data inputTemplateData) string {
+	if msg == "" {
+		return msg
+	}
+	maxLen := ""
+	if data.maxLen > 0 {
+		maxLen = strconv.Itoa(data.maxLen)
+	}
+	replacer := strings.NewReplacer(
+		"<CONTEXT>", data.context,
+		"<MAX_LEN>", maxLen,
+		"<ALLOWED>", data.allowed,
+	)
+	return replacer.Replace(msg)
+}
+
+func (s *Server) formatInputValidationMessage(err *InputValidationError) string {
+	if s == nil || err == nil {
+		return ""
+	}
+	var template string
+	switch err.kind {
+	case inputErrorTooLong:
+		template = s.inputTooLongMsg
+	case inputErrorInvalidChar:
+		template = s.inputInvalidMsg
+	default:
+		return ""
+	}
+	if strings.TrimSpace(template) == "" {
+		return ""
+	}
+	data := inputTemplateData{
+		context: friendlyContextLabel(err.context),
+		maxLen:  err.maxLen,
+		allowed: err.allowed,
+	}
+	return applyInputTemplateTokens(template, data)
 }
 
 func formatUptime(now, start time.Time) string {
@@ -1383,29 +1505,64 @@ func (s *Server) preLoginTemplateData(now time.Time) templateData {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	dialect := ""
+	defaultDialect := ""
+	if s != nil && s.filterEngine != nil {
+		dialect = strings.ToUpper(string(s.filterEngine.defaultDialect))
+		defaultDialect = strings.ToUpper(string(s.filterEngine.defaultDialect))
+	}
 	return templateData{
-		now:       now,
-		startTime: s.startTime,
-		userCount: s.GetClientCount(),
+		now:            now,
+		startTime:      s.startTime,
+		userCount:      s.GetClientCount(),
+		cluster:        s.clusterCall,
+		dialect:        dialect,
+		dialectSource:  s.dialectSourceDef,
+		dialectDefault: defaultDialect,
 	}
 }
 
-func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin time.Time, prevIP string) templateData {
+func (s *Server) sendPreLoginMessage(client *Client, template string, now time.Time) {
+	if client == nil || s == nil {
+		return
+	}
+	msg := applyTemplateTokens(template, s.preLoginTemplateData(now))
+	if strings.TrimSpace(msg) == "" {
+		return
+	}
+	_ = client.Send(msg)
+}
+
+func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin time.Time, prevIP, dialectSource, dialectDefault string) templateData {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	callsign := ""
+	grid := ""
+	noise := ""
+	dialect := ""
 	if client != nil {
 		callsign = client.callsign
+		grid = strings.TrimSpace(client.grid)
+		if grid == "" {
+			grid = "unset"
+		}
+		noise = strings.TrimSpace(client.noiseClass)
+		dialect = strings.ToUpper(string(client.dialect))
 	}
 	return templateData{
-		now:       now,
-		startTime: s.startTime,
-		userCount: s.GetClientCount(),
-		callsign:  callsign,
-		cluster:   s.clusterCall,
-		lastLogin: prevLogin,
-		lastIP:    prevIP,
+		now:            now,
+		startTime:      s.startTime,
+		userCount:      s.GetClientCount(),
+		callsign:       callsign,
+		cluster:        s.clusterCall,
+		lastLogin:      prevLogin,
+		lastIP:         prevIP,
+		dialect:        dialect,
+		dialectSource:  dialectSource,
+		dialectDefault: dialectDefault,
+		grid:           grid,
+		noiseClass:     noise,
 	}
 }
 
@@ -1456,13 +1613,12 @@ func (s *Server) registerClient(client *Client) {
 
 	if evicted != nil {
 		msg := strings.TrimSpace(s.duplicateLoginMsg)
-		if msg == "" {
-			msg = defaultDuplicateLoginMessage
+		if msg != "" {
+			if !strings.HasSuffix(msg, "\n") {
+				msg += "\n"
+			}
+			_ = evicted.Send(msg)
 		}
-		if !strings.HasSuffix(msg, "\n") {
-			msg += "\n"
-		}
-		_ = evicted.Send(msg)
 		evicted.conn.Close()
 		log.Printf("Evicted existing session for %s due to duplicate login", client.callsign)
 	}
@@ -1632,28 +1788,28 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 
 		if len(line) >= maxLen {
 			c.logRejectedInput(context, fmt.Sprintf("exceeded %d-byte limit", maxLen))
-			return "", newInputValidationError(
-				fmt.Sprintf("%s input exceeds %d-byte limit", context, maxLen),
-				fmt.Sprintf("%s input is too long (maximum %d characters).", friendlyContextLabel(context), maxLen),
-			)
+			allowed := allowedCharacterList(allowComma, allowWildcard, allowConfidence, allowDot)
+			return "", newInputTooLongError(context, maxLen, allowed)
 		}
 		if !isAllowedInputByte(b, allowComma, allowWildcard, allowConfidence, allowDot) {
 			c.logRejectedInput(context, fmt.Sprintf("forbidden byte 0x%02X", b))
-			return "", newInputValidationError(
-				fmt.Sprintf("%s input contains forbidden byte 0x%02X", context, b),
-				fmt.Sprintf("%s input may only contain %s.", friendlyContextLabel(context), allowedCharacterList(allowComma, allowWildcard, allowConfidence, allowDot)),
-			)
+			allowed := allowedCharacterList(allowComma, allowWildcard, allowConfidence, allowDot)
+			return "", newInputInvalidCharError(context, maxLen, allowed, b)
 		}
 
+		normalized := b
+		if normalized >= 'a' && normalized <= 'z' {
+			normalized -= 'a' - 'A'
+		}
 		if c.echoInput {
-			if err := c.writer.WriteByte(b); err != nil {
+			if err := c.writer.WriteByte(normalized); err != nil {
 				return "", err
 			}
 			if err := c.writer.Flush(); err != nil {
 				return "", err
 			}
 		}
-		line = append(line, b)
+		line = append(line, normalized)
 	}
 
 	return string(line), nil
@@ -1689,10 +1845,23 @@ func wordEraseCount(line []byte) int {
 // true, comma is also accepted to preserve legacy comma-delimited filter syntax.
 // allowDot permits '.' for numeric inputs and spot comments. CRLF is handled
 // separately by ReadLine.
-func newInputValidationError(reason, userMessage string) error {
+func newInputTooLongError(context string, maxLen int, allowed string) error {
 	return &InputValidationError{
-		reason:      reason,
-		userMessage: userMessage,
+		reason:  fmt.Sprintf("%s input exceeds %d-byte limit", context, maxLen),
+		context: context,
+		kind:    inputErrorTooLong,
+		maxLen:  maxLen,
+		allowed: allowed,
+	}
+}
+
+func newInputInvalidCharError(context string, maxLen int, allowed string, b byte) error {
+	return &InputValidationError{
+		reason:  fmt.Sprintf("%s input contains forbidden byte 0x%02X", context, b),
+		context: context,
+		kind:    inputErrorInvalidChar,
+		maxLen:  maxLen,
+		allowed: allowed,
 	}
 }
 

@@ -189,7 +189,7 @@ func isStdoutTTY() bool {
 	return term.IsTerminal(int(os.Stdout.Fd()))
 }
 
-// Purpose: Load configuration from env/default locations.
+// Purpose: Load configuration from env/default directories.
 // Key aspects: Tries env override first, then the default config dir.
 // Upstream: main startup.
 // Downstream: config.Load and os.IsNotExist.
@@ -260,11 +260,7 @@ func main() {
 	log.Printf("Loaded configuration from %s", configSource)
 
 	// Load path reliability config from dedicated file in the config directory.
-	configDir := configSource
-	if info, err := os.Stat(configSource); err == nil && !info.IsDir() {
-		configDir = filepath.Dir(configSource)
-	}
-	pathCfgPath := filepath.Join(configDir, pathReliabilityConfigFile)
+	pathCfgPath := filepath.Join(configSource, pathReliabilityConfigFile)
 	pathCfg, pathCfgErr := pathreliability.LoadFile(pathCfgPath)
 	if pathCfgErr != nil {
 		if os.IsNotExist(pathCfgErr) {
@@ -674,28 +670,37 @@ func main() {
 
 	// Create and start telnet server
 	telnetServer := telnet.NewServer(telnet.ServerOptions{
-		Port:                   cfg.Telnet.Port,
-		WelcomeMessage:         cfg.Telnet.WelcomeMessage,
-		DuplicateLoginMsg:      cfg.Telnet.DuplicateLoginMsg,
-		LoginGreeting:          cfg.Telnet.LoginGreeting,
-		ClusterCall:            cfg.Server.NodeID,
-		MaxConnections:         cfg.Telnet.MaxConnections,
-		BroadcastWorkers:       cfg.Telnet.BroadcastWorkers,
-		BroadcastQueue:         cfg.Telnet.BroadcastQueue,
-		WorkerQueue:            cfg.Telnet.WorkerQueue,
-		ClientBuffer:           cfg.Telnet.ClientBuffer,
-		BroadcastBatchInterval: time.Duration(cfg.Telnet.BroadcastBatchIntervalMS) * time.Millisecond,
-		Transport:              cfg.Telnet.Transport,
-		EchoMode:               cfg.Telnet.EchoMode,
-		SkipHandshake:          cfg.Telnet.SkipHandshake,
-		LoginLineLimit:         cfg.Telnet.LoginLineLimit,
-		CommandLineLimit:       cfg.Telnet.CommandLineLimit,
-		ReputationGate:         repGate,
-		PathPredictor:          pathPredictor,
-		PathDisplayEnabled:     pathCfg.DisplayEnabled,
-		NoiseOffsets:           pathCfg.NoiseOffsets,
-		GridLookup:             gridLookup,
-		CTYLookup:              ctyLookup,
+		Port:                    cfg.Telnet.Port,
+		WelcomeMessage:          cfg.Telnet.WelcomeMessage,
+		DuplicateLoginMsg:       cfg.Telnet.DuplicateLoginMsg,
+		LoginGreeting:           cfg.Telnet.LoginGreeting,
+		LoginPrompt:             cfg.Telnet.LoginPrompt,
+		LoginEmptyMessage:       cfg.Telnet.LoginEmptyMessage,
+		LoginInvalidMessage:     cfg.Telnet.LoginInvalidMessage,
+		InputTooLongMessage:     cfg.Telnet.InputTooLongMessage,
+		InputInvalidCharMessage: cfg.Telnet.InputInvalidCharMessage,
+		DialectWelcomeMessage:   cfg.Telnet.DialectWelcomeMessage,
+		DialectSourceDefault:    cfg.Telnet.DialectSourceDefaultLabel,
+		DialectSourcePersisted:  cfg.Telnet.DialectSourcePersistedLabel,
+		PathStatusMessage:       cfg.Telnet.PathStatusMessage,
+		ClusterCall:             cfg.Server.NodeID,
+		MaxConnections:          cfg.Telnet.MaxConnections,
+		BroadcastWorkers:        cfg.Telnet.BroadcastWorkers,
+		BroadcastQueue:          cfg.Telnet.BroadcastQueue,
+		WorkerQueue:             cfg.Telnet.WorkerQueue,
+		ClientBuffer:            cfg.Telnet.ClientBuffer,
+		BroadcastBatchInterval:  time.Duration(cfg.Telnet.BroadcastBatchIntervalMS) * time.Millisecond,
+		Transport:               cfg.Telnet.Transport,
+		EchoMode:                cfg.Telnet.EchoMode,
+		SkipHandshake:           cfg.Telnet.SkipHandshake,
+		LoginLineLimit:          cfg.Telnet.LoginLineLimit,
+		CommandLineLimit:        cfg.Telnet.CommandLineLimit,
+		ReputationGate:          repGate,
+		PathPredictor:           pathPredictor,
+		PathDisplayEnabled:      pathCfg.DisplayEnabled,
+		NoiseOffsets:            pathCfg.NoiseOffsets,
+		GridLookup:              gridLookup,
+		CTYLookup:               ctyLookup,
 	}, processor)
 
 	err = telnetServer.Start()

@@ -12,13 +12,13 @@ import (
 // Downstream: Load.
 func TestArchiveCleanupBatchDefaults(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	path := filepath.Join(dir, "archive.yaml")
 	cfgText := "archive:\n  enabled: true\n"
 	if err := os.WriteFile(path, []byte(cfgText), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := Load(path)
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -36,13 +36,13 @@ func TestArchiveCleanupBatchDefaults(t *testing.T) {
 // Downstream: Load.
 func TestArchiveCleanupBatchOverrides(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	path := filepath.Join(dir, "archive.yaml")
 	cfgText := "archive:\n  cleanup_batch_size: 500\n  cleanup_batch_yield_ms: 0\n"
 	if err := os.WriteFile(path, []byte(cfgText), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := Load(path)
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -60,13 +60,13 @@ func TestArchiveCleanupBatchOverrides(t *testing.T) {
 // Downstream: Load.
 func TestArchiveSynchronousDefault(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	path := filepath.Join(dir, "archive.yaml")
 	cfgText := "archive:\n  enabled: true\n"
 	if err := os.WriteFile(path, []byte(cfgText), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := Load(path)
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -81,13 +81,13 @@ func TestArchiveSynchronousDefault(t *testing.T) {
 // Downstream: Load.
 func TestArchiveSynchronousInvalid(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	path := filepath.Join(dir, "archive.yaml")
 	cfgText := "archive:\n  synchronous: \"fast\"\n"
 	if err := os.WriteFile(path, []byte(cfgText), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	if _, err := Load(path); err == nil {
+	if _, err := Load(dir); err == nil {
 		t.Fatalf("expected Load() to fail for invalid archive.synchronous")
 	}
 }

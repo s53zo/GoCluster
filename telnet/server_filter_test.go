@@ -866,7 +866,16 @@ func TestLegacyRecordFallsBackToGoCluster(t *testing.T) {
 
 func TestDialectWelcomeLine(t *testing.T) {
 	defaultDialect := DialectGo
-	line := dialectWelcomeLine(DialectGo, true, nil, defaultDialect)
+	server := &Server{
+		dialectSourceDef:  "default",
+		dialectSourcePers: "persisted",
+	}
+	template := "Current dialect: <DIALECT> (<DIALECT_SOURCE>). Use DIALECT LIST or DIALECT <DIALECT_DEFAULT> to switch. Type HELP for commands in this dialect.\n"
+	line := formatDialectWelcome(template, dialectTemplateData{
+		dialect:        strings.ToUpper(string(DialectGo)),
+		source:         server.dialectSourceLabel(DialectGo, true, nil, defaultDialect),
+		defaultDialect: strings.ToUpper(string(defaultDialect)),
+	})
 	if !strings.Contains(line, "GO") || !strings.Contains(strings.ToLower(line), "default") {
 		t.Fatalf("expected default dialect welcome line, got %q", line)
 	}
@@ -874,7 +883,11 @@ func TestDialectWelcomeLine(t *testing.T) {
 		t.Fatalf("expected welcome line to mention HELP, got %q", line)
 	}
 
-	line = dialectWelcomeLine(DialectCC, false, nil, defaultDialect)
+	line = formatDialectWelcome(template, dialectTemplateData{
+		dialect:        strings.ToUpper(string(DialectCC)),
+		source:         server.dialectSourceLabel(DialectCC, false, nil, defaultDialect),
+		defaultDialect: strings.ToUpper(string(defaultDialect)),
+	})
 	if !strings.Contains(line, "CC") || !strings.Contains(strings.ToLower(line), "persisted") {
 		t.Fatalf("expected persisted cc dialect welcome line, got %q", line)
 	}

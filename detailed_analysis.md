@@ -116,7 +116,7 @@ The system **missed 208 busted calls** that the reference cluster identified. Ex
 
 ## Configuration Analysis
 
-Based on [config.yaml:44-94](config.yaml#L44-L94), the current settings are:
+Based on data/config/pipeline.yaml (call_correction), the current settings are:
 
 ```yaml
 call_correction:
@@ -170,7 +170,7 @@ call_correction:
    - May be preventing corrections when multiple stations are close in frequency
 
 4. **Add "known good calls" quality database**
-   - Already configured ([config.yaml:141-145](config.yaml#L141-L145))
+   - Already configured in data/config/data.yaml (known_calls)
    - Use to boost confidence for corrections toward known calls
 
 5. **Monitor these error patterns:**

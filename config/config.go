@@ -121,11 +121,31 @@ type TelnetConfig struct {
 	Port           int  `yaml:"port"`
 	TLSEnabled     bool `yaml:"tls_enabled"`
 	MaxConnections int  `yaml:"max_connections"`
-	// WelcomeMessage is sent before login; supports <DATE>, <TIME>, <DATETIME>, <UPTIME>, and <USER_COUNT>.
+	// WelcomeMessage is sent before login; supports <CALL>, <CLUSTER>, <DATE>, <TIME>, <DATETIME>, <UPTIME>,
+	// <USER_COUNT>, <LAST_LOGIN>, <LAST_IP>, <DIALECT>, <DIALECT_SOURCE>, <DIALECT_DEFAULT>, <GRID>, and <NOISE>.
 	WelcomeMessage    string `yaml:"welcome_message"`
 	DuplicateLoginMsg string `yaml:"duplicate_login_message"`
-	// LoginGreeting is sent after successful login; supports <CALL>, <CLUSTER>, <DATE>, <TIME>, <DATETIME>, <UPTIME>, <USER_COUNT>, <LAST_LOGIN>, and <LAST_IP>.
+	// LoginGreeting is sent after successful login; supports <CALL>, <CLUSTER>, <DATE>, <TIME>, <DATETIME>, <UPTIME>,
+	// <USER_COUNT>, <LAST_LOGIN>, <LAST_IP>, <DIALECT>, <DIALECT_SOURCE>, <DIALECT_DEFAULT>, <GRID>, and <NOISE>.
 	LoginGreeting string `yaml:"login_greeting"`
+	// LoginPrompt is sent before reading the callsign; supports <DATE>, <TIME>, <DATETIME>, <UPTIME>, and <USER_COUNT>.
+	LoginPrompt string `yaml:"login_prompt"`
+	// LoginEmptyMessage is sent when the callsign is blank; supports <DATE>, <TIME>, <DATETIME>, <UPTIME>, and <USER_COUNT>.
+	LoginEmptyMessage string `yaml:"login_empty_message"`
+	// LoginInvalidMessage is sent when the callsign fails validation; supports <DATE>, <TIME>, <DATETIME>, <UPTIME>, and <USER_COUNT>.
+	LoginInvalidMessage string `yaml:"login_invalid_message"`
+	// InputTooLongMessage is sent when input exceeds LoginLineLimit/CommandLineLimit; supports <CONTEXT>, <MAX_LEN>, and <ALLOWED>.
+	InputTooLongMessage string `yaml:"input_too_long_message"`
+	// InputInvalidCharMessage is sent when input includes forbidden bytes; supports <CONTEXT>, <MAX_LEN>, and <ALLOWED>.
+	InputInvalidCharMessage string `yaml:"input_invalid_char_message"`
+	// DialectWelcomeMessage is sent after login to describe the active dialect; supports <DIALECT>, <DIALECT_SOURCE>, and <DIALECT_DEFAULT>.
+	DialectWelcomeMessage string `yaml:"dialect_welcome_message"`
+	// DialectSourceDefaultLabel labels a default dialect in DialectWelcomeMessage.
+	DialectSourceDefaultLabel string `yaml:"dialect_source_default_label"`
+	// DialectSourcePersistedLabel labels a persisted dialect in DialectWelcomeMessage.
+	DialectSourcePersistedLabel string `yaml:"dialect_source_persisted_label"`
+	// PathStatusMessage is sent after login when path reliability display is enabled; supports <GRID> and <NOISE>.
+	PathStatusMessage string `yaml:"path_status_message"`
 	// Transport selects the telnet parser/negotiation backend ("native" or "ziutek").
 	Transport string `yaml:"transport"`
 	// EchoMode controls whether the server echoes input or requests local echo.
@@ -707,31 +727,22 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to stat config path %q: %w", path, err)
 	}
 
-	var raw map[string]any
-	var data []byte
+	if !info.IsDir() {
+		return nil, fmt.Errorf("config path %q must be a directory containing YAML files", path)
+	}
 
-	if info.IsDir() {
-		merged, files, err := loadConfigDir(path)
-		if err != nil {
-			return nil, err
-		}
-		raw = merged
-		data, err = yaml.Marshal(merged)
-		if err != nil {
-			return nil, fmt.Errorf("failed to render merged config from %q: %w", path, err)
-		}
-		// Store the directory we loaded from to aid downstream diagnostics.
-		if len(files) > 0 {
-			path = filepath.Clean(path)
-		}
-	} else {
-		data, err = os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read config file %q: %w", path, err)
-		}
-		if err := yaml.Unmarshal(data, &raw); err != nil {
-			return nil, fmt.Errorf("failed to parse config file %q: %w", path, err)
-		}
+	merged, files, err := loadConfigDir(path)
+	if err != nil {
+		return nil, err
+	}
+	raw := merged
+	data, err := yaml.Marshal(merged)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render merged config from %q: %w", path, err)
+	}
+	// Store the directory we loaded from to aid downstream diagnostics.
+	if len(files) > 0 {
+		path = filepath.Clean(path)
 	}
 
 	var cfg Config
@@ -1148,12 +1159,6 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid telnet.echo_mode %q (expected %q, %q, or %q)", cfg.Telnet.EchoMode, TelnetEchoServer, TelnetEchoLocal, TelnetEchoOff)
 	}
 	// Provide operator-facing telnet prompts even when omitted from YAML.
-	if strings.TrimSpace(cfg.Telnet.DuplicateLoginMsg) == "" {
-		cfg.Telnet.DuplicateLoginMsg = "Another login for your callsign connected. This session is being closed (multiple logins are not allowed)."
-	}
-	if strings.TrimSpace(cfg.Telnet.LoginGreeting) == "" {
-		cfg.Telnet.LoginGreeting = "Hello <CALL>, you are now connected to <CLUSTER>."
-	}
 	if transport, ok := normalizeTelnetTransport(cfg.RBN.TelnetTransport); ok {
 		cfg.RBN.TelnetTransport = transport
 	} else {

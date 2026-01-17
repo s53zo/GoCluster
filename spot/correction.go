@@ -11,7 +11,7 @@ import (
 )
 
 // CorrectionSettings captures the knobs that govern whether a consensus-based
-// call correction should happen. The values ultimately come from config.yaml,
+// call correction should happen. The values ultimately come from data/config/pipeline.yaml,
 // but the struct is deliberately defined here so the algorithm can be unit-tested
 // without importing the config package (which would create a cycle).
 type CorrectionSettings struct {

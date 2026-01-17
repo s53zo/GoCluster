@@ -5,7 +5,7 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
 ## Quickstart
 
 1. Install Go `1.25+` (see `go.mod`).
-2. Edit `data/config/` (at minimum: set your callsigns in `ingest.yaml` and `telnet.port` in `runtime.yaml`). If you plan to peer with other DXSpider nodes, populate `peering.yaml` (local callsign, peers, ACL/passwords). You can override the path with `DXC_CONFIG_PATH` if you want to point at a different directory or a legacy single-file config.
+2. Edit `data/config/` (at minimum: set your callsigns in `ingest.yaml` and `telnet.port` in `runtime.yaml`). If you plan to peer with other DXSpider nodes, populate `peering.yaml` (local callsign, peers, ACL/passwords). You can override the path with `DXC_CONFIG_PATH` if you want to point at a different config directory.
 3. Run:
    ```pwsh
    go mod tidy
@@ -417,7 +417,7 @@ Operational guidance: enable `auto_delete_corrupt_db` only if the archive is tru
 │  ├─ data.yaml            # CTY/known_calls/FCC/skew + grid DB tuning
 │  ├─ runtime.yaml         # Telnet server settings, buffer/filter defaults
 │  └─ mode_allocations.yaml # Mode inference for RBN/human ingest
-├─ config/                 # YAML loader + defaults (merges dir or single file)
+├─ config/                 # YAML loader + defaults (merges config directory)
 ├─ cmd/                    # Helper binaries (CTY lookup, skew fetch, analysis)
 ├─ rbn/, pskreporter/, telnet/, dedup/, filter/, spot/, stats/, gridstore/  # Core packages
 ├─ data/cty/cty.plist      # CTY prefix database for metadata lookups
@@ -462,7 +462,7 @@ Operational guidance: enable `auto_delete_corrupt_db` only if the archive is tru
 
 ## Configuration Loader Defaults
 
-`config.Load` accepts a directory (merging all YAML files) or a single YAML file; the server defaults to `data/config`. It normalizes missing fields and refuses to start when time strings are invalid. Key fallbacks:
+`config.Load` accepts a directory (merging all YAML files); the server defaults to `data/config`. It normalizes missing fields and refuses to start when time strings are invalid. Key fallbacks:
 
 - Stats tickers default to `30s` when unset. Telnet queues fall back to `broadcast_queue_size=2048`, `worker_queue_size=128`, `client_buffer_size=128`, and friendly greeting/duplicate-login messages are injected if blank.
 - Call correction uses conservative baselines unless overridden: `min_consensus_reports=4`, `min_advantage=1`, `min_confidence_percent=70`, `recency_seconds=45`, `max_edit_distance=2`, `frequency_tolerance_hz=0.5`, `voice_frequency_tolerance_hz=2000`, `voice_candidate_window_khz=2`, `min_snr_voice=0`, `invalid_action=broadcast`. Empty distance models inherit from `distance_model` or default to `plain`; negative SNR floors/extras are clamped to zero.

@@ -30,7 +30,7 @@ This review focuses on **observed and measurable** performance/reliability issue
 
 **Recommendation:**
 ```yaml
-# config.yaml tuning based on client count and ingest rate
+# data/config/runtime.yaml tuning based on client count and ingest rate
 telnet:
   broadcast_queue_size: 8192  # 4x default for FT8 bursts
   worker_queue_size: 256      # 2x default
@@ -43,7 +43,7 @@ telnet:
 
 ### 2. **RBN Slot Buffer Configuration** ⚠️ MEDIUM
 
-**Location:** `rbn/client.go:60-70`, `config.yaml`  
+**Location:** `rbn/client.go:60-70`, `data/config/ingest.yaml`  
 **Evidence:** Code logs `"Spot channel full, dropping spot"` when buffer overflows
 
 **Issue:** The 100-slot fallback is too small for FT8/FT4 decode cycles, but operators may not know to configure `slot_buffer`.
@@ -54,7 +54,7 @@ telnet:
 
 **Recommendation:**
 ```yaml
-# config.yaml - document recommended values
+# data/config/ingest.yaml - document recommended values
 rbn:
   slot_buffer: 500  # CW/RTTY: lower burst rate
 rbn_digital:
@@ -267,7 +267,7 @@ go func() {
 - Error handling: Drops logged with context and metrics
 
 **Configuration:**
-- Buffer sizes tunable via config.yaml
+- Buffer sizes tunable via data/config/runtime.yaml
 - Cache sizes/TTLs configurable
 - Reconnect behavior configurable
 - All key parameters exposed
@@ -279,7 +279,7 @@ go func() {
 ### Immediate (Do Now)
 1. **Add pprof endpoints** - Required for any optimization work
 2. **Audit panic recovery** - Add to goroutines that lack it (targeted list above)
-3. **Document buffer tuning** - Add recommended values to config.yaml comments
+3. **Document buffer tuning** - Add recommended values to data/config/runtime.yaml comments
 
 ### Monitor First (Gather Data)
 4. **Watch for drop messages** in logs:

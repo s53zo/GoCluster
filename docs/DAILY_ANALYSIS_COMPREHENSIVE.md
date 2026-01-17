@@ -599,7 +599,7 @@ If band recall analysis (Phase 1.5) shows specific bands with low recall:
 **Investigation Steps:**
 1. Check if mode distribution differs (e.g., 20m has more FT8, 40m has more CW)
 2. Verify `RecencySecondsCW`, `RecencySecondsRTTY`, `RecencySecondsSSB` are appropriate
-3. Consider per-mode threshold overrides in config.yaml:
+3. Consider per-mode threshold overrides in data/config/pipeline.yaml:
    ```yaml
    call_correction:
      min_consensus_reports: 3
@@ -837,7 +837,7 @@ sqlite3 $dbPath "select avg(julianday(datetime(ts,'unixepoch')) - julianday(date
 ```
 
 **Remediation:**
-- Adjust mode-specific recency windows in config.yaml
+- Adjust mode-specific recency windows in data/config/pipeline.yaml
 - Consider band-specific threshold overrides
 
 ---

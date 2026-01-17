@@ -87,7 +87,7 @@ Common miss patterns:
 CURRENT CONFIGURATION ANALYSIS
 ================================================================================
 
-From config.yaml:
+From data/config/pipeline.yaml (call_correction):
   Strategy:              majority (most spotters wins)
   Min Reports:           3 spotters required
   Min Advantage:         1 spotter advantage required

@@ -57,3 +57,15 @@ dedup:
 		t.Fatalf("expected cty.enabled=false from app.yaml, got true")
 	}
 }
+
+func TestLoadRejectsSingleFilePath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runtime.yaml")
+	if err := os.WriteFile(path, []byte("telnet:\n  port: 9300\n"), 0o644); err != nil {
+		t.Fatalf("write runtime.yaml: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatalf("expected Load() to reject non-directory config path")
+	}
+}
