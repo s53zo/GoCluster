@@ -23,3 +23,19 @@ func TestLoadRejectsShortTelnetOutputLineLength(t *testing.T) {
 		t.Fatalf("expected telnet.output_line_length error, got %v", err)
 	}
 }
+
+func TestLoadDefaultsTelnetOutputLineLength(t *testing.T) {
+	dir := t.TempDir()
+	config := `telnet: {}
+`
+	if err := os.WriteFile(filepath.Join(dir, "runtime.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatalf("write runtime.yaml: %v", err)
+	}
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Telnet.OutputLineLength != 78 {
+		t.Fatalf("expected default telnet.output_line_length=78, got %d", cfg.Telnet.OutputLineLength)
+	}
+}

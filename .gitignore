@@ -23,3 +23,7 @@ data/config/openai.yaml
 .claude/
 .vscode/
 NUL
+
+README_DEBIAN.md
+
+LOCAL_CONTEXT.md
