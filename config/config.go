@@ -67,42 +67,43 @@ func normalizeTelnetEchoMode(value string) (string, bool) {
 // enriched with defaults during Load so downstream packages can assume sane,
 // non-zero values.
 type Config struct {
-	Server              ServerConfig         `yaml:"server"`
-	Telnet              TelnetConfig         `yaml:"telnet"`
-	UI                  UIConfig             `yaml:"ui"`
-	Logging             LoggingConfig        `yaml:"logging"`
-	PropReport          PropReportConfig     `yaml:"prop_report"`
-	RBN                 RBNConfig            `yaml:"rbn"`
-	RBNDigital          RBNConfig            `yaml:"rbn_digital"`
-	HumanTelnet         RBNConfig            `yaml:"human_telnet"`
-	PSKReporter         PSKReporterConfig    `yaml:"pskreporter"`
-	Archive             ArchiveConfig        `yaml:"archive"`
-	Dedup               DedupConfig          `yaml:"dedup"`
-	Filter              FilterConfig         `yaml:"filter"`
-	Stats               StatsConfig          `yaml:"stats"`
-	CallCorrection      CallCorrectionConfig `yaml:"call_correction"`
-	CallCache           CallCacheConfig      `yaml:"call_cache"`
-	Harmonics           HarmonicConfig       `yaml:"harmonics"`
-	SpotPolicy          SpotPolicy           `yaml:"spot_policy"`
-	ModeInference       ModeInferenceConfig  `yaml:"mode_inference"`
-	CTY                 CTYConfig            `yaml:"cty"`
-	Buffer              BufferConfig         `yaml:"buffer"`
-	Skew                SkewConfig           `yaml:"skew"`
-	FCCULS              FCCULSConfig         `yaml:"fcc_uls"`
-	KnownCalls          KnownCallsConfig     `yaml:"known_calls"`
-	Peering             PeeringConfig        `yaml:"peering"`
-	Reputation          ReputationConfig     `yaml:"reputation"`
-	GridDBPath          string               `yaml:"grid_db"`
-	GridFlushSec        int                  `yaml:"grid_flush_seconds"`
-	GridCacheSize       int                  `yaml:"grid_cache_size"`
-	GridCacheTTLSec     int                  `yaml:"grid_cache_ttl_seconds"`
-	GridBlockCacheMB    int                  `yaml:"grid_block_cache_mb"`
-	GridBloomFilterBits int                  `yaml:"grid_bloom_filter_bits"`
-	GridMemTableSizeMB  int                  `yaml:"grid_memtable_size_mb"`
-	GridL0Compaction    int                  `yaml:"grid_l0_compaction_threshold"`
-	GridL0StopWrites    int                  `yaml:"grid_l0_stop_writes_threshold"`
-	GridWriteQueueDepth int                  `yaml:"grid_write_queue_depth"`
-	H3TablePath         string               `yaml:"h3_table_path"`
+	Server              ServerConfig           `yaml:"server"`
+	Telnet              TelnetConfig           `yaml:"telnet"`
+	UI                  UIConfig               `yaml:"ui"`
+	Logging             LoggingConfig          `yaml:"logging"`
+	PropReport          PropReportConfig       `yaml:"prop_report"`
+	RBN                 RBNConfig              `yaml:"rbn"`
+	RBNDigital          RBNConfig              `yaml:"rbn_digital"`
+	HumanTelnet         RBNConfig              `yaml:"human_telnet"`
+	PSKReporter         PSKReporterConfig      `yaml:"pskreporter"`
+	Archive             ArchiveConfig          `yaml:"archive"`
+	Dedup               DedupConfig            `yaml:"dedup"`
+	SkimmerAggregate    SkimmerAggregateConfig `yaml:"skimmer_aggregate"`
+	Filter              FilterConfig           `yaml:"filter"`
+	Stats               StatsConfig            `yaml:"stats"`
+	CallCorrection      CallCorrectionConfig   `yaml:"call_correction"`
+	CallCache           CallCacheConfig        `yaml:"call_cache"`
+	Harmonics           HarmonicConfig         `yaml:"harmonics"`
+	SpotPolicy          SpotPolicy             `yaml:"spot_policy"`
+	ModeInference       ModeInferenceConfig    `yaml:"mode_inference"`
+	CTY                 CTYConfig              `yaml:"cty"`
+	Buffer              BufferConfig           `yaml:"buffer"`
+	Skew                SkewConfig             `yaml:"skew"`
+	FCCULS              FCCULSConfig           `yaml:"fcc_uls"`
+	KnownCalls          KnownCallsConfig       `yaml:"known_calls"`
+	Peering             PeeringConfig          `yaml:"peering"`
+	Reputation          ReputationConfig       `yaml:"reputation"`
+	GridDBPath          string                 `yaml:"grid_db"`
+	GridFlushSec        int                    `yaml:"grid_flush_seconds"`
+	GridCacheSize       int                    `yaml:"grid_cache_size"`
+	GridCacheTTLSec     int                    `yaml:"grid_cache_ttl_seconds"`
+	GridBlockCacheMB    int                    `yaml:"grid_block_cache_mb"`
+	GridBloomFilterBits int                    `yaml:"grid_bloom_filter_bits"`
+	GridMemTableSizeMB  int                    `yaml:"grid_memtable_size_mb"`
+	GridL0Compaction    int                    `yaml:"grid_l0_compaction_threshold"`
+	GridL0StopWrites    int                    `yaml:"grid_l0_stop_writes_threshold"`
+	GridWriteQueueDepth int                    `yaml:"grid_write_queue_depth"`
+	H3TablePath         string                 `yaml:"h3_table_path"`
 	// GridDBCheckOnMiss controls whether grid updates consult Pebble on cache miss
 	// to avoid redundant writes. When nil, Load defaults it to true to preserve
 	// historical behavior.
@@ -482,7 +483,9 @@ type ArchiveConfig struct {
 type PeeringConfig struct {
 	Enabled       bool   `yaml:"enabled"`
 	LocalCallsign string `yaml:"local_callsign"`
-	ListenPort    int    `yaml:"listen_port"`
+	// RxOnly disables outbound spot publishing to peers when true.
+	RxOnly        bool `yaml:"rx_only"`
+	ListenPort    int  `yaml:"listen_port"`
 	HopCount      int    `yaml:"hop_count"`
 	NodeVersion   string `yaml:"node_version"`
 	NodeBuild     string `yaml:"node_build"`
@@ -573,6 +576,27 @@ type DedupConfig struct {
 	SecondaryMedPreferStrong   bool `yaml:"secondary_med_prefer_stronger_snr"`  // keep max SNR in med secondary buckets
 	SecondarySlowPreferStrong  bool `yaml:"secondary_slow_prefer_stronger_snr"` // keep max SNR in slow secondary buckets
 	OutputBufferSize           int  `yaml:"output_buffer_size"`                 // channel capacity for dedup output
+}
+
+// SkimmerAggregateConfig controls DXSpider-style deduping across skimmer sources.
+// It is modeled after RBN dwell/limbo behavior and is applied after primary/secondary
+// dedup, corrections, and grid enrichment.
+type SkimmerAggregateConfig struct {
+	Enabled            bool `yaml:"enabled"`
+	DwellSeconds       int  `yaml:"dwell_seconds"`        // wait for corroborating skimmers before emitting
+	LimboSeconds       int  `yaml:"limbo_seconds"`        // drop if still below min_quality after this
+	RespotSeconds      int  `yaml:"respot_seconds"`       // suppress respots within this window
+	CacheSeconds       int  `yaml:"cache_seconds"`        // retention for emitted keys to suppress respots
+	MinQuality         int  `yaml:"min_quality"`          // min distinct skimmers before emit
+	MaxQuality         int  `yaml:"max_quality"`          // cap reported quality score
+	SearchKHz          int  `yaml:"search_khz"`           // +/- search range when matching nearby frequencies
+	MaxDeviants        int  `yaml:"max_deviants"`         // cap for skimmer score adjustments
+	InrushDelaySeconds int  `yaml:"inrush_delay_seconds"` // drop initial inrush on startup
+	MaxEntries         int  `yaml:"max_entries"`          // bound for aggregate buckets
+	MaxRecordsPerKey   int  `yaml:"max_records_per_key"`  // bound for per-key records
+	InputBuffer        int  `yaml:"input_buffer"`         // queue capacity feeding the aggregator
+	OutputBuffer       int  `yaml:"output_buffer"`        // queue capacity for aggregated output
+	CollapseSSID       bool `yaml:"collapse_ssid"`        // treat SSID variants as a single skimmer
 }
 
 // FilterConfig holds default filter behavior for new users.
@@ -918,6 +942,7 @@ func Load(path string) (*Config, error) {
 	legacySecondaryPrefer := yamlKeyPresent(raw, "dedup", "secondary_prefer_stronger_snr")
 	hasAdaptiveMinReportsEnabled := yamlKeyPresent(raw, "call_correction", "adaptive_min_reports", "enabled")
 	hasArchiveCleanupYield := yamlKeyPresent(raw, "archive", "cleanup_batch_yield_ms")
+	hasAggregateCollapseSSID := yamlKeyPresent(raw, "skimmer_aggregate", "collapse_ssid")
 	hasPSKRMQTTTimeout := yamlKeyPresent(raw, "pskreporter", "mqtt_qos12_enqueue_timeout_ms")
 
 	if legacySecondaryWindow || legacySecondaryPrefer {
@@ -1683,6 +1708,51 @@ func Load(path string) (*Config, error) {
 	if cfg.Dedup.OutputBufferSize <= 0 {
 		cfg.Dedup.OutputBufferSize = 1000
 	}
+	if cfg.SkimmerAggregate.DwellSeconds <= 0 {
+		cfg.SkimmerAggregate.DwellSeconds = 10
+	}
+	if cfg.SkimmerAggregate.LimboSeconds <= 0 {
+		cfg.SkimmerAggregate.LimboSeconds = 300
+	}
+	if cfg.SkimmerAggregate.RespotSeconds <= 0 {
+		cfg.SkimmerAggregate.RespotSeconds = 180
+	}
+	if cfg.SkimmerAggregate.CacheSeconds <= 0 {
+		cfg.SkimmerAggregate.CacheSeconds = 3600
+	}
+	if cfg.SkimmerAggregate.MinQuality <= 0 {
+		cfg.SkimmerAggregate.MinQuality = 2
+	}
+	if cfg.SkimmerAggregate.MaxQuality <= 0 {
+		cfg.SkimmerAggregate.MaxQuality = 9
+	}
+	if cfg.SkimmerAggregate.MaxQuality < cfg.SkimmerAggregate.MinQuality {
+		cfg.SkimmerAggregate.MaxQuality = cfg.SkimmerAggregate.MinQuality
+	}
+	if cfg.SkimmerAggregate.SearchKHz <= 0 {
+		cfg.SkimmerAggregate.SearchKHz = 5
+	}
+	if cfg.SkimmerAggregate.MaxDeviants <= 0 {
+		cfg.SkimmerAggregate.MaxDeviants = 5
+	}
+	if cfg.SkimmerAggregate.InrushDelaySeconds < 0 {
+		cfg.SkimmerAggregate.InrushDelaySeconds = 0
+	}
+	if cfg.SkimmerAggregate.MaxEntries <= 0 {
+		cfg.SkimmerAggregate.MaxEntries = 50000
+	}
+	if cfg.SkimmerAggregate.MaxRecordsPerKey <= 0 {
+		cfg.SkimmerAggregate.MaxRecordsPerKey = 64
+	}
+	if cfg.SkimmerAggregate.InputBuffer <= 0 {
+		cfg.SkimmerAggregate.InputBuffer = 2048
+	}
+	if cfg.SkimmerAggregate.OutputBuffer <= 0 {
+		cfg.SkimmerAggregate.OutputBuffer = 1024
+	}
+	if !hasAggregateCollapseSSID {
+		cfg.SkimmerAggregate.CollapseSSID = true
+	}
 	if strings.TrimSpace(cfg.CTY.File) == "" {
 		cfg.CTY.File = "data/cty/cty.plist"
 	}
@@ -2070,6 +2140,17 @@ func (c *Config) Print() {
 		c.Dedup.SecondaryMedPreferStrong,
 		secondarySlow,
 		c.Dedup.SecondarySlowPreferStrong)
+	if c.SkimmerAggregate.Enabled {
+		fmt.Printf("DXSpider-style dedupe: enabled (dwell=%ds limbo=%ds respot=%ds cache=%ds quality=%d..%d search=%dkHz collapse_ssid=%t)\n",
+			c.SkimmerAggregate.DwellSeconds,
+			c.SkimmerAggregate.LimboSeconds,
+			c.SkimmerAggregate.RespotSeconds,
+			c.SkimmerAggregate.CacheSeconds,
+			c.SkimmerAggregate.MinQuality,
+			c.SkimmerAggregate.MaxQuality,
+			c.SkimmerAggregate.SearchKHz,
+			c.SkimmerAggregate.CollapseSSID)
+	}
 	if len(c.Filter.DefaultModes) > 0 {
 		fmt.Printf("Default modes: %s\n", strings.Join(c.Filter.DefaultModes, ", "))
 	}
@@ -2077,10 +2158,11 @@ func (c *Config) Print() {
 		fmt.Printf("Default sources: %s\n", strings.Join(c.Filter.DefaultSources, ", "))
 	}
 	if c.Peering.Enabled {
-		fmt.Printf("Peering: listen_port=%d peers=%d hop=%d transport=%s keepalive=%ds config=%ds topology=%s retention=%dh\n",
+		fmt.Printf("Peering: listen_port=%d peers=%d hop=%d rx_only=%t transport=%s keepalive=%ds config=%ds topology=%s retention=%dh\n",
 			c.Peering.ListenPort,
 			len(c.Peering.Peers),
 			c.Peering.HopCount,
+			c.Peering.RxOnly,
 			c.Peering.TelnetTransport,
 			c.Peering.KeepaliveSeconds,
 			c.Peering.ConfigSeconds,

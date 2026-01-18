@@ -34,7 +34,8 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
 3. **PSKReporter MQTT** (`pskreporter/client.go`) subscribes to a single catch-all `pskr/filter/v2/+/+/#` topic and filters modes downstream according to `pskreporter.modes`. It converts JSON payloads into canonical spots and preserves locator-based grids. Set `pskreporter.append_spotter_ssid: true` if you want receiver callsigns that lack SSIDs to pick up a `-#` suffix for deduplication. PSKReporter spots no longer carry a comment string; DX/DE grids stay in metadata and are shown in the fixed tail of telnet output. Configure `pskreporter.max_payload_bytes` to guard against oversized payloads; CTY caching is handled by the unified call metadata cache. PSKReporter spots with explicit `0 dB` reports (rp=0) are dropped before ingest; missing reports are treated as absent. `pskreporter.path_only_modes` routes specific modes (e.g., WSPR) directly into path prediction only—they never reach dedup, telnet, archive, or peer output, and they bypass CTY validation. MQTT ingest is bounded by `pskreporter.mqtt_inbound_workers`, `pskreporter.mqtt_inbound_queue_depth`, and `pskreporter.mqtt_qos12_enqueue_timeout_ms` (QoS0 drops when full; QoS1/2 disconnect after the enqueue timeout).
    - PSK modes are normalized to a canonical `PSK` family for filtering, dedupe, and stats while preserving the reported variant (PSK31/63/125) in telnet/archive output.
 4. **CTY Database** (`cty/parser.go` + `data/cty/cty.plist`) performs longest-prefix lookups; when a callsign includes slashes, it prefers the shortest matching segment (portable/location prefix), so `N2WQ/VE3` and `VE3/N2WQ` both resolve to `VE3` (Canada) for metadata. The in-memory CTY DB is paired with a unified call metadata cache so repeated lookups do not thrash the trie.
-5. **Dedup Engine** (`dedup/deduplicator.go`) filters duplicates before they reach the ring buffer. A zero-second window effectively disables dedup, but the pipeline stays unified. A secondary, broadcast-only dedupe runs after call correction/harmonic/frequency adjustments to collapse repeat DX reports without altering ring/history. It hashes band + DE ADIF (DXCC) + DE grid2 prefix (FAST/MED) or DE CQ zone (SLOW) + normalized DX call + source class (human vs skimmer); the time window is enforced by the cache, so one spot per window per key reaches clients while the ring/history remain intact. Three secondary policies are available: **fast** (120s, grid2), **med** (300s, grid2), and **slow** (480s, CQ zone), each with its own `secondary_*_prefer_stronger_snr` toggle in `data/config/dedupe.yaml`. Telnet clients select with `SET DEDUPE FAST|MED|SLOW` (use `SHOW DEDUPE` to confirm); default is MED. Archive and peer publishing use the MED policy. The console pipeline line reports per-policy output as `<count>/<percent> (F) / <count>/<percent> (M) / <count>/<percent> (S)`. When a policy's prefer-stronger flag is true, the stronger SNR duplicate replaces the cached entry and is broadcast for that policy. Spotter SSID display is controlled at broadcast time (see `rbn.keep_ssid_suffix`); when disabled, telnet output, archive, and filters use stripped DE calls while peers keep the raw calls.
+5. **Dedup Engine** (`dedup/deduplicator.go`) filters duplicates before they reach the ring buffer. A zero-second window effectively disables dedup, but the pipeline stays unified. A secondary, broadcast-only dedupe runs after call correction/harmonic/frequency adjustments to collapse repeat DX reports without altering ring/history. It hashes band + DE ADIF (DXCC) + DE grid2 prefix (FAST/MED) or DE CQ zone (SLOW) + normalized DX call + source class (human vs skimmer); the time window is enforced by the cache, so one spot per window per key reaches clients while the ring/history remain intact. Three secondary policies are available: **fast** (120s, grid2), **med** (300s, grid2), and **slow** (480s, CQ zone), each with its own `secondary_*_prefer_stronger_snr` toggle in `data/config/pipeline.yaml`. Telnet clients select with `SET DEDUPE FAST|MED|SLOW` (use `SHOW DEDUPE` to confirm); default is MED. Archive and peer publishing use the MED policy. The console pipeline line reports per-policy output as `<count>/<percent> (F) / <count>/<percent> (M) / <count>/<percent> (S)`. When a policy's prefer-stronger flag is true, the stronger SNR duplicate replaces the cached entry and is broadcast for that policy. Spotter SSID display is controlled at broadcast time (see `rbn.keep_ssid_suffix`); when disabled, telnet output, archive, and filters use stripped DE calls while peers keep the raw calls.
+   - Optional **DXSpider-style deduping** (`aggregate/`) waits/dwells across skimmer sources after all other processing and emits a single consolidated telnet spot with a `Q:n[*][+]` tag appended to the comment. It is broadcast-only (ring/archive/peer stay unchanged) and collapses SSID variants when enabled.
 6. **Frequency Averager** (`spot/frequency_averager.go`) merges CW/RTTY skimmer reports by averaging corroborating reports within a tolerance and rounding to 0.1 kHz once the minimum corroborators is met.
 7. **Call/Harmonic/License Guards** (`spot/correction.go`, `spot/harmonics.go`, `main.go`) apply consensus-based call corrections, suppress harmonics, and finally run FCC license gating for DX right before broadcast/buffering (CTY validation runs in the ingest gate; corrected calls are re-validated against CTY before acceptance). Harmonic suppression supports a stepped minimum dB delta (configured via `harmonics.min_report_delta_step`) so higher-order harmonics must be progressively weaker. Call correction honours `call_correction.min_snr_cw` / `min_snr_rtty` (and `min_snr_voice` if set) so marginal decodes can be ignored when counting corroborators; USB/LSB uses a wider frequency tolerance and candidate search window to reflect 3 kHz SSB bandwidth. An optional cooldown gate (`call_correction.cooldown_*`) can temporarily refuse to flip away from a call that already has recent diverse support unless the alternate is decisively stronger; `cooldown_min_reporters` follows `adaptive_min_reports` per band when enabled, and cooldown rejections log as `reason=cooldown` in the decision DB. Calls ending in `/B` (standard beacon IDs) are auto-tagged and bypass correction/harmonic/license drops (only user filters can hide them). The license gate uses a license-normalized base call (e.g., `W6/UT5UF` -> `UT5UF`) to decide if FCC checks apply and which call to query, while CTY metadata still reflects the portable/location prefix (so `N2WQ/VE3` reports Canada for DXCC but uses `N2WQ` for licensing); drops appear in the "Unlicensed US Calls" pane.
 8. **Skimmer Frequency Corrections** (`cmd/rbnskewfetch`, `skew/`, `rbn/client.go`, `pskreporter/client.go`) download SM7IUN's skew list, convert it to JSON, and apply per-spotter multiplicative factors before any callsign normalization for every CW/RTTY skimmer feed.
@@ -452,8 +453,7 @@ Operational guidance: enable `auto_delete_corrupt_db` only if the archive is tru
 ├─ data/config/            # Runtime configuration (split YAML files)
 │  ├─ app.yaml             # Server identity, stats interval, console UI
 │  ├─ ingest.yaml          # RBN/PSKReporter/human ingest + call cache
-│  ├─ dedupe.yaml          # Primary/secondary dedupe policy windows
-│  ├─ pipeline.yaml        # Call correction, harmonics, spot policy
+│  ├─ pipeline.yaml        # Dedup, DXSpider-style deduping, call correction, harmonics, spot policy
 │  ├─ data.yaml            # CTY/known_calls/FCC/skew + grid DB tuning
 │  ├─ runtime.yaml         # Telnet server settings, buffer/filter defaults
 │  └─ mode_allocations.yaml # Mode inference for RBN/human ingest
@@ -531,8 +531,28 @@ Operational guidance: enable `auto_delete_corrupt_db` only if the archive is tru
 - FCC ULS fetches use the official URL/paths (`archive_path=data/fcc/l_amat.zip`, `db_path=data/fcc/fcc_uls.db`, `temp_dir` inherits from `db_path`), and refresh times must parse as `HH:MM` or loading fails fast.
 - Grid store defaults: `grid_db=data/grids/pebble`, `grid_flush_seconds=60`, `grid_cache_size=100000`, `grid_cache_ttl_seconds=0`, `grid_block_cache_mb=64`, `grid_bloom_filter_bits=10`, `grid_memtable_size_mb=32`, `grid_l0_compaction_threshold=4`, `grid_l0_stop_writes_threshold=16`, `grid_write_queue_depth=64`, with TTL/retention floors of zero to avoid negative durations.
 - Dedup windows are coerced to zero-or-greater; `output_buffer_size` defaults to `1000` so bursts do not immediately drop spots.
+- DXSpider-style dedupe defaults (when enabled): `dwell_seconds=10`, `limbo_seconds=300`, `respot_seconds=180`, `cache_seconds=3600`, `min_quality=2`, `max_quality=9`, `search_khz=5`, `max_entries=50000`, `max_records_per_key=64`, `input_buffer=2048`, `output_buffer=1024`, `collapse_ssid=true`.
 - Buffer capacity defaults to `300000` spots; skew downloads default to SM7IUN's CSV (`url=https://sm7iun.se/rbnskew.csv`, `file=data/skm_correction/rbnskew.json`, `refresh_utc=00:30`) with non-negative `min_spots`.
 - `config.Print` writes a concise summary of the loaded settings to stdout for easy startup diagnostics.
+
+Example `pipeline.yaml` snippet for DXSpider-style deduping:
+
+```yaml
+skimmer_aggregate:
+  enabled: true
+  dwell_seconds: 10
+  limbo_seconds: 300
+  respot_seconds: 180
+  cache_seconds: 3600
+  min_quality: 2
+  max_quality: 9
+  search_khz: 5
+  max_entries: 50000
+  max_records_per_key: 64
+  input_buffer: 2048
+  output_buffer: 1024
+  collapse_ssid: true
+```
 
 ## Testing & Tooling
 

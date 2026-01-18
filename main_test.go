@@ -131,23 +131,36 @@ func TestShouldPublishToPeersSkipsTestSpotter(t *testing.T) {
 	spotTest := spot.NewSpot("K1ABC", "K1TEST", 7074.0, "FT8")
 	spotTest.SourceType = spot.SourceManual
 	spotTest.IsTestSpotter = true
-	if shouldPublishToPeers(spotTest) {
+	if shouldPublishToPeers(spotTest, false) {
 		t.Fatalf("expected test spotter to skip peering")
 	}
 	spotNormal := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
 	spotNormal.SourceType = spot.SourceManual
-	if !shouldPublishToPeers(spotNormal) {
+	if !shouldPublishToPeers(spotNormal, false) {
 		t.Fatalf("expected manual spot to publish to peers")
 	}
 	spotUpstream := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
 	spotUpstream.SourceType = spot.SourceUpstream
-	if shouldPublishToPeers(spotUpstream) {
+	if shouldPublishToPeers(spotUpstream, false) {
 		t.Fatalf("expected upstream spot to skip peering")
 	}
 	spotPeer := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
 	spotPeer.SourceType = spot.SourcePeer
-	if shouldPublishToPeers(spotPeer) {
+	if shouldPublishToPeers(spotPeer, false) {
 		t.Fatalf("expected peer spot to skip peering")
+	}
+}
+
+func TestShouldPublishToPeersRxOnlyAllowsManual(t *testing.T) {
+	spotManual := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
+	spotManual.SourceType = spot.SourceManual
+	if !shouldPublishToPeers(spotManual, true) {
+		t.Fatalf("expected manual spot to publish in rx_only mode")
+	}
+	spotRBN := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
+	spotRBN.SourceType = spot.SourceRBN
+	if shouldPublishToPeers(spotRBN, true) {
+		t.Fatalf("expected non-manual spot to skip peering in rx_only mode")
 	}
 }
 
@@ -501,7 +514,7 @@ func TestApplyKnownCallFloorSkipsUnsupportedMode(t *testing.T) {
 // Purpose: Validate SSID collapsing rules for broadcast formatting.
 // Key aspects: Covers numeric, non-numeric, and composite suffixes.
 // Upstream: go test execution.
-// Downstream: collapseSSIDForBroadcast.
+// Downstream: spot.CollapseSSID.
 func TestCollapseSSIDForBroadcast(t *testing.T) {
 	cases := []struct {
 		input string
@@ -517,9 +530,9 @@ func TestCollapseSSIDForBroadcast(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got := collapseSSIDForBroadcast(tc.input)
+		got := spot.CollapseSSID(tc.input)
 		if got != tc.want {
-			t.Fatalf("collapseSSIDForBroadcast(%q) = %q, want %q", tc.input, got, tc.want)
+			t.Fatalf("CollapseSSID(%q) = %q, want %q", tc.input, got, tc.want)
 		}
 	}
 }

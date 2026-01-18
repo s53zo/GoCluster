@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"dxcluster/aggregate"
 	"dxcluster/archive"
 	"dxcluster/bandmap"
 	"dxcluster/buffer"
@@ -734,6 +735,19 @@ func main() {
 		log.Println("Warning: secondary dedupe disabled (fast+med+slow=0); spots broadcast without secondary suppression")
 	}
 
+	var skimmerAggregator *aggregate.SkimmerAggregator
+	if cfg.SkimmerAggregate.Enabled {
+		skimmerAggregator = aggregate.NewSkimmerAggregator(cfg.SkimmerAggregate)
+		skimmerAggregator.Start(ctx)
+		log.Printf("DXSpider-style deduping enabled (dwell=%ds limbo=%ds min_quality=%d max_quality=%d)",
+			cfg.SkimmerAggregate.DwellSeconds,
+			cfg.SkimmerAggregate.LimboSeconds,
+			cfg.SkimmerAggregate.MinQuality,
+			cfg.SkimmerAggregate.MaxQuality)
+	} else {
+		log.Println("DXSpider-style deduping disabled; skimmer spots broadcast unaggregated")
+	}
+
 	modeSeeds := make([]spot.ModeSeed, 0, len(cfg.ModeInference.DigitalSeeds))
 	for _, seed := range cfg.ModeInference.DigitalSeeds {
 		modeSeeds = append(modeSeeds, spot.ModeSeed{
@@ -861,12 +875,15 @@ func main() {
 	var lastOutput atomic.Int64
 	var secondaryStageCount atomic.Uint64
 	// Purpose: Run the single-threaded output pipeline for deduped spots.
-	// Key aspects: Handles corrections, licensing, secondary dedupe, and fan-out.
+	// Key aspects: Handles corrections, licensing, secondary dedupe, aggregation, and fan-out.
 	// Upstream: main startup after wiring dependencies.
 	// Downstream: processOutputSpots.
 	pathReport := newPathReportMetrics()
 	pskrPathOnlyStats := &pathOnlyStats{}
-	go processOutputSpots(deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, surface, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor, pathReport, allowedBandSet)
+	go processOutputSpots(deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, skimmerAggregator, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, cfg.Peering.RxOnly, surface, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor, pathReport, allowedBandSet)
+	if skimmerAggregator != nil && telnetServer != nil {
+		go broadcastAggregatedSpots(ctx, skimmerAggregator, telnetServer, &lastOutput)
+	}
 	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
@@ -1334,7 +1351,7 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 }
 
 // Purpose: Periodically emit stats with FCC metadata refresh.
-// Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
+// Key aspects: Uses a ticker, diff counters, and optional dedupe/aggregate stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
 func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], knownCallsPath string, telnetSrv *telnet.Server, dash ui.Surface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor, rbnClient *rbn.Client, rbnDigitalClient *rbn.Client, pskrClient *pskreporter.Client, pskrPathOnly *pathOnlyStats, peerManager *peer.Manager, clusterCall string, skewPath string) {
@@ -1524,6 +1541,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 			), // 5
 			fmt.Sprintf("%s: %s TOTAL", withIngestStatusLabel("P92", p92Live), humanize.Comma(int64(p92Total))), // 6
 		}
+		lines = append(lines, pathOnlyLine)
 		lines = append(lines, pathOnlyLine)
 		lines = append(lines,
 			fmt.Sprintf("Calls: %d (C) / %d (U) / %d (F) / %d (H) / %d (R)", totalCorrections, totalUnlicensed, totalFreqCorrections, totalHarmonics, reputationTotal), // 6
@@ -1867,7 +1885,7 @@ func isStale(s *spot.Spot, policy config.SpotPolicy) bool {
 // processOutputSpots receives deduplicated spots and distributes them
 // Deduplicator Output  Ring Buffer  Broadcast to Clients
 // Purpose: Process deduplicated spots and distribute to ring buffer and outputs.
-// Key aspects: Applies corrections, caching, licensing, secondary dedupe, and fan-out.
+// Key aspects: Applies corrections, caching, licensing, secondary dedupe, aggregation, and fan-out.
 // Upstream: deduplicator output channel.
 // Downstream: grid updates, telnet broadcast, archive writer, peer publish.
 func processOutputSpots(
@@ -1876,6 +1894,7 @@ func processOutputSpots(
 	secondaryMed *dedup.SecondaryDeduper,
 	secondarySlow *dedup.SecondaryDeduper,
 	secondaryStage *atomic.Uint64,
+	skimmerAgg *aggregate.SkimmerAggregator,
 	modeAssigner *spot.ModeAssigner,
 	buf *buffer.RingBuffer,
 	telnet *telnet.Server,
@@ -1890,6 +1909,7 @@ func processOutputSpots(
 	knownCalls *atomic.Pointer[spot.KnownCallsigns],
 	freqAvg *spot.FrequencyAverager,
 	spotPolicy config.SpotPolicy,
+	peerRxOnly bool,
 	dash ui.Surface,
 	gridUpdate func(call, grid string),
 	gridLookup func(call string) (string, bool, bool),
@@ -2051,7 +2071,7 @@ func processOutputSpots(
 				if base == "" {
 					base = s.DECall
 				}
-				stripped := collapseSSIDForBroadcast(base)
+				stripped := spot.CollapseSSID(base)
 				s.DECallStripped = stripped
 				s.DECallNormStripped = stripped
 			}
@@ -2234,13 +2254,46 @@ func processOutputSpots(
 			}
 
 			if telnet != nil {
-				telnet.BroadcastSpot(s, allowFast, allowMed, allowSlow)
+				if skimmerAgg != nil && skimmerAgg.ShouldAggregate(s) {
+					_ = skimmerAgg.Enqueue(s)
+				} else {
+					telnet.BroadcastSpot(s, allowFast, allowMed, allowSlow)
+				}
 			}
-			if peerManager != nil && allowMed && shouldPublishToPeers(s) {
+			if peerManager != nil && allowMed && shouldPublishToPeers(s, peerRxOnly) {
 				peerSpot := cloneSpotForPeerPublish(s)
 				peerManager.PublishDX(peerSpot)
 			}
 		}()
+	}
+}
+
+// broadcastAggregatedSpots forwards aggregated skimmer outputs to telnet only.
+// Purpose: Keep aggregation broadcast-only while preserving peer/archive flows.
+// Key aspects: Exits on context cancel or channel close; updates lastOutput.
+// Upstream: skimmer aggregator output channel.
+// Downstream: telnet broadcast queue.
+func broadcastAggregatedSpots(ctx context.Context, agg *aggregate.SkimmerAggregator, telnetSrv *telnet.Server, lastOutput *atomic.Int64) {
+	if agg == nil || telnetSrv == nil {
+		return
+	}
+	out := agg.Output()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case s, ok := <-out:
+			if !ok {
+				return
+			}
+			if s == nil {
+				continue
+			}
+			if lastOutput != nil {
+				lastOutput.Store(time.Now().UTC().UnixNano())
+			}
+			telnetSrv.BroadcastSpot(s, true, true, true)
+		}
 	}
 }
 
@@ -2261,10 +2314,11 @@ func shouldArchiveSpot(s *spot.Spot) bool {
 }
 
 // Purpose: Decide whether a spot should be forwarded to peers.
-// Key aspects: Excludes upstream/peer sources and test spotters.
+// Key aspects: Excludes upstream/peer sources and test spotters; optional rxOnly
+// allows only manual human spots to flow to peers.
 // Upstream: processOutputSpots.
 // Downstream: peer.Manager.PublishDX.
-func shouldPublishToPeers(s *spot.Spot) bool {
+func shouldPublishToPeers(s *spot.Spot, rxOnly bool) bool {
 	if s == nil || s.IsTestSpotter {
 		return false
 	}
@@ -2272,6 +2326,9 @@ func shouldPublishToPeers(s *spot.Spot) bool {
 	case spot.SourceUpstream, spot.SourcePeer:
 		return false
 	default:
+		if rxOnly {
+			return s.SourceType == spot.SourceManual
+		}
 		return true
 	}
 }
@@ -2654,7 +2711,6 @@ func lookupGridUnified(call string, gridLookupSync func(string) (string, bool, b
 	}
 	return "", false, false
 }
-
 // cloneSpotForPeerPublish ensures manual spots carry an inferred mode to peers
 // even when the user omitted a comment. Peers only see the comment field in
 // PC61/PC11 frames, so we fall back to the inferred mode when the comment is
