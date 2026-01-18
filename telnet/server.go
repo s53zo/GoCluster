@@ -233,14 +233,23 @@ type bulletin struct {
 }
 
 type broadcastMetrics struct {
-	queueDrops  uint64
-	clientDrops uint64
+	queueDrops     uint64
+	clientDrops    uint64
+	senderFailures uint64
 }
 
-func (m *broadcastMetrics) snapshot() (queueDrops, clientDrops uint64) {
+func (m *broadcastMetrics) snapshot() (queueDrops, clientDrops, senderFailures uint64) {
 	queueDrops = atomic.LoadUint64(&m.queueDrops)
 	clientDrops = atomic.LoadUint64(&m.clientDrops)
+	senderFailures = atomic.LoadUint64(&m.senderFailures)
 	return
+}
+
+func (s *Server) recordSenderFailure() uint64 {
+	if s == nil {
+		return 0
+	}
+	return atomic.AddUint64(&s.metrics.senderFailures, 1)
 }
 
 // handleDialectCommand lets a client select a filter command dialect explicitly.
@@ -644,6 +653,46 @@ func (s *Server) BroadcastSpot(spot *spot.Spot) {
 	}
 }
 
+// DeliverSelfSpot sends a spot only to the matching callsign client when SELF
+// delivery is enabled, even if the broadcast path suppresses the spot.
+// It never fans out to other clients.
+func (s *Server) DeliverSelfSpot(spot *spot.Spot) {
+	if s == nil || spot == nil {
+		return
+	}
+	dxCall := normalizedDXCall(spot)
+	if dxCall == "" {
+		return
+	}
+
+	s.clientsMutex.RLock()
+	client := s.clients[dxCall]
+	s.clientsMutex.RUnlock()
+	if client == nil {
+		return
+	}
+
+	client.pendingDeliveries.Add(1)
+	defer client.pendingDeliveries.Done()
+
+	client.filterMu.RLock()
+	allowSelf := client.filter.SelfEnabled()
+	client.filterMu.RUnlock()
+	if !allowSelf {
+		return
+	}
+
+	select {
+	case client.spotChan <- spot:
+	default:
+		drops := atomic.AddUint64(&s.metrics.clientDrops, 1)
+		clientDrops := atomic.AddUint64(&client.dropCount, 1)
+		if shouldLogQueueDrop(drops) {
+			log.Printf("Client %s spot channel full, dropping spot (client drops=%d total=%d)", client.callsign, clientDrops, drops)
+		}
+	}
+}
+
 // BroadcastRaw sends a raw line to all connected clients without formatting.
 // Use this for non-spot PC frames (e.g., PC26) that should pass through unchanged.
 func (s *Server) BroadcastRaw(line string) {
@@ -882,6 +931,32 @@ func (s *Server) broadcastWorker(id int, jobs <-chan *broadcastJob) {
 	}
 }
 
+// normalizedDXCall returns the normalized DX callsign for matching.
+func normalizedDXCall(s *spot.Spot) string {
+	if s == nil {
+		return ""
+	}
+	s.EnsureNormalized()
+	if s.DXCallNorm != "" {
+		return strings.ToUpper(strings.TrimSpace(s.DXCallNorm))
+	}
+	return spot.NormalizeCallsign(s.DXCall)
+}
+
+// isSelfMatch reports whether the spot DX call matches the provided callsign.
+// Both values are normalized for portable/SSID consistency.
+func isSelfMatch(s *spot.Spot, callsign string) bool {
+	callsign = strings.ToUpper(strings.TrimSpace(callsign))
+	if callsign == "" {
+		return false
+	}
+	dxCall := normalizedDXCall(s)
+	if dxCall == "" {
+		return false
+	}
+	return dxCall == callsign
+}
+
 func (s *Server) deliverJob(job *broadcastJob) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -893,9 +968,15 @@ func (s *Server) deliverJob(job *broadcastJob) {
 			continue
 		}
 		client.pendingDeliveries.Done()
-		// Always deliver spots where the DX callsign matches the logged-in user,
-		// regardless of filters (self-spots should not be filtered out).
-		if !strings.EqualFold(job.spot.DXCall, client.callsign) {
+		// Self-match spots can bypass filters when SELF is enabled.
+		if isSelfMatch(job.spot, client.callsign) {
+			client.filterMu.RLock()
+			allowSelf := client.filter.SelfEnabled()
+			client.filterMu.RUnlock()
+			if !allowSelf {
+				continue
+			}
+		} else {
 			client.filterMu.RLock()
 			matches := client.filter.Matches(job.spot)
 			client.filterMu.RUnlock()
@@ -924,7 +1005,7 @@ func (s *Server) WorkerCount() int {
 	return workers
 }
 
-func (s *Server) BroadcastMetricSnapshot() (queueDrops, clientDrops uint64) {
+func (s *Server) BroadcastMetricSnapshot() (queueDrops, clientDrops, senderFailures uint64) {
 	return s.metrics.snapshot()
 }
 
@@ -1597,7 +1678,20 @@ func (c *Client) spotSender() {
 				formatted = c.server.formatSpotForClient(c, spot)
 			}
 			if err := c.Send(formatted); err != nil {
-				log.Printf("Error sending spot to %s: %v", c.callsign, err)
+				failures := uint64(0)
+				if c.server != nil {
+					failures = c.server.recordSenderFailure()
+				}
+				if failures > 0 {
+					log.Printf("Client %s disconnecting: sender write failure (spot): %v (total sender failures=%d)", c.callsign, err, failures)
+				} else {
+					log.Printf("Client %s disconnecting: sender write failure (spot): %v", c.callsign, err)
+				}
+				// Closing the connection forces the session read loop to exit so
+				// the client unregisters and stops accumulating drops.
+				if c.conn != nil {
+					_ = c.conn.Close()
+				}
 				return
 			}
 		case bulletin, ok := <-bulletinCh:
@@ -1606,7 +1700,20 @@ func (c *Client) spotSender() {
 				continue
 			}
 			if err := c.Send(bulletin.line); err != nil {
-				log.Printf("Error sending bulletin to %s: %v", c.callsign, err)
+				failures := uint64(0)
+				if c.server != nil {
+					failures = c.server.recordSenderFailure()
+				}
+				if failures > 0 {
+					log.Printf("Client %s disconnecting: sender write failure (bulletin): %v (total sender failures=%d)", c.callsign, err, failures)
+				} else {
+					log.Printf("Client %s disconnecting: sender write failure (bulletin): %v", c.callsign, err)
+				}
+				// Closing the connection forces the session read loop to exit so
+				// the client unregisters and stops accumulating drops.
+				if c.conn != nil {
+					_ = c.conn.Close()
+				}
 				return
 			}
 		}

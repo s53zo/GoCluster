@@ -77,7 +77,7 @@ Non-trivial change (full delivery workflow, default posture):
 3) Implementation: bounded resources, clear invariants, cancellation/deadlines everywhere, maintainable hot paths.
 4) Tests: unit + deterministic queue/drop/disconnect tests; race-relevant coverage; fuzz/property tests for parsers when applicable.
 5) Performance evidence when hot paths change or any “faster” claim is made: before/after bench or pprof; include allocs/op.
-6) Documentation: inline invariants/ownership; package-level behavior notes; repo docs if operator-visible behavior/config changes.
+6) Documentation: inline invariants/ownership; package-level behavior notes; YAML configuration files,repo README and docs if operator-visible behavior/config changes.
 7) PR-style summary: what changed, why, tradeoffs, risks/mitigations, observability impact (metrics/log fields), verification commands, and Scope-to-Code Traceability.
 
 ### Definition of Done (always)

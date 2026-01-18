@@ -274,6 +274,18 @@ func TestPassCommands(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "pass self enables",
+			cmd:  "PASS SELF",
+			setup: func(c *Client) {
+				c.filter.SetSelfEnabled(false)
+			},
+			check: func(t *testing.T, f *filter.Filter) {
+				if !f.SelfEnabled() {
+					t.Fatalf("expected self delivery to be enabled")
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -402,6 +414,15 @@ func TestRejectCommands(t *testing.T) {
 			},
 		},
 		{
+			name: "reject self disables",
+			cmd:  "REJECT SELF",
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.SelfEnabled() {
+					t.Fatalf("expected self delivery to be disabled")
+				}
+			},
+		},
+		{
 			name: "reject dxcall requires args",
 			cmd:  "REJECT DXCALL",
 			setup: func(c *Client) {
@@ -479,6 +500,9 @@ func TestShowFilterSnapshotDefault(t *testing.T) {
 	}
 	if !strings.Contains(resp, "DXCALL: allow=ALL block=NONE") {
 		t.Fatalf("expected DXCALL line to show allow/block defaults, got: %q", resp)
+	}
+	if !strings.Contains(resp, "SELF: ON") {
+		t.Fatalf("expected SELF line in snapshot, got: %q", resp)
 	}
 }
 
@@ -717,6 +741,22 @@ func TestCCDialectAliases(t *testing.T) {
 		t.Fatalf("expected beacons disabled via CC dialect")
 	}
 
+	resp, handled = engine.Handle(client, "SET/NOSELF")
+	if !handled || resp == "" {
+		t.Fatalf("expected SET/NOSELF handled with response, got handled=%v resp=%q", handled, resp)
+	}
+	if client.filter.SelfEnabled() {
+		t.Fatalf("expected self delivery disabled via CC dialect")
+	}
+
+	resp, handled = engine.Handle(client, "SET/SELF")
+	if !handled || resp == "" {
+		t.Fatalf("expected SET/SELF handled with response, got handled=%v resp=%q", handled, resp)
+	}
+	if !client.filter.SelfEnabled() {
+		t.Fatalf("expected self delivery enabled via CC dialect")
+	}
+
 	resp, handled = engine.Handle(client, "SET/SKIMMER")
 	if !handled || resp == "" {
 		t.Fatalf("expected SET/SKIMMER handled with response, got handled=%v resp=%q", handled, resp)
@@ -910,6 +950,9 @@ func assertFilterMatchesDefaults(t *testing.T, got *filter.Filter) {
 	if got.BeaconsEnabled() != expected.BeaconsEnabled() || got.WWVEnabled() != expected.WWVEnabled() || got.WCYEnabled() != expected.WCYEnabled() || got.AnnounceEnabled() != expected.AnnounceEnabled() {
 		t.Fatalf("feature defaults mismatch: got beacon=%v wwv=%v wcy=%v announce=%v", got.BeaconsEnabled(), got.WWVEnabled(), got.WCYEnabled(), got.AnnounceEnabled())
 	}
+	if got.SelfEnabled() != expected.SelfEnabled() {
+		t.Fatalf("self defaults mismatch: got=%v expected=%v", got.SelfEnabled(), expected.SelfEnabled())
+	}
 	if got.AllDXContinents != expected.AllDXContinents || got.AllDEContinents != expected.AllDEContinents {
 		t.Fatalf("continent defaults mismatch: got DX=%v DE=%v", got.AllDXContinents, got.AllDEContinents)
 	}
@@ -1067,5 +1110,68 @@ func TestBroadcastAnnouncementRespectsFilter(t *testing.T) {
 	case <-block.bulletinChan:
 		t.Fatalf("did not expect announcement delivered to blocked client")
 	default:
+	}
+}
+
+func TestBroadcastSelfRespectsSelfToggle(t *testing.T) {
+	server := &Server{}
+	client := &Client{
+		callsign: "K1ABC",
+		spotChan: make(chan *spot.Spot, 1),
+		filter:   filter.NewFilter(),
+	}
+
+	blocked := spot.NewSpot("K1ABC", "W1XYZ", 14074.0, "FT8")
+	client.filter.SetSelfEnabled(false)
+	client.pendingDeliveries.Add(1)
+	server.deliverJob(&broadcastJob{spot: blocked, clients: []*Client{client}})
+
+	select {
+	case <-client.spotChan:
+		t.Fatalf("did not expect self spot delivered when SELF disabled")
+	default:
+	}
+
+	client.filter.SetSelfEnabled(true)
+	client.filter.BlockAllBands = true
+	client.filter.AllBands = false
+	client.pendingDeliveries.Add(1)
+	server.deliverJob(&broadcastJob{spot: blocked, clients: []*Client{client}})
+
+	select {
+	case <-client.spotChan:
+	default:
+		t.Fatalf("expected self spot delivered when SELF enabled")
+	}
+}
+
+func TestDeliverSelfSpotRespectsSelfToggle(t *testing.T) {
+	server := &Server{
+		clients: make(map[string]*Client),
+	}
+	client := &Client{
+		callsign: "K1ABC",
+		spotChan: make(chan *spot.Spot, 1),
+		filter:   filter.NewFilter(),
+	}
+	server.clients["K1ABC"] = client
+
+	spotMatch := spot.NewSpot("K1ABC/P", "W1XYZ", 14074.0, "FT8")
+	client.filter.SetSelfEnabled(false)
+	server.DeliverSelfSpot(spotMatch)
+
+	select {
+	case <-client.spotChan:
+		t.Fatalf("did not expect direct self spot when SELF disabled")
+	default:
+	}
+
+	client.filter.SetSelfEnabled(true)
+	server.DeliverSelfSpot(spotMatch)
+
+	select {
+	case <-client.spotChan:
+	default:
+		t.Fatalf("expected direct self spot when SELF enabled")
 	}
 }

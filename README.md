@@ -174,7 +174,7 @@ Telnet clients can issue commands via the prompt once logged in. The processor, 
 - `SHOW MYDX [N]` - like `SHOW DX`, but runs archived/ring-buffered spots through the logged-in user's filters (self-spots always pass). Very narrow filters may return fewer than `N` results.
 - `BYE`, `QUIT`, `EXIT` - request a graceful logout; the server replies with `73!` and closes the connection.
 
-Filter management commands use a table-driven engine in `telnet/server.go` with explicit dialect selection. The default `go` dialect uses `PASS`/`REJECT`/`SHOW FILTER`. A CC-style subset is available via `DIALECT cc` (aliases: `SET/ANN`, `SET/NOANN`, `SET/BEACON`, `SET/NOBEACON`, `SET/WWV`, `SET/NOWWV`, `SET/WCY`, `SET/NOWCY`, `SET/SKIMMER`, `SET/NOSKIMMER`, `SET/<MODE>`, `SET/NO<MODE>`, `SET/FILTER DXBM/PASS|REJECT <band>` mapping CC DXBM bands to our band filters, `SET/NOFILTER`, plus `SET/FILTER`/`UNSET/FILTER`/`SHOW/FILTER`). `DIALECT LIST` shows the available dialects, the chosen dialect is persisted per callsign along with filter state, and HELP renders the verbs for the active dialect. Classic/go commands operate on each client's `filter.Filter` and fall into `PASS`, `REJECT`, and `SHOW FILTER` groups:
+Filter management commands use a table-driven engine in `telnet/server.go` with explicit dialect selection. The default `go` dialect uses `PASS`/`REJECT`/`SHOW FILTER`. A CC-style subset is available via `DIALECT cc` (aliases: `SET/ANN`, `SET/NOANN`, `SET/BEACON`, `SET/NOBEACON`, `SET/WWV`, `SET/NOWWV`, `SET/WCY`, `SET/NOWCY`, `SET/SELF`, `SET/NOSELF`, `SET/SKIMMER`, `SET/NOSKIMMER`, `SET/<MODE>`, `SET/NO<MODE>`, `SET/FILTER DXBM/PASS|REJECT <band>` mapping CC DXBM bands to our band filters, `SET/NOFILTER`, plus `SET/FILTER`/`UNSET/FILTER`/`SHOW/FILTER`). `DIALECT LIST` shows the available dialects, the chosen dialect is persisted per callsign along with filter state, and HELP renders the verbs for the active dialect. Classic/go commands operate on each client's `filter.Filter` and fall into `PASS`, `REJECT`, and `SHOW FILTER` groups:
 
 - Operator note: `RESET FILTER` re-applies the configured defaults from `data/config/runtime.yaml` (`filter.default_modes` and `filter.default_sources`). `SET/NOFILTER` is CC-only and resets to a fully permissive "all pass" state; it does not use configured defaults.
 
@@ -193,6 +193,7 @@ Effective labels in the snapshot use a fixed vocabulary: `all pass`, `all except
 - `PASS DECALL <pattern>[,<pattern>...]` - begins delivering only spots with DE/spotter calls matching the supplied patterns.
 - `PASS CONFIDENCE <symbol>[,<symbol>...]` - enables the comma- or space-separated list of consensus glyphs (valid symbols: `?`, `S`, `C`, `P`, `V`, `B`; use `ALL` to accept every glyph).
 - `PASS BEACON` - explicitly enable delivery of beacon spots (DX calls ending `/B`; enabled by default).
+- `PASS SELF` - always deliver spots where the DX callsign matches your normalized callsign (even if filters would normally block).
 - `REJECT BAND <band>[,<band>...]` - disables only the comma- or space-separated list of bands provided (use `ALL` to block every band).
 - `REJECT MODE <mode>[,<mode>...]` - disables only the comma- or space-separated list of modes provided (specify `ALL` to block every mode).
 - `REJECT SOURCE <HUMAN|SKIMMER|ALL>` - blocks one origin category (human/operator spots vs automated/skimmer spots), or `ALL`.
@@ -203,10 +204,12 @@ Effective labels in the snapshot use a fixed vocabulary: `all pass`, `all except
 - `REJECT DECALL <pattern>[,<pattern>...]` - blocks the supplied DE callsign patterns.
 - `REJECT CONFIDENCE <symbol>[,<symbol>...]` - disables only the comma- or space-separated list of glyphs provided (use `ALL` to block every glyph).
 - `REJECT BEACON` - drop beacon spots entirely (they remain tagged internally for future processing).
+- `REJECT SELF` - suppress all spots where the DX callsign matches your normalized callsign.
 
 Confidence glyphs are only emitted for modes that run consensus-based correction (CW/RTTY/USB/LSB voice modes). FT8/FT4 spots carry no confidence glyphs, so confidence filters do not affect them. After correction assigns `P`/`V`/`C`/`?`, any remaining `?` is upgraded to `S` when the DX call is present in `MASTER.SCP`.
 
 Band, mode, confidence, and DXGRID2/DEGRID2 commands share identical semantics: they accept comma- or space-separated lists, ignore duplicates/case, and treat the literal `ALL` as a shorthand to allow or block everything for that type. PASS/REJECT add to allow/block lists and remove the same items from the opposite list. DXGRID2 applies only to the DX grid when it is exactly two characters long; DEGRID2 applies only to the DE grid when it is exactly two characters long. 4/6-character or empty grids are unaffected, and longer tokens provided by the user are truncated to their first two characters before validation.
+SELF matches the normalized DX callsign only; when a spot is suppressed by secondary dedupe, a matching client still receives it if SELF is enabled. This delivery is per-client and does not bypass secondary dedupe for the global broadcast stream.
 
 Confidence indicator legend in telnet output:
 
@@ -382,7 +385,7 @@ Use these commands interactively to tailor the spot stream to your operating pre
 
 ### Telnet Throughput Controls
 
-The telnet server fans every post-dedup spot to every connected client. When PSKReporter or both RBN feeds spike, the broadcast queue can saturate and you'll see `Broadcast channel full, dropping spot` along with a rising `Telnet drops` metric in the stats ticker. Tune the `telnet` block in `data/config/runtime.yaml` to match your load profile:
+The telnet server fans every post-dedup spot to every connected client. When PSKReporter or both RBN feeds spike, the broadcast queue can saturate and you'll see `Broadcast channel full, dropping spot` along with a rising `Telnet drops` metric in the stats ticker (Q/C/W = broadcast queue drops / per-client queue drops / sender write-failure disconnects). Tune the `telnet` block in `data/config/runtime.yaml` to match your load profile:
 
 - `broadcast_workers` keeps the existing behavior (`0` = auto at half your CPUs, minimum 2).
 - `broadcast_queue_size` controls the global queue depth ahead of the worker pool (default `2048`); larger buffers smooth bursty ingest before anything is dropped.

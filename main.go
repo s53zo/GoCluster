@@ -1213,10 +1213,10 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 			}
 		}
 
-		var queueDrops, clientDrops uint64
+		var queueDrops, clientDrops, senderFailures uint64
 		var clientCount int
 		if telnetSrv != nil {
-			queueDrops, clientDrops = telnetSrv.BroadcastMetricSnapshot()
+			queueDrops, clientDrops, senderFailures = telnetSrv.BroadcastMetricSnapshot()
 			clientCount = telnetSrv.GetClientCount()
 		}
 
@@ -1238,7 +1238,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 			fmt.Sprintf("Corrected calls: %d (C) / %d (U) / %d (F) / %d (H)", totalCorrections, totalUnlicensed, totalFreqCorrections, totalHarmonics), // 7
 			formatReputationDropSummary(reputationTotal, reputationReasons),                                                                            // 8
 			pipelineLine, // 9
-			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C)", clientCount, queueDrops, clientDrops), // 10
+			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C) / %d (W)", clientCount, queueDrops, clientDrops, senderFailures), // 10
 		}
 
 		prevSourceCounts = sourceTotals
@@ -1640,6 +1640,9 @@ func processOutputSpots(
 
 			// Broadcast-only dedupe: ring/history already updated above.
 			if secondary != nil && !secondary.ShouldForward(s) {
+				if telnet != nil {
+					telnet.DeliverSelfSpot(s)
+				}
 				return
 			}
 
