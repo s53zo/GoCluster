@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"dxcluster/aggregate"
 	"dxcluster/archive"
 	"dxcluster/bandmap"
 	"dxcluster/buffer"
@@ -617,6 +618,19 @@ func main() {
 		log.Println("Secondary deduplication disabled; all spots broadcast")
 	}
 
+	var skimmerAggregator *aggregate.SkimmerAggregator
+	if cfg.SkimmerAggregate.Enabled {
+		skimmerAggregator = aggregate.NewSkimmerAggregator(cfg.SkimmerAggregate)
+		skimmerAggregator.Start(ctx)
+		log.Printf("DXSpider-style deduping enabled (dwell=%ds limbo=%ds min_quality=%d max_quality=%d)",
+			cfg.SkimmerAggregate.DwellSeconds,
+			cfg.SkimmerAggregate.LimboSeconds,
+			cfg.SkimmerAggregate.MinQuality,
+			cfg.SkimmerAggregate.MaxQuality)
+	} else {
+		log.Println("DXSpider-style deduping disabled; skimmer spots broadcast unaggregated")
+	}
+
 	modeSeeds := make([]spot.ModeSeed, 0, len(cfg.ModeInference.DigitalSeeds))
 	for _, seed := range cfg.ModeInference.DigitalSeeds {
 		modeSeeds = append(modeSeeds, spot.ModeSeed{
@@ -701,6 +715,7 @@ func main() {
 		ReputationGate:          repGate,
 		PathPredictor:           pathPredictor,
 		PathDisplayEnabled:      pathCfg.DisplayEnabled,
+		PathInferGrid2FromCTY:   cfg.SkimmerAggregate.Enabled,
 		NoiseOffsets:            pathCfg.NoiseOffsets,
 		GridLookup:              gridLookup,
 		CTYLookup:               ctyLookup,
@@ -722,10 +737,13 @@ func main() {
 	// Start the unified output processor once the telnet server is ready
 	var lastOutput atomic.Int64
 	// Purpose: Run the single-threaded output pipeline for deduped spots.
-	// Key aspects: Handles corrections, licensing, secondary dedupe, and fan-out.
+	// Key aspects: Handles corrections, licensing, secondary dedupe, aggregation, and fan-out.
 	// Upstream: main startup after wiring dependencies.
 	// Downstream: processOutputSpots.
-	go processOutputSpots(deduplicator, secondaryDeduper, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor)
+	go processOutputSpots(deduplicator, secondaryDeduper, skimmerAggregator, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor)
+	if skimmerAggregator != nil && telnetServer != nil {
+		go broadcastAggregatedSpots(ctx, skimmerAggregator, telnetServer, &lastOutput)
+	}
 	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
@@ -844,7 +862,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryDeduper, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath, pathPredictor)
+	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryDeduper, skimmerAggregator, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath, pathPredictor)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -1122,10 +1140,10 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 }
 
 // Purpose: Periodically emit stats with FCC metadata refresh.
-// Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
+// Key aspects: Uses a ticker, diff counters, and optional dedupe/aggregate stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string, pathPredictor *pathreliability.Predictor) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, skimmerAgg *aggregate.SkimmerAggregator, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string, pathPredictor *pathreliability.Predictor) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -1213,6 +1231,21 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 			}
 		}
 
+		aggregateLine := "DXSpider-style dedupe: disabled"
+		if skimmerAgg != nil {
+			enq, emitted, inDrops, outDrops, limboDrops, respotDrops, recordDrops, inrushDrops := skimmerAgg.Stats()
+			aggregateLine = fmt.Sprintf("DXSpider-style dedupe: enq=%s emit=%s limbo=%s respot=%s inrush=%s drop(in=%s out=%s rec=%s)",
+				humanize.Comma(int64(enq)),
+				humanize.Comma(int64(emitted)),
+				humanize.Comma(int64(limboDrops)),
+				humanize.Comma(int64(respotDrops)),
+				humanize.Comma(int64(inrushDrops)),
+				humanize.Comma(int64(inDrops)),
+				humanize.Comma(int64(outDrops)),
+				humanize.Comma(int64(recordDrops)),
+			)
+		}
+
 		var queueDrops, clientDrops uint64
 		var clientCount int
 		if telnetSrv != nil {
@@ -1237,8 +1270,9 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 			), // 6
 			fmt.Sprintf("Corrected calls: %d (C) / %d (U) / %d (F) / %d (H)", totalCorrections, totalUnlicensed, totalFreqCorrections, totalHarmonics), // 7
 			formatReputationDropSummary(reputationTotal, reputationReasons),                                                                            // 8
-			pipelineLine, // 9
-			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C)", clientCount, queueDrops, clientDrops), // 10
+			pipelineLine,  // 9
+			aggregateLine, // 10
+			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C)", clientCount, queueDrops, clientDrops), // 11
 		}
 
 		prevSourceCounts = sourceTotals
@@ -1364,12 +1398,13 @@ func isStale(s *spot.Spot, policy config.SpotPolicy) bool {
 // processOutputSpots receives deduplicated spots and distributes them
 // Deduplicator Output  Ring Buffer  Broadcast to Clients
 // Purpose: Process deduplicated spots and distribute to ring buffer and outputs.
-// Key aspects: Applies corrections, caching, licensing, secondary dedupe, and fan-out.
+// Key aspects: Applies corrections, caching, licensing, secondary dedupe, aggregation, and fan-out.
 // Upstream: deduplicator output channel.
 // Downstream: grid updates, telnet broadcast, archive writer, peer publish.
 func processOutputSpots(
 	deduplicator *dedup.Deduplicator,
 	secondary *dedup.SecondaryDeduper,
+	skimmerAgg *aggregate.SkimmerAggregator,
 	modeAssigner *spot.ModeAssigner,
 	buf *buffer.RingBuffer,
 	telnet *telnet.Server,
@@ -1547,7 +1582,7 @@ func processOutputSpots(
 				if base == "" {
 					base = s.DECall
 				}
-				stripped := collapseSSIDForBroadcast(base)
+				stripped := spot.CollapseSSID(base)
 				s.DECallStripped = stripped
 				s.DECallNormStripped = stripped
 			}
@@ -1669,13 +1704,46 @@ func processOutputSpots(
 			}
 
 			if telnet != nil {
-				telnet.BroadcastSpot(s)
+				if skimmerAgg != nil && skimmerAgg.ShouldAggregate(s) {
+					_ = skimmerAgg.Enqueue(s)
+				} else {
+					telnet.BroadcastSpot(s)
+				}
 			}
 			if peerManager != nil && s.SourceType != spot.SourceUpstream && s.SourceType != spot.SourcePeer {
 				peerSpot := cloneSpotForPeerPublish(s)
 				peerManager.PublishDX(peerSpot)
 			}
 		}()
+	}
+}
+
+// broadcastAggregatedSpots forwards aggregated skimmer outputs to telnet only.
+// Purpose: Keep aggregation broadcast-only while preserving peer/archive flows.
+// Key aspects: Exits on context cancel or channel close; updates lastOutput.
+// Upstream: skimmer aggregator output channel.
+// Downstream: telnet broadcast queue.
+func broadcastAggregatedSpots(ctx context.Context, agg *aggregate.SkimmerAggregator, telnetSrv *telnet.Server, lastOutput *atomic.Int64) {
+	if agg == nil || telnetSrv == nil {
+		return
+	}
+	out := agg.Output()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case s, ok := <-out:
+			if !ok {
+				return
+			}
+			if s == nil {
+				continue
+			}
+			if lastOutput != nil {
+				lastOutput.Store(time.Now().UTC().UnixNano())
+			}
+			telnetSrv.BroadcastSpot(s)
+		}
 	}
 }
 
@@ -1739,43 +1807,6 @@ func startPipelineHealthMonitor(ctx context.Context, dedup *dedup.Deduplicator, 
 			}
 		}
 	}()
-}
-
-// collapseSSIDForBroadcast trims SSID fragments so clients see a single
-// skimmer identity (e.g., N2WQ-1-# -> N2WQ-#, N2WQ-1 -> N2WQ).
-// It preserves non-numeric suffixes.
-// Purpose: Normalize spotter SSIDs before telnet broadcast.
-// Key aspects: Collapses numeric suffixes while preserving non-numeric tokens.
-// Upstream: processOutputSpots.
-// Downstream: stripNumericSSID.
-func collapseSSIDForBroadcast(call string) string {
-	call = strings.TrimSpace(call)
-	if call == "" {
-		return call
-	}
-	if strings.HasSuffix(call, "-#") {
-		trimmed := strings.TrimSuffix(call, "-#")
-		return stripNumericSSID(trimmed) + "-#"
-	}
-	return stripNumericSSID(call)
-}
-
-// Purpose: Remove a numeric SSID suffix (e.g., "-1") from a callsign.
-// Key aspects: Leaves non-numeric suffixes intact.
-// Upstream: collapseSSIDForBroadcast.
-// Downstream: strings.LastIndexByte.
-func stripNumericSSID(call string) string {
-	idx := strings.LastIndexByte(call, '-')
-	if idx <= 0 || idx == len(call)-1 {
-		return call
-	}
-	suffix := call[idx+1:]
-	for i := 0; i < len(suffix); i++ {
-		if suffix[i] < '0' || suffix[i] > '9' {
-			return call
-		}
-	}
-	return call[:idx]
 }
 
 // cloneSpotForPeerPublish ensures manual spots carry an inferred mode to peers

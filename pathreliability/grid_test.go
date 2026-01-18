@@ -2,26 +2,22 @@ package pathreliability
 
 import "testing"
 
-func TestEncodeCell(t *testing.T) {
-	cell := EncodeCell("FN31")
-	if cell == InvalidCell {
-		t.Fatalf("expected valid cell for FN31")
+func TestGrid2FromLatLon(t *testing.T) {
+	cases := []struct {
+		lat  float64
+		lon  float64
+		want string
+	}{
+		{46.0, 14.0, "JN"},
+		{-45.0, -70.0, "FE"},
+		{0.0, 0.0, "JJ"},
+		{91.0, 0.0, ""},
+		{0.0, 181.0, ""},
 	}
-	field, col, row, ok := DecodeCell(cell)
-	if !ok {
-		t.Fatalf("expected to decode cell")
-	}
-	if field != "FN" {
-		t.Fatalf("expected field FN, got %s", field)
-	}
-	if col < 0 || col > 1 || row < 0 || row > 1 {
-		t.Fatalf("unexpected col/row: %d/%d", col, row)
-	}
-}
-
-func TestPackGrid2Key(t *testing.T) {
-	k := packGrid2Key("FN", "JN", 1)
-	if k == 0 {
-		t.Fatalf("expected non-zero key")
+	for _, tc := range cases {
+		got := Grid2FromLatLon(tc.lat, tc.lon)
+		if got != tc.want {
+			t.Fatalf("Grid2FromLatLon(%v,%v) = %q, want %q", tc.lat, tc.lon, got, tc.want)
+		}
 	}
 }

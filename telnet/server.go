@@ -116,8 +116,10 @@ type Server struct {
 	startTime         time.Time                   // Process start time for uptime tokens
 	pathPredictor     *pathreliability.Predictor  // Optional path reliability predictor
 	pathDisplay       bool                        // Toggle glyph rendering
+	pathInferGrid2    bool                        // Use CTY lat/lon for grid2 when DX grid missing
 	noiseOffsets      map[string]float64          // Noise class lookup
 	gridLookup        func(string) (string, bool) // Optional grid lookup from store
+	ctyLookup         func() *cty.CTYDatabase     // Optional CTY lookup for grid inference
 }
 
 // Client represents a connected telnet client session.
@@ -456,6 +458,7 @@ type ServerOptions struct {
 	ReputationGate          *reputation.Gate
 	PathPredictor           *pathreliability.Predictor
 	PathDisplayEnabled      bool
+	PathInferGrid2FromCTY   bool
 	NoiseOffsets            map[string]float64
 	GridLookup              func(string) (string, bool)
 	CTYLookup               func() *cty.CTYDatabase
@@ -502,8 +505,10 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		startTime:         time.Now().UTC(),
 		pathPredictor:     opts.PathPredictor,
 		pathDisplay:       opts.PathDisplayEnabled,
+		pathInferGrid2:    opts.PathInferGrid2FromCTY,
 		noiseOffsets:      opts.NoiseOffsets,
 		gridLookup:        opts.GridLookup,
+		ctyLookup:         opts.CTYLookup,
 	}
 }
 
@@ -1334,11 +1339,25 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 	if dxCell == pathreliability.InvalidCell {
 		dxCell = pathreliability.EncodeCell(sp.DXMetadata.Grid)
 	}
-	if dxCell == pathreliability.InvalidCell {
-		return ""
-	}
 	userGrid2 := pathreliability.EncodeGrid2(client.grid)
 	dxGrid2 := pathreliability.EncodeGrid2(sp.DXMetadata.Grid)
+	if dxGrid2 == "" && s != nil && s.pathInferGrid2 && s.ctyLookup != nil && strings.TrimSpace(sp.DXMetadata.Grid) == "" {
+		ctyDB := s.ctyLookup()
+		if ctyDB != nil {
+			dxCall := strings.TrimSpace(sp.DXCallNorm)
+			if dxCall == "" {
+				dxCall = strings.TrimSpace(sp.DXCall)
+			}
+			if dxCall != "" {
+				if info, ok := ctyDB.LookupCallsignPortable(dxCall); ok {
+					dxGrid2 = pathreliability.Grid2FromLatLon(info.Latitude, info.Longitude)
+				}
+			}
+		}
+	}
+	if dxCell == pathreliability.InvalidCell && dxGrid2 == "" {
+		return ""
+	}
 
 	band := sp.BandNorm
 	if strings.TrimSpace(band) == "" {

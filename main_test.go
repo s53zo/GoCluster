@@ -200,7 +200,7 @@ func TestApplyKnownCallFloorSkipsUnsupportedMode(t *testing.T) {
 // Purpose: Validate SSID collapsing rules for broadcast formatting.
 // Key aspects: Covers numeric, non-numeric, and composite suffixes.
 // Upstream: go test execution.
-// Downstream: collapseSSIDForBroadcast.
+// Downstream: spot.CollapseSSID.
 func TestCollapseSSIDForBroadcast(t *testing.T) {
 	cases := []struct {
 		input string
@@ -216,9 +216,9 @@ func TestCollapseSSIDForBroadcast(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got := collapseSSIDForBroadcast(tc.input)
+		got := spot.CollapseSSID(tc.input)
 		if got != tc.want {
-			t.Fatalf("collapseSSIDForBroadcast(%q) = %q, want %q", tc.input, got, tc.want)
+			t.Fatalf("CollapseSSID(%q) = %q, want %q", tc.input, got, tc.want)
 		}
 	}
 }
