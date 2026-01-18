@@ -1231,27 +1231,27 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 			}
 		}
 
-		aggregateLine := "DXSpider-style dedupe: disabled"
-		if skimmerAgg != nil {
-			enq, emitted, inDrops, outDrops, limboDrops, respotDrops, recordDrops, inrushDrops := skimmerAgg.Stats()
-			aggregateLine = fmt.Sprintf("DXSpider-style dedupe: enq=%s emit=%s limbo=%s respot=%s inrush=%s drop(in=%s out=%s rec=%s)",
-				humanize.Comma(int64(enq)),
+			aggregateLine := "DXSpider-style dedupe: disabled"
+			if skimmerAgg != nil {
+				enq, emitted, inDrops, outDrops, limboDrops, respotDrops, recordDrops, inrushDrops := skimmerAgg.Stats()
+				aggregateLine = fmt.Sprintf("DXSpider-style dedupe: enq=%s emit=%s limbo=%s respot=%s inrush=%s drop(in=%s out=%s rec=%s)",
+					humanize.Comma(int64(enq)),
 				humanize.Comma(int64(emitted)),
 				humanize.Comma(int64(limboDrops)),
 				humanize.Comma(int64(respotDrops)),
 				humanize.Comma(int64(inrushDrops)),
 				humanize.Comma(int64(inDrops)),
-				humanize.Comma(int64(outDrops)),
-				humanize.Comma(int64(recordDrops)),
-			)
-		}
+					humanize.Comma(int64(outDrops)),
+					humanize.Comma(int64(recordDrops)),
+				)
+			}
 
-		var queueDrops, clientDrops uint64
-		var clientCount int
-		if telnetSrv != nil {
-			queueDrops, clientDrops = telnetSrv.BroadcastMetricSnapshot()
-			clientCount = telnetSrv.GetClientCount()
-		}
+			var queueDrops, clientDrops, senderFailures uint64
+			var clientCount int
+			if telnetSrv != nil {
+				queueDrops, clientDrops, senderFailures = telnetSrv.BroadcastMetricSnapshot()
+				clientCount = telnetSrv.GetClientCount()
+			}
 
 		combinedRBN := rbnTotal + rbnFTTotal
 		lines := []string{
@@ -1272,7 +1272,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 			formatReputationDropSummary(reputationTotal, reputationReasons),                                                                            // 8
 			pipelineLine,  // 9
 			aggregateLine, // 10
-			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C)", clientCount, queueDrops, clientDrops), // 11
+			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C) / %d (W)", clientCount, queueDrops, clientDrops, senderFailures), // 11
 		}
 
 		prevSourceCounts = sourceTotals
@@ -1675,6 +1675,9 @@ func processOutputSpots(
 
 			// Broadcast-only dedupe: ring/history already updated above.
 			if secondary != nil && !secondary.ShouldForward(s) {
+				if telnet != nil {
+					telnet.DeliverSelfSpot(s)
+				}
 				return
 			}
 

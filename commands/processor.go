@@ -178,6 +178,7 @@ func filterHelpLines(dialect string) []string {
 		"PASS WWV | REJECT WWV",
 		"PASS WCY | REJECT WCY",
 		"PASS ANNOUNCE | REJECT ANNOUNCE",
+		"PASS SELF | REJECT SELF",
 	}
 	if strings.EqualFold(strings.TrimSpace(dialect), "cc") {
 		lines = append(lines,

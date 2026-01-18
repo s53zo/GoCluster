@@ -139,6 +139,7 @@ func (e *filterCommandEngine) registerDomains() {
 		newFeatureToggleHandler("WWV", func(f *filter.Filter, enabled bool) { f.SetWWVEnabled(enabled) }),
 		newFeatureToggleHandler("WCY", func(f *filter.Filter, enabled bool) { f.SetWCYEnabled(enabled) }),
 		newFeatureToggleHandler("ANNOUNCE", func(f *filter.Filter, enabled bool) { f.SetAnnounceEnabled(enabled) }, "PC93"),
+		newFeatureToggleHandler("SELF", func(f *filter.Filter, enabled bool) { f.SetSelfEnabled(enabled) }),
 	}
 	for _, h := range handlers {
 		e.registerDomain(h)
@@ -357,6 +358,10 @@ func parseCCDialect(tokens, upper []string) (parsedFilterCommand, bool, string) 
 		return parsedFilterCommand{action: actionAllow, domain: "WCY"}, true, ""
 	case "SET/NOWCY":
 		return parsedFilterCommand{action: actionBlock, domain: "WCY"}, true, ""
+	case "SET/SELF":
+		return parsedFilterCommand{action: actionAllow, domain: "SELF"}, true, ""
+	case "SET/NOSELF":
+		return parsedFilterCommand{action: actionBlock, domain: "SELF"}, true, ""
 	case "SET/SKIMMER":
 		return parsedFilterCommand{action: actionAllow, domain: "SOURCE", args: []string{"SKIMMER"}}, true, ""
 	case "SET/NOSKIMMER":
@@ -1252,6 +1257,7 @@ func formatFilterSnapshot(f *filter.Filter, ctyLookup func() *cty.CTYDatabase) s
 	wwvSummary, wwvLine := toggleSnapshot("WWV", f.WWVEnabled(), f.AllowWWV)
 	wcySummary, wcyLine := toggleSnapshot("WCY", f.WCYEnabled(), f.AllowWCY)
 	announceSummary, announceLine := toggleSnapshot("ANNOUNCE", f.AnnounceEnabled(), f.AllowAnnounce)
+	selfSummary, selfLine := toggleSnapshot("SELF", f.SelfEnabled(), f.AllowSelf)
 
 	var b strings.Builder
 	summaryPrefix := "Current filters: "
@@ -1280,6 +1286,7 @@ func formatFilterSnapshot(f *filter.Filter, ctyLookup func() *cty.CTYDatabase) s
 		clampSummaryField(wwvSummary, maxFieldLen),
 		clampSummaryField(wcySummary, maxFieldLen),
 		clampSummaryField(announceSummary, maxFieldLen),
+		clampSummaryField(selfSummary, maxFieldLen),
 	}
 	for _, line := range wrapSummaryLines(summaryPrefix, summaryIndent, summaryParts, summaryMaxWidth) {
 		b.WriteString(line)
@@ -1303,6 +1310,7 @@ func formatFilterSnapshot(f *filter.Filter, ctyLookup func() *cty.CTYDatabase) s
 	b.WriteString(wwvLine)
 	b.WriteString(wcyLine)
 	b.WriteString(announceLine)
+	b.WriteString(selfLine)
 	return b.String()
 }
 
@@ -1848,6 +1856,8 @@ func featureLabels(name string) (enable string, disable string, status string) {
 		return "WCY bulletins", "WCY bulletins", "WCY bulletins"
 	case "ANNOUNCE":
 		return "Announcements", "Announcements", "Announcements"
+	case "SELF":
+		return "Self spots", "Self spots", "Self spots"
 	default:
 		tc := titleCase(name)
 		return tc, tc, tc

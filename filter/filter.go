@@ -349,6 +349,7 @@ type Filter struct {
 	AllowWWV             *bool           `yaml:"allow_wwv,omitempty"`       // nil/true delivers WWV bulletins; false suppresses
 	AllowWCY             *bool           `yaml:"allow_wcy,omitempty"`       // nil/true delivers WCY bulletins; false suppresses
 	AllowAnnounce        *bool           `yaml:"allow_announce,omitempty"`  // nil/true delivers PC93 announcements; false suppresses
+	AllowSelf            *bool           `yaml:"allow_self,omitempty"`      // nil/true delivers self DX-call spots; false suppresses
 	DXContinents         map[string]bool // Allowed DX continents
 	BlockDXContinents    map[string]bool // Blocked DX continents
 	DEContinents         map[string]bool // Allowed DE continents
@@ -430,6 +431,7 @@ func NewFilter() *Filter {
 		AllowWWV:             boolPtr(true),
 		AllowWCY:             boolPtr(true),
 		AllowAnnounce:        boolPtr(true),
+		AllowSelf:            boolPtr(true),
 		AllConfidence:        true, // Accept every confidence glyph until user sets one
 		BlockAllConfidence:   false,
 		AllDXContinents:      true,
@@ -929,6 +931,17 @@ func (f *Filter) SetAnnounceEnabled(enabled bool) {
 	f.AllowAnnounce = boolPtr(enabled)
 }
 
+// Purpose: Set whether self DX-call spots are delivered.
+// Key aspects: Stores a bool pointer to preserve tri-state.
+// Upstream: Telnet PASS/REJECT SELF commands.
+// Downstream: SelfEnabled.
+func (f *Filter) SetSelfEnabled(enabled bool) {
+	if f == nil {
+		return
+	}
+	f.AllowSelf = boolPtr(enabled)
+}
+
 // Purpose: Report whether WWV bulletins are allowed.
 // Key aspects: Defaults to true when unset.
 // Upstream: AllowsBulletin.
@@ -960,6 +973,17 @@ func (f *Filter) AnnounceEnabled() bool {
 		return true
 	}
 	return *f.AllowAnnounce
+}
+
+// Purpose: Report whether self DX-call spots are allowed.
+// Key aspects: Defaults to true when unset.
+// Upstream: Telnet self-spot delivery.
+// Downstream: None.
+func (f *Filter) SelfEnabled() bool {
+	if f == nil || f.AllowSelf == nil {
+		return true
+	}
+	return *f.AllowSelf
 }
 
 // Purpose: Decide whether a bulletin kind should be delivered.
@@ -1034,6 +1058,7 @@ func (f *Filter) Reset() {
 	f.SetWWVEnabled(true)
 	f.SetWCYEnabled(true)
 	f.SetAnnounceEnabled(true)
+	f.SetSelfEnabled(true)
 }
 
 // Purpose: Reset all filter criteria back to configured defaults.
@@ -1564,6 +1589,11 @@ func (f *Filter) String() string {
 	} else {
 		parts = append(parts, "ANNOUNCE: OFF")
 	}
+	if f.SelfEnabled() {
+		parts = append(parts, "SELF: ON")
+	} else {
+		parts = append(parts, "SELF: OFF")
+	}
 
 	if f.AllDXGrid2 {
 		parts = append(parts, "DXGrid2: ALL")
@@ -1941,6 +1971,9 @@ func (f *Filter) normalizeDefaults() {
 	}
 	if f.AllowAnnounce == nil {
 		f.AllowAnnounce = boolPtr(true)
+	}
+	if f.AllowSelf == nil {
+		f.AllowSelf = boolPtr(true)
 	}
 
 	if len(f.Bands) == 0 {
