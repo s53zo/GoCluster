@@ -22,3 +22,7 @@ cmd/daily_analysis/.env
 .claude/
 .vscode/
 NUL
+
+README_DEBIAN.md
+
+LOCAL_CONTEXT.md
