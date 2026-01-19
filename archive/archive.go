@@ -51,7 +51,8 @@ const (
 const (
 	recordHeaderSize     = recordFixedHeaderSize + fieldCount*2
 	recentScanMultiplier = 20
-	recentScanMax        = 5000
+	recentScanGrowth     = 4
+	recentScanMax        = 200000
 )
 
 const (
@@ -466,7 +467,7 @@ func (w *Writer) Recent(limit int) ([]*spot.Spot, error) {
 }
 
 // Purpose: Return the most recent N archived spots that match a predicate.
-// Key aspects: Bounded scan to avoid unbounded reads on narrow filters.
+// Key aspects: Progressive bounded scan to avoid unbounded reads on narrow filters.
 // Upstream: Telnet SHOW MYDX handlers.
 // Downstream: decodeSpot, predicate match.
 func (w *Writer) RecentFiltered(limit int, match func(*spot.Spot) bool) ([]*spot.Spot, error) {
@@ -483,6 +484,8 @@ func (w *Writer) RecentFiltered(limit int, match func(*spot.Spot) bool) ([]*spot
 	defer iter.Close()
 
 	results := make([]*spot.Spot, 0, limit)
+	scanned := 0
+	decodeErrors := 0
 	scanLimit := limit * recentScanMultiplier
 	if scanLimit < limit {
 		scanLimit = limit
@@ -491,9 +494,21 @@ func (w *Writer) RecentFiltered(limit int, match func(*spot.Spot) bool) ([]*spot
 		scanLimit = recentScanMax
 	}
 
-	scanned := 0
-	decodeErrors := 0
-	for ok := iter.Last(); ok && len(results) < limit && scanned < scanLimit; ok = iter.Prev() {
+	for ok := iter.Last(); ok && len(results) < limit; ok = iter.Prev() {
+		// Expand scan window for narrow filters while keeping a hard cap.
+		if scanned >= scanLimit {
+			if scanLimit >= recentScanMax {
+				break
+			}
+			if scanLimit > recentScanMax/recentScanGrowth {
+				scanLimit = recentScanMax
+			} else {
+				scanLimit *= recentScanGrowth
+				if scanLimit > recentScanMax {
+					scanLimit = recentScanMax
+				}
+			}
+		}
 		scanned++
 		ts, _, ok := parseSpotKey(iter.Key())
 		if !ok {

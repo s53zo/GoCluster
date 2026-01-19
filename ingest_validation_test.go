@@ -129,3 +129,26 @@ func TestIngestValidatorDropsUnlicensedUSSpotter(t *testing.T) {
 		t.Fatalf("expected frequency 14074.0, got %.1f", gotFreq)
 	}
 }
+
+func TestIngestValidatorSkipsULSForTestSpotter(t *testing.T) {
+	licCache = newLicenseCache(5 * time.Minute)
+	db := loadIngestCTY(t)
+	reported := false
+
+	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, make(chan *spot.Spot, 1), nil, nil, true)
+	v.unlicensedReporter = func(source, role, call, mode string, freq float64) {
+		reported = true
+	}
+	v.isLicensedUS = func(call string) bool { return false }
+
+	s := spot.NewSpotNormalized("DL1ABC", "K1TEST", 14074.0, "FT8")
+	s.SourceNode = "TELNET"
+	s.IsTestSpotter = true
+
+	if !v.validateSpot(s) {
+		t.Fatalf("expected test spotter to bypass ULS validation")
+	}
+	if reported {
+		t.Fatalf("did not expect unlicensed reporter for test spotter")
+	}
+}

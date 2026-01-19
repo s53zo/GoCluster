@@ -154,6 +154,7 @@ Each `spot.Spot` stores:
 - **SourceType / SourceNode** - origin tags (`RBN`, `FT8`, `FT4`, `PSKREPORTER`, `UPSTREAM`, etc.)
 - **TTL** - hop count preventing loops
 - **IsHuman** - whether the spot was reported by a human operator (RBN/PSKReporter spots are skimmers; peer/upstream/manual spots are human)
+- **IsTestSpotter** - true for CTY-valid telnet test calls (suffix `TEST` or `TEST-SSID`); such spots are broadcast locally but never peered, archived, or stored in the ring buffer
 - **IsBeacon** - true when the DX call ends with `/B` or the comment mentions `NCDXF`/`BEACON` (used to suppress beacon corrections/filtering)
 - **DXMetadata / DEMetadata** - structured `CallMetadata` each containing:
 	- `Continent`
@@ -167,11 +168,13 @@ All ingest sources run through a shared CTY/ULS validation gate before deduplica
 
 ## Commands
 
-Telnet clients can issue commands via the prompt once logged in. The processor, located in `commands/processor.go`, supports the following general commands:
+Telnet clients can issue commands via the prompt once logged in. The processor, located in `commands/processor.go`, requires a logged-in callsign and ignores unauthenticated commands with `No logged user found. Command ignored.` It supports the following general commands:
 
-- `HELP` / `H` – display the help text that includes short summaries and valid bands/modes at the bottom of the message.
-- `SHOW DX [N]` / `SHOW/DX [N]` - stream the most recent `N` spots (`N` ranges from 1-100, default 10). When the Pebble archive is enabled, results come from the archive (newest-first); otherwise they fall back to the in-memory ring buffer. The command accepts the alias `SH DX` as well.
-- `SHOW MYDX [N]` - like `SHOW DX`, but runs archived/ring-buffered spots through the logged-in user's filters (self-spots always pass). Very narrow filters may return fewer than `N` results.
+- Test spotter calls: when a logged-in callsign ends with `TEST` (optionally `-<SSID>`) and has no slash segments, the base call (SSID stripped) must resolve in CTY or the `DX` command is rejected with a message. Accepted test spots are still filtered/broadcast locally and subject to reputation gating; they bypass FCC ULS validation, but are not stored in the ring buffer, not archived, and never peered.
+
+- `HELP` / `H` - display the help text that includes short summaries and valid bands/modes at the bottom of the message.
+- `SHOW DX [N]` / `SHOW/DX [N]` - alias of `SHOW MYDX`, streaming the most recent `N` filtered spots (`N` ranges from 1-250, default 50). Archive-only: if the Pebble archive is unavailable, the command returns `No spots available.` The command accepts the alias `SH DX` (or `SH/DX` in cc) as well.
+- `SHOW MYDX [N]` - stream the most recent `N` spots that match your filters (self-spots always pass; `N` ranges from 1-250, default 50). Archive-only: if the Pebble archive is unavailable, the command returns `No spots available.` Very narrow filters may return fewer than `N` results.
 - `BYE`, `QUIT`, `EXIT` - request a graceful logout; the server replies with `73!` and closes the connection.
 
 Filter management commands use a table-driven engine in `telnet/server.go` with explicit dialect selection. The default `go` dialect uses `PASS`/`REJECT`/`SHOW FILTER`. A CC-style subset is available via `DIALECT cc` (aliases: `SET/ANN`, `SET/NOANN`, `SET/BEACON`, `SET/NOBEACON`, `SET/WWV`, `SET/NOWWV`, `SET/WCY`, `SET/NOWCY`, `SET/SELF`, `SET/NOSELF`, `SET/SKIMMER`, `SET/NOSKIMMER`, `SET/<MODE>`, `SET/NO<MODE>`, `SET/FILTER DXBM/PASS|REJECT <band>` mapping CC DXBM bands to our band filters, `SET/NOFILTER`, plus `SET/FILTER`/`UNSET/FILTER`/`SHOW/FILTER`). `DIALECT LIST` shows the available dialects, the chosen dialect is persisted per callsign along with filter state, and HELP renders the verbs for the active dialect. Classic/go commands operate on each client's `filter.Filter` and fall into `PASS`, `REJECT`, and `SHOW FILTER` groups:

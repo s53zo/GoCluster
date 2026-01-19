@@ -41,6 +41,54 @@ func TestCloneSpotForPeerPublishPassthroughWhenCommentPresent(t *testing.T) {
 	}
 }
 
+func TestShouldBufferSpotSkipsTestSpotter(t *testing.T) {
+	spotTest := spot.NewSpot("K1ABC", "K1TEST", 7074.0, "FT8")
+	spotTest.IsTestSpotter = true
+	if shouldBufferSpot(spotTest) {
+		t.Fatalf("expected test spotter to skip ring buffer")
+	}
+	spotNormal := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
+	if !shouldBufferSpot(spotNormal) {
+		t.Fatalf("expected normal spot to enter ring buffer")
+	}
+}
+
+func TestShouldArchiveSpotSkipsTestSpotter(t *testing.T) {
+	spotTest := spot.NewSpot("K1ABC", "K1TEST", 7074.0, "FT8")
+	spotTest.IsTestSpotter = true
+	if shouldArchiveSpot(spotTest) {
+		t.Fatalf("expected test spotter to skip archive")
+	}
+	spotNormal := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
+	if !shouldArchiveSpot(spotNormal) {
+		t.Fatalf("expected normal spot to archive")
+	}
+}
+
+func TestShouldPublishToPeersSkipsTestSpotter(t *testing.T) {
+	spotTest := spot.NewSpot("K1ABC", "K1TEST", 7074.0, "FT8")
+	spotTest.SourceType = spot.SourceManual
+	spotTest.IsTestSpotter = true
+	if shouldPublishToPeers(spotTest) {
+		t.Fatalf("expected test spotter to skip peering")
+	}
+	spotNormal := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
+	spotNormal.SourceType = spot.SourceManual
+	if !shouldPublishToPeers(spotNormal) {
+		t.Fatalf("expected manual spot to publish to peers")
+	}
+	spotUpstream := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
+	spotUpstream.SourceType = spot.SourceUpstream
+	if shouldPublishToPeers(spotUpstream) {
+		t.Fatalf("expected upstream spot to skip peering")
+	}
+	spotPeer := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
+	spotPeer.SourceType = spot.SourcePeer
+	if shouldPublishToPeers(spotPeer) {
+		t.Fatalf("expected peer spot to skip peering")
+	}
+}
+
 // Purpose: Verify gridDBCheckOnMissEnabled defaults to true.
 // Key aspects: Clears env override before test.
 // Upstream: go test execution.

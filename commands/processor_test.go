@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,50 @@ import (
 	"dxcluster/cty"
 	"dxcluster/spot"
 )
+
+type fakeArchive struct {
+	spots []*spot.Spot
+	err   error
+}
+
+func (f *fakeArchive) Recent(limit int) ([]*spot.Spot, error) {
+	if f == nil || f.err != nil {
+		return nil, f.err
+	}
+	return takeRecent(f.spots, limit), nil
+}
+
+func (f *fakeArchive) RecentFiltered(limit int, match func(*spot.Spot) bool) ([]*spot.Spot, error) {
+	if f == nil || f.err != nil {
+		return nil, f.err
+	}
+	if match == nil {
+		return takeRecent(f.spots, limit), nil
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	out := make([]*spot.Spot, 0, limit)
+	for _, s := range f.spots {
+		if s != nil && match(s) {
+			out = append(out, s)
+			if len(out) == limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func takeRecent(spots []*spot.Spot, limit int) []*spot.Spot {
+	if limit <= 0 {
+		return nil
+	}
+	if len(spots) <= limit {
+		return append([]*spot.Spot(nil), spots...)
+	}
+	return append([]*spot.Spot(nil), spots[:limit]...)
+}
 
 func TestDXCommandQueuesSpot(t *testing.T) {
 	input := make(chan *spot.Spot, 1)
@@ -63,8 +109,8 @@ func TestDXCommandValidation(t *testing.T) {
 	}
 
 	resp = p.ProcessCommandForClient("DX 7001 K8ZB Test", "", "", nil, "classic")
-	if !strings.Contains(resp, "logged-in") {
-		t.Fatalf("expected callsign error, got %q", resp)
+	if resp != noLoggedUserMsg {
+		t.Fatalf("expected login error, got %q", resp)
 	}
 }
 
@@ -90,12 +136,85 @@ func TestDXCommandCTYValidation(t *testing.T) {
 	}
 }
 
+func TestTestSpotterBaseCall(t *testing.T) {
+	cases := []struct {
+		call string
+		base string
+		ok   bool
+	}{
+		{"K1TEST", "K1TEST", true},
+		{"K1TEST-1", "K1TEST", true},
+		{"K1TEST-01", "K1TEST", true},
+		{"K1TEST-#", "", false},
+		{"K1TEST-1-2", "", false},
+		{"W6/K1TEST", "", false},
+	}
+	for _, tc := range cases {
+		base, ok := testSpotterBaseCall(tc.call)
+		if ok != tc.ok || base != tc.base {
+			t.Fatalf("testSpotterBaseCall(%q) = (%q, %t), want (%q, %t)", tc.call, base, ok, tc.base, tc.ok)
+		}
+	}
+}
+
+func TestDXCommandRejectsTestSpotWhenCTYUnavailable(t *testing.T) {
+	input := make(chan *spot.Spot, 1)
+	p := NewProcessor(nil, nil, input, nil, nil, nil)
+
+	resp := p.ProcessCommandForClient("DX 7001 K8ZB Test", "K1TEST", "", nil, "classic")
+	if resp != testCallCTYUnavailableMsg {
+		t.Fatalf("expected CTY unavailable message, got %q", resp)
+	}
+	select {
+	case <-input:
+		t.Fatal("expected test spot to be rejected when CTY is unavailable")
+	default:
+	}
+}
+
+func TestDXCommandRejectsTestSpotWhenCTYInvalid(t *testing.T) {
+	ctyDB := loadTestCTY(t)
+	ctyLookup := func() *cty.CTYDatabase { return ctyDB }
+	input := make(chan *spot.Spot, 1)
+	p := NewProcessor(nil, nil, input, ctyLookup, nil, nil)
+
+	resp := p.ProcessCommandForClient("DX 7001 K8ZB Test", "ZZTEST-1", "", nil, "classic")
+	if resp != testCallCTYInvalidMsg {
+		t.Fatalf("expected CTY invalid message, got %q", resp)
+	}
+	select {
+	case <-input:
+		t.Fatal("expected test spot to be rejected when CTY is invalid")
+	default:
+	}
+}
+
+func TestDXCommandQueuesTestSpotWhenCTYValid(t *testing.T) {
+	ctyDB := loadTestCTY(t)
+	ctyLookup := func() *cty.CTYDatabase { return ctyDB }
+	input := make(chan *spot.Spot, 1)
+	p := NewProcessor(nil, nil, input, ctyLookup, nil, nil)
+
+	resp := p.ProcessCommandForClient("DX 7001 K8ZB Test", "K1TEST-1", "", nil, "classic")
+	if !strings.Contains(resp, "Spot queued") {
+		t.Fatalf("expected spot queued, got %q", resp)
+	}
+	select {
+	case s := <-input:
+		if !s.IsTestSpotter {
+			t.Fatalf("expected test spotter flag, got %v", s.IsTestSpotter)
+		}
+	default:
+		t.Fatal("expected test spot to be queued")
+	}
+}
+
 func TestShowDXCCPrefixAndSiblings(t *testing.T) {
 	ctyDB := loadTestCTY(t)
 	ctyLookup := func() *cty.CTYDatabase { return ctyDB }
 	p := NewProcessor(nil, nil, nil, ctyLookup, nil, nil)
 
-	resp := p.ProcessCommand("SHOW DXCC IT9")
+	resp := p.ProcessCommandForClient("SHOW DXCC IT9", "N2WQ", "", nil, "go")
 	expected := "IT9 -> ADIF 248 | Sicily (EU) | Prefix: IT9 | CQ 15 | ITU 28 | Other: I"
 	if !strings.Contains(resp, expected) {
 		t.Fatalf("expected %q in response, got %q", expected, resp)
@@ -107,7 +226,7 @@ func TestShowDXCCPortableCall(t *testing.T) {
 	ctyLookup := func() *cty.CTYDatabase { return ctyDB }
 	p := NewProcessor(nil, nil, nil, ctyLookup, nil, nil)
 
-	resp := p.ProcessCommand("SHOW DXCC W6/LZ5VV")
+	resp := p.ProcessCommandForClient("SHOW DXCC W6/LZ5VV", "N2WQ", "", nil, "go")
 	expected := "W6/LZ5VV -> ADIF 291 | United States (NA) | Prefix: K | CQ 3 | ITU 6"
 	if !strings.Contains(resp, expected) {
 		t.Fatalf("expected %q in response, got %q", expected, resp)
@@ -122,7 +241,7 @@ func TestShowDXCCMobileSuffix(t *testing.T) {
 	ctyLookup := func() *cty.CTYDatabase { return ctyDB }
 	p := NewProcessor(nil, nil, nil, ctyLookup, nil, nil)
 
-	resp := p.ProcessCommand("SHOW DXCC W6/LZ5VV/M")
+	resp := p.ProcessCommandForClient("SHOW DXCC W6/LZ5VV/M", "N2WQ", "", nil, "go")
 	expected := "W6/LZ5VV -> ADIF 291 | United States (NA) | Prefix: K | CQ 3 | ITU 6"
 	if !strings.Contains(resp, expected) {
 		t.Fatalf("expected %q in response, got %q", expected, resp)
@@ -132,25 +251,23 @@ func TestShowDXCCMobileSuffix(t *testing.T) {
 func TestShowMYDXRequiresFilter(t *testing.T) {
 	p := NewProcessor(nil, nil, nil, nil, nil, nil)
 	resp := p.ProcessCommandForClient("SHOW MYDX 5", "N2WQ", "", nil, "classic")
-	if !strings.Contains(resp, "SHOW MYDX requires a logged-in session") {
+	if resp != noLoggedUserMsg {
 		t.Fatalf("expected filter requirement message, got %q", resp)
 	}
 }
 
-func TestShowMYDXFiltersResults(t *testing.T) {
-	rb := buffer.NewRingBuffer(10)
+func TestShowDXFiltersResults(t *testing.T) {
 	spotOld := spot.NewSpot("DXAAA", "DE1AA", 14074.0, "FT8")
 	spotOld.Time = time.Now().UTC().Add(-2 * time.Minute)
 	spotNew := spot.NewSpot("DXBBB", "DE2BB", 14030.0, "CW")
 	spotNew.Time = time.Now().UTC().Add(-1 * time.Minute)
-	rb.Add(spotOld)
-	rb.Add(spotNew)
+	archive := &fakeArchive{spots: []*spot.Spot{spotNew, spotOld}}
 
-	p := NewProcessor(rb, nil, nil, nil, nil, nil)
+	p := NewProcessor(nil, archive, nil, nil, nil, nil)
 	filterFn := func(s *spot.Spot) bool {
 		return s != nil && s.DXCall == "DXBBB"
 	}
-	resp := p.ProcessCommandForClient("SHOW MYDX 5", "N2WQ", "", filterFn, "classic")
+	resp := p.ProcessCommandForClient("SHOW DX 5", "N2WQ", "", filterFn, "classic")
 	if !strings.Contains(resp, "DXBBB") {
 		t.Fatalf("expected filtered spot DXBBB, got %q", resp)
 	}
@@ -162,7 +279,7 @@ func TestShowMYDXFiltersResults(t *testing.T) {
 func TestHelpPerDialect(t *testing.T) {
 	p := NewProcessor(nil, nil, nil, nil, nil, nil)
 
-	classic := p.ProcessCommandForClient("HELP", "", "", nil, "classic")
+	classic := p.ProcessCommandForClient("HELP", "N2WQ", "", nil, "classic")
 	if !strings.Contains(classic, "Filter core rules:") || !strings.Contains(classic, "SHOW DX") {
 		t.Fatalf("classic help missing expected content: %q", classic)
 	}
@@ -170,7 +287,7 @@ func TestHelpPerDialect(t *testing.T) {
 		t.Fatalf("classic help missing list sections: %q", classic)
 	}
 
-	cc := p.ProcessCommandForClient("HELP", "", "", nil, "cc")
+	cc := p.ProcessCommandForClient("HELP", "N2WQ", "", nil, "cc")
 	if !strings.Contains(strings.ToUpper(cc), "CC SHORTCUTS:") || !strings.Contains(strings.ToUpper(cc), "SHOW/DX") || !strings.Contains(strings.ToUpper(cc), "RESET FILTER") {
 		t.Fatalf("cc help missing cc aliases: %q", cc)
 	}
@@ -181,28 +298,29 @@ func TestHelpPerDialect(t *testing.T) {
 
 func TestShowDXDialectVariants(t *testing.T) {
 	p := NewProcessor(nil, nil, nil, nil, nil, nil)
+	filterFn := func(s *spot.Spot) bool { return s != nil }
 
-	resp := p.ProcessCommandForClient("SHOW DX", "", "", nil, "go")
+	resp := p.ProcessCommandForClient("SHOW DX", "N2WQ", "", filterFn, "go")
 	if strings.Contains(resp, "Unknown command") {
 		t.Fatalf("expected SHOW DX accepted for go dialect, got %q", resp)
 	}
 
-	resp = p.ProcessCommandForClient("SHOW/DX", "", "", nil, "cc")
+	resp = p.ProcessCommandForClient("SHOW/DX", "N2WQ", "", filterFn, "cc")
 	if strings.Contains(resp, "Unknown command") {
 		t.Fatalf("expected SHOW/DX accepted for cc dialect, got %q", resp)
 	}
 
-	resp = p.ProcessCommandForClient("SH/DX 5", "", "", nil, "cc")
+	resp = p.ProcessCommandForClient("SH/DX 5", "N2WQ", "", filterFn, "cc")
 	if strings.Contains(resp, "Unknown command") {
 		t.Fatalf("expected SH/DX accepted for cc dialect, got %q", resp)
 	}
 
-	resp = p.ProcessCommandForClient("SHOW/DX", "", "", nil, "go")
+	resp = p.ProcessCommandForClient("SHOW/DX", "N2WQ", "", filterFn, "go")
 	if !strings.Contains(resp, "SHOW DX") {
 		t.Fatalf("expected go dialect to reject SHOW/DX with guidance, got %q", resp)
 	}
 
-	resp = p.ProcessCommandForClient("SHOW DX", "", "", nil, "cc")
+	resp = p.ProcessCommandForClient("SHOW DX", "N2WQ", "", filterFn, "cc")
 	if !strings.Contains(resp, "SHOW/DX") {
 		t.Fatalf("expected cc dialect to reject SHOW DX with guidance, got %q", resp)
 	}
@@ -211,8 +329,8 @@ func TestShowDXDialectVariants(t *testing.T) {
 func TestHelpLineWidth(t *testing.T) {
 	p := NewProcessor(nil, nil, nil, nil, nil, nil)
 	helps := []string{
-		p.ProcessCommandForClient("HELP", "", "", nil, "classic"),
-		p.ProcessCommandForClient("HELP", "", "", nil, "cc"),
+		p.ProcessCommandForClient("HELP", "N2WQ", "", nil, "classic"),
+		p.ProcessCommandForClient("HELP", "N2WQ", "", nil, "cc"),
 	}
 	for _, help := range helps {
 		lines := strings.Split(help, "\n")
@@ -225,6 +343,58 @@ func TestHelpLineWidth(t *testing.T) {
 				t.Fatalf("help line exceeds 78 chars: %q", line)
 			}
 		}
+	}
+}
+
+func TestShowMYDXCountBounds(t *testing.T) {
+	spots := make([]*spot.Spot, 0, 260)
+	for i := 0; i < 60; i++ {
+		dx := "DX" + strconv.Itoa(i)
+		s := spot.NewSpot(dx, "DE1AA", 14074.0, "FT8")
+		s.Time = time.Now().UTC().Add(time.Duration(-i) * time.Second)
+		spots = append(spots, s)
+	}
+	archive := &fakeArchive{spots: spots}
+	p := NewProcessor(nil, archive, nil, nil, nil, nil)
+	filterFn := func(s *spot.Spot) bool { return s != nil }
+
+	resp := p.ProcessCommandForClient("SHOW MYDX", "N2WQ", "", filterFn, "classic")
+	lines := strings.Split(strings.TrimRight(resp, "\r\n"), "\n")
+	if len(lines) != showDXDefaultCount {
+		t.Fatalf("expected %d lines, got %d", showDXDefaultCount, len(lines))
+	}
+
+	resp = p.ProcessCommandForClient("SHOW MYDX 251", "N2WQ", "", filterFn, "classic")
+	if !strings.Contains(resp, "Invalid count. Use 1-250.") {
+		t.Fatalf("expected count error, got %q", resp)
+	}
+
+	resp = p.ProcessCommandForClient("SHOW MYDX 250", "N2WQ", "", filterFn, "classic")
+	if strings.Contains(resp, "Invalid count") {
+		t.Fatalf("expected count 250 accepted, got %q", resp)
+	}
+}
+
+func TestShowDXArchiveOnly(t *testing.T) {
+	rb := buffer.NewRingBuffer(5)
+	rb.Add(spot.NewSpot("DXAAA", "DE1AA", 14074.0, "FT8"))
+	p := NewProcessor(rb, nil, nil, nil, nil, nil)
+	filterFn := func(s *spot.Spot) bool { return s != nil }
+
+	resp := p.ProcessCommandForClient("SHOW DX 1", "N2WQ", "", filterFn, "classic")
+	if resp != "No spots available.\n" {
+		t.Fatalf("expected archive-only response, got %q", resp)
+	}
+}
+
+func TestShowMYDXArchiveError(t *testing.T) {
+	archive := &fakeArchive{err: errors.New("archive down")}
+	p := NewProcessor(nil, archive, nil, nil, nil, nil)
+	filterFn := func(s *spot.Spot) bool { return s != nil }
+
+	resp := p.ProcessCommandForClient("SHOW MYDX 1", "N2WQ", "", filterFn, "classic")
+	if resp != "No spots available.\n" {
+		t.Fatalf("expected archive error to return no spots, got %q", resp)
 	}
 }
 
