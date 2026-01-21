@@ -69,23 +69,41 @@ func TestShouldPublishToPeersSkipsTestSpotter(t *testing.T) {
 	spotTest := spot.NewSpot("K1ABC", "K1TEST", 7074.0, "FT8")
 	spotTest.SourceType = spot.SourceManual
 	spotTest.IsTestSpotter = true
-	if shouldPublishToPeers(spotTest) {
+	if shouldPublishToPeers(spotTest, false) {
 		t.Fatalf("expected test spotter to skip peering")
 	}
 	spotNormal := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
 	spotNormal.SourceType = spot.SourceManual
-	if !shouldPublishToPeers(spotNormal) {
+	if !shouldPublishToPeers(spotNormal, false) {
 		t.Fatalf("expected manual spot to publish to peers")
 	}
 	spotUpstream := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
 	spotUpstream.SourceType = spot.SourceUpstream
-	if shouldPublishToPeers(spotUpstream) {
+	if shouldPublishToPeers(spotUpstream, false) {
 		t.Fatalf("expected upstream spot to skip peering")
 	}
 	spotPeer := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
 	spotPeer.SourceType = spot.SourcePeer
-	if shouldPublishToPeers(spotPeer) {
+	if shouldPublishToPeers(spotPeer, false) {
 		t.Fatalf("expected peer spot to skip peering")
+	}
+}
+
+func TestShouldPublishToPeersRxOnlyAllowsManualHumanOnly(t *testing.T) {
+	spotManual := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
+	spotManual.SourceType = spot.SourceManual
+	if !shouldPublishToPeers(spotManual, true) {
+		t.Fatalf("expected manual spot to publish when rx_only enabled")
+	}
+	spotRBN := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
+	spotRBN.SourceType = spot.SourceRBN
+	if shouldPublishToPeers(spotRBN, true) {
+		t.Fatalf("expected skimmer spot to be blocked when rx_only enabled")
+	}
+	spotUpstream := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
+	spotUpstream.SourceType = spot.SourceUpstream
+	if shouldPublishToPeers(spotUpstream, true) {
+		t.Fatalf("expected upstream spot to be blocked when rx_only enabled")
 	}
 }
 

@@ -350,6 +350,8 @@ type PeeringConfig struct {
 	PC92Bitmap    int    `yaml:"pc92_bitmap"`
 	NodeCount     int    `yaml:"node_count"`
 	UserCount     int    `yaml:"user_count"`
+	// RxOnly limits outbound DX spot publishing to manual human spots only.
+	RxOnly bool `yaml:"rx_only"`
 	// LogKeepalive controls whether keepalive/PC51 chatter is emitted to logs.
 	LogKeepalive bool `yaml:"log_keepalive"`
 	// LogLineTooLong controls whether oversized peer lines are logged.
@@ -1846,13 +1848,14 @@ func (c *Config) Print() {
 		fmt.Printf("Default sources: %s\n", strings.Join(c.Filter.DefaultSources, ", "))
 	}
 	if c.Peering.Enabled {
-		fmt.Printf("Peering: listen_port=%d peers=%d hop=%d transport=%s keepalive=%ds config=%ds topology=%s retention=%dh\n",
+		fmt.Printf("Peering: listen_port=%d peers=%d hop=%d transport=%s keepalive=%ds config=%ds rx_only=%t topology=%s retention=%dh\n",
 			c.Peering.ListenPort,
 			len(c.Peering.Peers),
 			c.Peering.HopCount,
 			c.Peering.TelnetTransport,
 			c.Peering.KeepaliveSeconds,
 			c.Peering.ConfigSeconds,
+			c.Peering.RxOnly,
 			c.Peering.Topology.DBPath,
 			c.Peering.Topology.RetentionHours)
 	}

@@ -740,7 +740,7 @@ func main() {
 	// Key aspects: Handles corrections, licensing, secondary dedupe, aggregation, and fan-out.
 	// Upstream: main startup after wiring dependencies.
 	// Downstream: processOutputSpots.
-	go processOutputSpots(deduplicator, secondaryDeduper, skimmerAggregator, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor)
+	go processOutputSpots(deduplicator, secondaryDeduper, skimmerAggregator, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, cfg.Peering.RxOnly, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor)
 	if skimmerAggregator != nil && telnetServer != nil {
 		go broadcastAggregatedSpots(ctx, skimmerAggregator, telnetServer, &lastOutput)
 	}
@@ -1419,6 +1419,7 @@ func processOutputSpots(
 	knownCalls *atomic.Pointer[spot.KnownCallsigns],
 	freqAvg *spot.FrequencyAverager,
 	spotPolicy config.SpotPolicy,
+	peerRxOnly bool,
 	dash uiSurface,
 	gridUpdate func(call, grid string),
 	gridLookup func(call string) (string, bool),
@@ -1716,7 +1717,7 @@ func processOutputSpots(
 					telnet.BroadcastSpot(s)
 				}
 			}
-			if peerManager != nil && shouldPublishToPeers(s) {
+			if peerManager != nil && shouldPublishToPeers(s, peerRxOnly) {
 				peerSpot := cloneSpotForPeerPublish(s)
 				peerManager.PublishDX(peerSpot)
 			}
@@ -1770,10 +1771,11 @@ func shouldArchiveSpot(s *spot.Spot) bool {
 }
 
 // Purpose: Decide whether a spot should be forwarded to peers.
-// Key aspects: Excludes upstream/peer sources and test spotters.
+// Key aspects: Excludes upstream/peer sources and test spotters; optional rxOnly
+// allows only manual human spots to flow to peers.
 // Upstream: processOutputSpots.
 // Downstream: peer.Manager.PublishDX.
-func shouldPublishToPeers(s *spot.Spot) bool {
+func shouldPublishToPeers(s *spot.Spot, rxOnly bool) bool {
 	if s == nil || s.IsTestSpotter {
 		return false
 	}
@@ -1781,6 +1783,9 @@ func shouldPublishToPeers(s *spot.Spot) bool {
 	case spot.SourceUpstream, spot.SourcePeer:
 		return false
 	default:
+		if rxOnly {
+			return s.SourceType == spot.SourceManual
+		}
 		return true
 	}
 }
