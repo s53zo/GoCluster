@@ -148,14 +148,14 @@ prop_report:
 
 The telnet server broadcasts spots as fixed-width DX-cluster lines:
 
-- Exactly **78 characters**, followed by **CRLF** (line endings are normalized in `telnet.Client.Send`).
+- Exactly **76 characters**, followed by **CRLF** (line endings are normalized in `telnet.Client.Send`).
 - Column numbering below is **1-based** (column 1 is the `D` in `DX de `).
 - The left side is padded so **mode always starts at column 40**.
 - The displayed DX callsign uses the canonical normalized call (portable suffixes stripped) and is truncated to 10 characters to preserve fixed columns (the full normalized callsign is still stored and hashed).
 - The right-side tail is fixed so clients can rely on it:
-  - Grid: columns 67-70 (4 chars; blank if unknown)
-  - Confidence: column 72 (1 char; blank if unknown)
-  - Time: columns 74-78 (`HHMMZ`)
+  - Grid: columns 65-68 (4 chars; blank if unknown)
+  - Confidence: column 70 (1 char; blank if unknown)
+  - Time: columns 72-76 (`HHMMZ`)
 - Any free-form comment text is sanitized (tabs/newlines removed) and truncated so it can never push the grid/confidence/time tail; a space always separates the comment area from the fixed tail.
 
 Report formatting:
@@ -166,7 +166,7 @@ Report formatting:
 Example:
 
 ```
-DX de W3LPL:       7009.5  K1ABC       FT8 -5 dB                          FN20 S 0615Z
+DX de W3LPL:       7009.5  K1ABC       FT8 -5 dB                FN20 S 0615Z
 ```
 
 Each `spot.Spot` stores:

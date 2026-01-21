@@ -35,7 +35,7 @@ func TestLoadDefaultsTelnetOutputLineLength(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
-	if cfg.Telnet.OutputLineLength != 78 {
-		t.Fatalf("expected default telnet.output_line_length=78, got %d", cfg.Telnet.OutputLineLength)
+	if cfg.Telnet.OutputLineLength != 76 {
+		t.Fatalf("expected default telnet.output_line_length=76, got %d", cfg.Telnet.OutputLineLength)
 	}
 }

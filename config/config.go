@@ -1403,7 +1403,7 @@ func Load(path string) (*Config, error) {
 		cfg.Telnet.CommandLineLimit = 128
 	}
 	if cfg.Telnet.OutputLineLength <= 0 {
-		cfg.Telnet.OutputLineLength = 78
+		cfg.Telnet.OutputLineLength = 76
 	}
 	if cfg.Telnet.DropExtremeRate <= 0 {
 		cfg.Telnet.DropExtremeRate = 0.80
