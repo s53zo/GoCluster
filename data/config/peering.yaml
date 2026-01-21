@@ -1,0 +1,17 @@
+peering:
+  enabled: true
+  local_callsign: "S50DXS-88"
+  listen_port: 7300
+  hop_count: 3
+  rx_only: true
+  peers:
+    - enabled: true
+      host: "cluster.s53m.com"
+      port: 8000
+      login_callsign: "S50DXS-88"
+      remote_callsign: "S50DXS"
+      password: "GoCluster"
+      prefer_pc9x: true
+  acl:
+    allow_ips: []
+    allow_callsigns: []
