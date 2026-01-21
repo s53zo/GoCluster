@@ -164,6 +164,9 @@ func (v *ingestValidator) validateSpot(s *spot.Spot) bool {
 	s.InvalidateMetadataCache()
 	s.EnsureNormalized()
 
+	if s.IsTestSpotter {
+		return true
+	}
 	if v.isLicensedUS != nil {
 		deLicenseCall := strings.TrimSpace(uls.NormalizeForLicense(deCall))
 		if deLicenseCall != "" {

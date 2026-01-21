@@ -1587,7 +1587,10 @@ func processOutputSpots(
 				s.DECallNormStripped = stripped
 			}
 
-			buf.Add(s)
+			// Keep test spots out of the ring buffer so SHOW DX history stays production-only.
+			if buf != nil && shouldBufferSpot(s) {
+				buf.Add(s)
+			}
 
 			// Ensure DE metadata is populated before secondary dedupe. Upstream CTY lookups
 			// can be bypassed when spotters carry SSID tokens or CTY is missing; refresh
@@ -1673,7 +1676,7 @@ func processOutputSpots(
 				}
 			}
 
-			// Broadcast-only dedupe: ring/history already updated above.
+			// Broadcast-only dedupe: ring/history already updated above for non-test spots.
 			if secondary != nil && !secondary.ShouldForward(s) {
 				if telnet != nil {
 					telnet.DeliverSelfSpot(s)
@@ -1702,7 +1705,7 @@ func processOutputSpots(
 				lastOutput.Store(time.Now().UTC().UnixNano())
 			}
 
-			if archiveWriter != nil {
+			if archiveWriter != nil && shouldArchiveSpot(s) {
 				archiveWriter.Enqueue(s)
 			}
 
@@ -1713,7 +1716,7 @@ func processOutputSpots(
 					telnet.BroadcastSpot(s)
 				}
 			}
-			if peerManager != nil && s.SourceType != spot.SourceUpstream && s.SourceType != spot.SourcePeer {
+			if peerManager != nil && shouldPublishToPeers(s) {
 				peerSpot := cloneSpotForPeerPublish(s)
 				peerManager.PublishDX(peerSpot)
 			}
@@ -1747,6 +1750,38 @@ func broadcastAggregatedSpots(ctx context.Context, agg *aggregate.SkimmerAggrega
 			}
 			telnetSrv.BroadcastSpot(s)
 		}
+	}
+}
+
+// Purpose: Gate ring-buffer storage for test spotters.
+// Key aspects: Test spots are excluded so SHOW DX stays production-only.
+// Upstream: processOutputSpots.
+// Downstream: ring buffer Add.
+func shouldBufferSpot(s *spot.Spot) bool {
+	return s != nil && !s.IsTestSpotter
+}
+
+// Purpose: Gate archive persistence for test spotters.
+// Key aspects: Test spots are excluded from Pebble history.
+// Upstream: processOutputSpots.
+// Downstream: archive.Writer.Enqueue.
+func shouldArchiveSpot(s *spot.Spot) bool {
+	return s != nil && !s.IsTestSpotter
+}
+
+// Purpose: Decide whether a spot should be forwarded to peers.
+// Key aspects: Excludes upstream/peer sources and test spotters.
+// Upstream: processOutputSpots.
+// Downstream: peer.Manager.PublishDX.
+func shouldPublishToPeers(s *spot.Spot) bool {
+	if s == nil || s.IsTestSpotter {
+		return false
+	}
+	switch s.SourceType {
+	case spot.SourceUpstream, spot.SourcePeer:
+		return false
+	default:
+		return true
 	}
 }
 
@@ -1846,6 +1881,7 @@ func cloneSpotForPeerPublish(src *spot.Spot) *spot.Spot {
 		SpotterIP:          src.SpotterIP,
 		TTL:                src.TTL,
 		IsHuman:            src.IsHuman,
+		IsTestSpotter:      src.IsTestSpotter,
 		IsBeacon:           src.IsBeacon,
 		DXMetadata:         src.DXMetadata,
 		DEMetadata:         src.DEMetadata,

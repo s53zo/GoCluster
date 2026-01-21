@@ -26,7 +26,7 @@ type archiveReader interface {
 }
 
 // Processor handles telnet command parsing and replies that rely on shared state
-// (recent spots in the ring buffer).
+// (recent spots in the archive).
 type Processor struct {
 	spotBuffer *buffer.RingBuffer
 	archive    archiveReader
@@ -38,7 +38,7 @@ type Processor struct {
 }
 
 // Purpose: Construct a command processor bound to shared spot state.
-// Key aspects: SHOW/DX prefers archive when present; DX commands can enqueue spots.
+// Key aspects: SHOW/DX uses archive history; DX commands can enqueue spots.
 // Upstream: Telnet server initialization.
 // Downstream: Processor methods (ProcessCommand, handleShowDX, handleDX).
 func NewProcessor(buf *buffer.RingBuffer, archive archiveReader, spotInput chan<- *spot.Spot, ctyLookup func() *cty.CTYDatabase, repGate *reputation.Gate, repReport func(reputation.DropEvent)) *Processor {
@@ -71,6 +71,9 @@ func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterI
 	// Empty command
 	if cmd == "" {
 		return ""
+	}
+	if strings.TrimSpace(spotter) == "" {
+		return noLoggedUserMsg
 	}
 
 	fields := strings.Fields(cmd)
@@ -130,17 +133,17 @@ func (p *Processor) handleHelp(dialect string) string {
 	}
 	if dialect == "cc" {
 		lines = append(lines,
-			"SHOW/DX [count] - Show last N DX spots (default: 10)",
+			"SHOW/DX [count] - Alias for SHOW MYDX (archive-only; 50/250)",
 			"SH/DX [count] - Alias for SHOW/DX",
 		)
 	} else {
 		lines = append(lines,
-			"SHOW DX [count] - Show last N DX spots (default: 10)",
+			"SHOW DX [count] - Alias for SHOW MYDX (archive-only; 50/250)",
 			"SH DX [count] - Alias for SHOW DX",
 		)
 	}
 	lines = append(lines,
-		"SHOW MYDX [count] - Show last N DX spots matching your filters",
+		"SHOW MYDX [count] - Filtered DX spots (archive-only; 50/250)",
 		"SHOW DXCC <prefix|callsign> - Look up DXCC/ADIF and zones",
 		"SET GRID <grid> - Set your grid (4-6 chars) for glyphs",
 		"SET NOISE <class> - Set noise class (QUIET|RURAL|SUBURBAN|URBAN)",
@@ -211,12 +214,19 @@ func normalizeDialectString(dialect string) string {
 
 func showDXUsage(dialect string) string {
 	if normalizeDialectString(dialect) == "cc" {
-		return "Usage: SHOW/DX [count]\n"
+		return "Usage: SHOW/DX [count 1-250]\n"
 	}
-	return "Usage: SHOW DX [count]\n"
+	return "Usage: SHOW DX [count 1-250]\n"
 }
 
-const helpMaxWidth = 78
+const (
+	helpMaxWidth              = 78
+	showDXDefaultCount        = 50
+	showDXMaxCount            = 250
+	noLoggedUserMsg           = "No logged user found. Command ignored.\n"
+	testCallCTYUnavailableMsg = "Test calls require CTY-valid prefix; CTY database unavailable.\n"
+	testCallCTYInvalidMsg     = "Test calls require CTY-valid prefix; unknown test callsign.\n"
+)
 
 func filterListTypes() []string {
 	return []string{
@@ -256,6 +266,35 @@ func wrapListLines(title, indent string, items []string, width int) []string {
 	return lines
 }
 
+// Purpose: Identify test spotter calls and return the base call for CTY lookup.
+// Key aspects: Requires no "/" segments, suffix TEST, and optional numeric SSID.
+// Upstream: handleDX test-spotter gating.
+// Downstream: CTY validation for the base call.
+func testSpotterBaseCall(call string) (string, bool) {
+	call = strings.TrimSpace(call)
+	if call == "" || strings.Contains(call, "/") {
+		return "", false
+	}
+	if strings.HasSuffix(call, "TEST") {
+		return call, true
+	}
+	idx := strings.LastIndexByte(call, '-')
+	if idx <= 0 || idx >= len(call)-1 {
+		return "", false
+	}
+	suffix := call[idx+1:]
+	for i := 0; i < len(suffix); i++ {
+		if suffix[i] < '0' || suffix[i] > '9' {
+			return "", false
+		}
+	}
+	base := call[:idx]
+	if strings.HasSuffix(base, "TEST") {
+		return base, true
+	}
+	return "", false
+}
+
 // Purpose: Handle the DX command and enqueue a human spot.
 // Key aspects: Validates callsign/frequency; parses comment for mode/report.
 // Upstream: ProcessCommandForClient (DX).
@@ -286,6 +325,19 @@ func (p *Processor) handleDX(fields []string, spotter string, spotterIP string) 
 			if _, ok := db.LookupCallsignPortable(dx); !ok {
 				return "Unknown DX callsign (not in CTY database).\n"
 			}
+		}
+	}
+	testBaseCall, isTestSpotter := testSpotterBaseCall(spotterNorm)
+	if isTestSpotter {
+		if p.ctyLookup == nil {
+			return testCallCTYUnavailableMsg
+		}
+		db := p.ctyLookup()
+		if db == nil {
+			return testCallCTYUnavailableMsg
+		}
+		if _, ok := db.LookupCallsignPortable(testBaseCall); !ok {
+			return testCallCTYInvalidMsg
 		}
 	}
 	if p.repGate != nil {
@@ -327,6 +379,7 @@ func (p *Processor) handleDX(fields []string, spotter string, spotterIP string) 
 	s.HasReport = parsed.HasReport
 	s.SourceNode = spotterNorm
 	s.SpotterIP = strings.TrimSpace(spotterIP)
+	s.IsTestSpotter = isTestSpotter
 
 	if p.spotInput == nil {
 		return "Spot input is not configured on this cluster.\n"
@@ -353,7 +406,7 @@ func (p *Processor) handleShow(args []string, filterFn func(*spot.Spot) bool, di
 
 	switch subCmd {
 	case "DX":
-		return p.handleShowDX(args[1:])
+		return p.handleShowMYDX(args[1:], filterFn)
 	case "MYDX":
 		return p.handleShowMYDX(args[1:], filterFn)
 	case "DXCC":
@@ -364,34 +417,30 @@ func (p *Processor) handleShow(args []string, filterFn func(*spot.Spot) bool, di
 }
 
 // Purpose: Render the most recent N spots for SHOW/DX.
-// Key aspects: Prefers archive; falls back to ring buffer; outputs oldest-first.
+// Key aspects: Archive-only history; outputs oldest-first.
 // Upstream: handleShow.
-// Downstream: archive.Recent, ring buffer, reverseSpotsInPlace.
+// Downstream: archive.Recent, reverseSpotsInPlace.
 func (p *Processor) handleShowDX(args []string) string {
-	count := 10 // Default count
+	count := showDXDefaultCount // Default count
 
 	// Parse count if provided
 	if len(args) > 0 {
 		var err error
 		_, err = fmt.Sscanf(args[0], "%d", &count)
-		if err != nil || count < 1 || count > 100 {
-			return "Invalid count. Use 1-100.\n"
+		if err != nil || count < 1 || count > showDXMaxCount {
+			return "Invalid count. Use 1-250.\n"
 		}
 	}
 
-	// Prefer archive for history; fall back to ring buffer.
 	var spots []*spot.Spot
-	if p.archive != nil {
-		if rows, err := p.archive.Recent(count); err != nil {
-			log.Printf("SHOW DX: archive query failed, falling back to ring buffer: %v", err)
-		} else {
-			spots = rows
-		}
+	if p.archive == nil {
+		return "No spots available.\n"
 	}
-	if len(spots) == 0 && p.spotBuffer != nil {
-		spots = p.spotBuffer.GetRecent(count)
+	if rows, err := p.archive.Recent(count); err != nil {
+		log.Printf("SHOW DX: archive query failed: %v", err)
+	} else {
+		spots = rows
 	}
-
 	if len(spots) == 0 {
 		return "No spots available.\n"
 	}
@@ -410,35 +459,32 @@ func (p *Processor) handleShowDX(args []string) string {
 }
 
 // Purpose: Render the most recent N spots that match the provided filter.
-// Key aspects: Prefers archive; falls back to ring buffer; outputs oldest-first.
+// Key aspects: Archive-only history; outputs oldest-first.
 // Upstream: handleShow (SHOW MYDX).
-// Downstream: archive.RecentFiltered, ring buffer filtered read.
+// Downstream: archive.RecentFiltered.
 func (p *Processor) handleShowMYDX(args []string, filterFn func(*spot.Spot) bool) string {
 	if filterFn == nil {
-		return "SHOW MYDX requires a logged-in session.\n"
+		return noLoggedUserMsg
 	}
-	count := 10 // Default count
+	count := showDXDefaultCount // Default count
 
 	if len(args) > 0 {
 		var err error
 		_, err = fmt.Sscanf(args[0], "%d", &count)
-		if err != nil || count < 1 || count > 100 {
-			return "Invalid count. Use 1-100.\n"
+		if err != nil || count < 1 || count > showDXMaxCount {
+			return "Invalid count. Use 1-250.\n"
 		}
 	}
 
 	var spots []*spot.Spot
-	if p.archive != nil {
-		if rows, err := p.archive.RecentFiltered(count, filterFn); err != nil {
-			log.Printf("SHOW MYDX: archive query failed, falling back to ring buffer: %v", err)
-		} else {
-			spots = rows
-		}
+	if p.archive == nil {
+		return "No spots available.\n"
 	}
-	if len(spots) == 0 && p.spotBuffer != nil {
-		spots = p.spotBuffer.GetRecentFiltered(count, filterFn)
+	if rows, err := p.archive.RecentFiltered(count, filterFn); err != nil {
+		log.Printf("SHOW MYDX: archive query failed: %v", err)
+	} else {
+		spots = rows
 	}
-
 	if len(spots) == 0 {
 		return "No spots available.\n"
 	}
