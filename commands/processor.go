@@ -107,7 +107,11 @@ func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterI
 
 	switch command {
 	case "HELP", "H":
-		return p.handleHelp(dialect)
+		topic := ""
+		if len(parts) > 1 {
+			topic = strings.Join(parts[1:], " ")
+		}
+		return p.handleHelp(dialect, topic)
 	case "SH", "SHOW":
 		if len(parts) < 2 {
 			return showDXUsage(dialect)
@@ -121,37 +125,28 @@ func (p *Processor) ProcessCommandForClient(cmd string, spotter string, spotterI
 }
 
 // Purpose: Render the HELP text for users.
-// Key aspects: Includes filter command guidance and supported bands/modes; tailored per dialect.
+// Key aspects: Supports HELP <command>; tailored per dialect; honors width cap.
 // Upstream: ProcessCommandForClient (HELP/H).
 // Downstream: filter.SupportedModes, spot.SupportedBandNames.
-func (p *Processor) handleHelp(dialect string) string {
+func (p *Processor) handleHelp(dialect string, topic string) string {
 	dialect = normalizeDialectString(dialect)
+	catalog := buildHelpCatalog(dialect)
+	normalized := normalizeHelpTopic(dialect, topic)
+	if normalized != "" {
+		if entry, ok := catalog.lookup(normalized); ok {
+			return strings.Join(entry.lines, "\n") + "\n"
+		}
+		return fmt.Sprintf("Unknown help topic: %s\nType HELP for available commands.\n", normalized)
+	}
+
 	lines := []string{
 		"Available commands:",
-		"HELP - Show this help",
-		"DX <freq> <call> [comment] - Post a spot (kHz)",
 	}
-	if dialect == "cc" {
-		lines = append(lines,
-			"SHOW/DX [count] - Alias for SHOW MYDX (archive-only; 50/250)",
-			"SH/DX [count] - Alias for SHOW/DX",
-		)
-	} else {
-		lines = append(lines,
-			"SHOW DX [count] - Alias for SHOW MYDX (archive-only; 50/250)",
-			"SH DX [count] - Alias for SHOW DX",
-		)
+	for _, key := range catalog.order {
+		entry := catalog.entries[key]
+		lines = append(lines, entry.summary)
 	}
-	lines = append(lines,
-		"SHOW MYDX [count] - Filtered DX spots (archive-only; 50/250)",
-		"SHOW DXCC <prefix|callsign> - Look up DXCC/ADIF and zones",
-		"SET GRID <grid> - Set your grid (4-6 chars) for glyphs",
-		"SET NOISE <class> - Set noise class (QUIET|RURAL|SUBURBAN|URBAN)",
-		"SET DEDUPE <FAST|SLOW> - Select secondary dedupe policy",
-		"SHOW DEDUPE - Show secondary dedupe policy",
-		"BYE - Disconnect",
-		"DIALECT [name|LIST] - Show or set filter command dialect (go, cc)",
-	)
+	lines = append(lines, "Type HELP <command> for details.")
 	lines = append(lines, filterHelpLines(dialect)...)
 	lines = append(lines, "")
 	lines = append(lines, "List types:")
@@ -163,6 +158,640 @@ func (p *Processor) handleHelp(dialect string) string {
 	lines = append(lines, "Supported bands:")
 	lines = append(lines, wrapListLines("", "  ", spot.SupportedBandNames(), helpMaxWidth)...)
 	return strings.Join(lines, "\n") + "\n"
+}
+
+type helpEntry struct {
+	summary string
+	lines   []string
+}
+
+type helpCatalog struct {
+	entries map[string]helpEntry
+	aliases map[string]string
+	order   []string
+}
+
+func (c helpCatalog) lookup(topic string) (helpEntry, bool) {
+	if c.entries == nil {
+		return helpEntry{}, false
+	}
+	if canonical, ok := c.aliases[topic]; ok {
+		topic = canonical
+	}
+	entry, ok := c.entries[topic]
+	return entry, ok
+}
+
+func buildHelpCatalog(dialect string) helpCatalog {
+	catalog := helpCatalog{
+		entries: make(map[string]helpEntry),
+		aliases: make(map[string]string),
+	}
+	add := func(key, summary string, lines []string, aliases ...string) {
+		catalog.entries[key] = helpEntry{summary: summary, lines: lines}
+		for _, alias := range aliases {
+			catalog.aliases[alias] = key
+		}
+	}
+
+	helpLines := helpEntryLines(
+		"HELP - Show command list or command-specific help.",
+		[]string{"HELP [command]"},
+		nil,
+		[]string{
+			"Without arguments, lists commands for the active dialect.",
+			"With a command, shows detailed usage.",
+		},
+	)
+	add("HELP", "HELP - Show command list or command-specific help.", helpLines)
+
+	dxLines := helpEntryLines(
+		"DX - Post a spot (human entry).",
+		[]string{"DX <freq_khz> <callsign> [comment]"},
+		nil,
+		[]string{
+			"Frequency is in kHz (e.g., 7001.0).",
+			"Comment is free text; mode/report may be parsed from it.",
+			"Rejects invalid callsigns and CTY-unknown DX when CTY is enabled.",
+		},
+	)
+	add("DX", "DX - Post a spot (human entry).", dxLines)
+
+	showMYDXLines := helpEntryLines(
+		"SHOW MYDX - Show filtered spot history.",
+		[]string{"SHOW MYDX [count]"},
+		nil,
+		[]string{
+			"History is pulled from stored spots (not live buffer).",
+			"Count range is 1-250 (default 50).",
+			"Respects your filters; self-spots always pass.",
+		},
+	)
+	add("SHOW MYDX", "SHOW MYDX - Show filtered spot history.", showMYDXLines)
+
+	showDXCCLines := helpEntryLines(
+		"SHOW DXCC - Look up DXCC/ADIF and zones.",
+		[]string{"SHOW DXCC <prefix|callsign>"},
+		nil,
+		[]string{
+			"Uses the CTY database to resolve ADIF, country, and zones.",
+			"Returns other prefixes for the same country when available.",
+		},
+	)
+	add("SHOW DXCC", "SHOW DXCC - Look up DXCC/ADIF and zones.", showDXCCLines)
+
+	showDedupeLines := helpEntryLines(
+		"SHOW DEDUPE - Show your broadcast dedupe policy.",
+		[]string{"SHOW DEDUPE"},
+		nil,
+		[]string{
+			"FAST = shorter window; SLOW = longer window.",
+			"Shows if a policy is disabled server-side.",
+		},
+	)
+	add("SHOW DEDUPE", "SHOW DEDUPE - Show dedupe policy.", showDedupeLines)
+
+	setDedupeLines := helpEntryLines(
+		"SET DEDUPE - Select broadcast dedupe policy.",
+		[]string{"SET DEDUPE <FAST|SLOW>"},
+		nil,
+		[]string{
+			"FAST = shorter window; SLOW = longer window.",
+			"If a policy is disabled, the nearest available is chosen.",
+		},
+	)
+	add("SET DEDUPE", "SET DEDUPE - Select dedupe policy.", setDedupeLines)
+
+	setGridLines := helpEntryLines(
+		"SET GRID - Set your grid for path reliability glyphs.",
+		[]string{"SET GRID <4-6 char maidenhead>"},
+		nil,
+		[]string{
+			"Example: SET GRID FN31.",
+		},
+	)
+	add("SET GRID", "SET GRID - Set your grid (4-6 chars).", setGridLines)
+
+	setNoiseLines := helpEntryLines(
+		"SET NOISE - Set your noise class for glyphs.",
+		[]string{"SET NOISE <QUIET|RURAL|SUBURBAN|URBAN>"},
+		nil,
+		[]string{
+			"Default is QUIET when unset.",
+		},
+	)
+	add("SET NOISE", "SET NOISE - Set noise class.", setNoiseLines)
+
+	resetFilterLines := helpEntryLines(
+		"RESET FILTER - Reset filters to configured defaults.",
+		[]string{"RESET FILTER"},
+		nil,
+		nil,
+	)
+	add("RESET FILTER", "RESET FILTER - Reset filters to defaults.", resetFilterLines)
+
+	dialectLines := helpEntryLines(
+		"DIALECT - Show or switch filter command dialect.",
+		[]string{"DIALECT", "DIALECT LIST", "DIALECT <go|cc>"},
+		nil,
+		[]string{
+			"Dialect selection is persisted per callsign.",
+		},
+	)
+	add("DIALECT", "DIALECT - Show or switch dialect.", dialectLines)
+
+	byeLines := helpEntryLines(
+		"BYE - Disconnect from the cluster.",
+		[]string{"BYE"},
+		[]string{"QUIT", "EXIT"},
+		nil,
+	)
+	add("BYE", "BYE - Disconnect.", byeLines, "QUIT", "EXIT")
+
+	if dialect == "cc" {
+		showLines := helpEntryLines(
+			"SHOW - See SHOW subcommands.",
+			[]string{"SHOW MYDX [count]", "SHOW DXCC <prefix|callsign>"},
+			nil,
+			[]string{
+				"Use HELP SHOW/DX for the history alias.",
+			},
+		)
+		add("SHOW", "SHOW - See SHOW subcommands.", showLines)
+
+		showDXLines := helpEntryLines(
+			"SHOW/DX - Alias of SHOW MYDX (stored history).",
+			[]string{"SHOW/DX [count]"},
+			[]string{"SH/DX"},
+			[]string{
+				"Count range is 1-250 (default 50).",
+			},
+		)
+		add("SHOW/DX", "SHOW/DX - Alias of SHOW MYDX.", showDXLines, "SH/DX")
+		shDXLines := helpEntryLines(
+			"SH/DX - Alias of SHOW/DX.",
+			[]string{"SH/DX [count]"},
+			[]string{"SHOW/DX"},
+			nil,
+		)
+		add("SH/DX", "SH/DX - Alias of SHOW/DX.", shDXLines)
+
+		showFilterCCLines := helpEntryLines(
+			"SHOW/FILTER - Display current filter state.",
+			[]string{"SHOW/FILTER"},
+			[]string{"SH/FILTER"},
+			[]string{
+				"Alias of SHOW FILTER in the CC dialect.",
+			},
+		)
+		add("SHOW/FILTER", "SHOW/FILTER - Display filter state.", showFilterCCLines, "SH/FILTER")
+		shFilterLines := helpEntryLines(
+			"SH/FILTER - Alias of SHOW/FILTER.",
+			[]string{"SH/FILTER"},
+			[]string{"SHOW/FILTER"},
+			nil,
+		)
+		add("SH/FILTER", "SH/FILTER - Alias of SHOW/FILTER.", shFilterLines)
+
+		setFilterLines := helpEntryLines(
+			"SET/FILTER - Allow list-based filters (CC dialect).",
+			[]string{"SET/FILTER <type> <list>"},
+			nil,
+			[]string{
+				"Same semantics as PASS.",
+				"Use /ON or /OFF to allow or block all for a type.",
+				"Example: SET/FILTER BAND/ON",
+			},
+		)
+		setFilterLines = appendListSection(setFilterLines, "Types:", append([]string{"DXBM"}, filterListTypes()...), helpMaxWidth)
+		setFilterLines = appendNotes(setFilterLines, []string{
+			"DXBM maps CC band codes to BAND filters.",
+		}, helpMaxWidth)
+		setFilterLines = appendNotes(setFilterLines, []string{
+			"DXBM bands: 160, 80, 40, 30, 20, 17, 15, 12, 10, 6, 2 (1 if enabled).",
+		}, helpMaxWidth)
+		add("SET/FILTER", "SET/FILTER - Allow list-based filters.", setFilterLines)
+
+		unsetFilterLines := helpEntryLines(
+			"UNSET/FILTER - Block list-based filters (CC dialect).",
+			[]string{"UNSET/FILTER <type> <list>"},
+			nil,
+			[]string{
+				"Same semantics as REJECT.",
+			},
+		)
+		unsetFilterLines = appendListSection(unsetFilterLines, "Types:", append([]string{"DXBM"}, filterListTypes()...), helpMaxWidth)
+		add("UNSET/FILTER", "UNSET/FILTER - Block list-based filters.", unsetFilterLines)
+
+		setNoFilterLines := helpEntryLines(
+			"SET/NOFILTER - Allow everything (CC dialect).",
+			[]string{"SET/NOFILTER"},
+			nil,
+			[]string{
+				"Resets filters to a fully permissive state.",
+			},
+		)
+		add("SET/NOFILTER", "SET/NOFILTER - Allow everything.", setNoFilterLines)
+
+		addCCToggle := func(cmd, summary, alias string) {
+			lines := helpEntryLines(
+				fmt.Sprintf("%s - %s", cmd, summary),
+				[]string{cmd},
+				nil,
+				[]string{
+					fmt.Sprintf("Alias of %s.", alias),
+				},
+			)
+			add(cmd, fmt.Sprintf("%s - %s", cmd, summary), lines)
+		}
+		addCCToggle("SET/ANN", "Enable announcements.", "PASS ANNOUNCE")
+		addCCToggle("SET/NOANN", "Disable announcements.", "REJECT ANNOUNCE")
+		addCCToggle("SET/BEACON", "Enable beacon spots.", "PASS BEACON")
+		addCCToggle("SET/NOBEACON", "Disable beacon spots.", "REJECT BEACON")
+		addCCToggle("SET/WWV", "Enable WWV bulletins.", "PASS WWV")
+		addCCToggle("SET/NOWWV", "Disable WWV bulletins.", "REJECT WWV")
+		addCCToggle("SET/WCY", "Enable WCY bulletins.", "PASS WCY")
+		addCCToggle("SET/NOWCY", "Disable WCY bulletins.", "REJECT WCY")
+		addCCToggle("SET/SELF", "Enable self spots.", "PASS SELF")
+		addCCToggle("SET/NOSELF", "Disable self spots.", "REJECT SELF")
+		addCCToggle("SET/SKIMMER", "Allow skimmer spots.", "PASS SOURCE SKIMMER")
+		addCCToggle("SET/NOSKIMMER", "Block skimmer spots.", "REJECT SOURCE SKIMMER")
+
+		setModeLines := helpEntryLines(
+			"SET/<MODE> - Allow a mode (CC dialect).",
+			[]string{"SET/<MODE>"},
+			nil,
+			[]string{
+				"Alias of PASS MODE <MODE>.",
+			},
+		)
+		setModeLines = appendListSection(setModeLines, "Modes:", []string{"CW", "FT4", "FT8", "RTTY"}, helpMaxWidth)
+		add("SET/<MODE>", "SET/<MODE> - Allow a mode.", setModeLines)
+
+		setNoModeLines := helpEntryLines(
+			"SET/NO<MODE> - Block a mode (CC dialect).",
+			[]string{"SET/NO<MODE>"},
+			nil,
+			[]string{
+				"Alias of REJECT MODE <MODE>.",
+			},
+		)
+		setNoModeLines = appendListSection(setNoModeLines, "Modes:", []string{"CW", "FT4", "FT8", "RTTY"}, helpMaxWidth)
+		add("SET/NO<MODE>", "SET/NO<MODE> - Block a mode.", setNoModeLines)
+
+		catalog.order = []string{
+			"HELP",
+			"DX",
+			"SHOW/DX",
+			"SH/DX",
+			"SHOW MYDX",
+			"SHOW DXCC",
+			"SHOW DEDUPE",
+			"SET DEDUPE",
+			"SET GRID",
+			"SET NOISE",
+			"SHOW/FILTER",
+			"SH/FILTER",
+			"RESET FILTER",
+			"SET/FILTER",
+			"UNSET/FILTER",
+			"SET/NOFILTER",
+			"SET/ANN",
+			"SET/NOANN",
+			"SET/BEACON",
+			"SET/NOBEACON",
+			"SET/WWV",
+			"SET/NOWWV",
+			"SET/WCY",
+			"SET/NOWCY",
+			"SET/SELF",
+			"SET/NOSELF",
+			"SET/SKIMMER",
+			"SET/NOSKIMMER",
+			"SET/<MODE>",
+			"SET/NO<MODE>",
+			"DIALECT",
+			"BYE",
+		}
+	} else {
+		showLines := helpEntryLines(
+			"SHOW - See SHOW subcommands.",
+			[]string{"SHOW DX [count]", "SHOW MYDX [count]", "SHOW DXCC <prefix|callsign>"},
+			nil,
+			[]string{
+				"Use HELP SHOW DX for the history alias.",
+			},
+		)
+		add("SHOW", "SHOW - See SHOW subcommands.", showLines)
+
+		showFilterLines := helpEntryLines(
+			"SHOW FILTER - Display current filter state.",
+			[]string{"SHOW FILTER"},
+			nil,
+			[]string{
+				"Shows effective allow/block state plus per-type lists.",
+			},
+		)
+		add("SHOW FILTER", "SHOW FILTER - Display filter state.", showFilterLines)
+
+		passLines := helpEntryLines(
+			"PASS - Allow filter matches.",
+			[]string{"PASS <type> <list>"},
+			nil,
+			[]string{
+				"Adds to allowlist and removes from blocklist.",
+				"List is comma or space separated; use ALL to allow all.",
+			},
+		)
+		passLines = appendListSection(passLines, "Types:", filterListTypes(), helpMaxWidth)
+		passLines = appendListSection(passLines, "Feature toggles:", []string{
+			"PASS BEACON",
+			"PASS WWV",
+			"PASS WCY",
+			"PASS ANNOUNCE",
+			"PASS SELF",
+		}, helpMaxWidth)
+		add("PASS", "PASS - Allow filter matches.", passLines)
+
+		rejectLines := helpEntryLines(
+			"REJECT - Block filter matches.",
+			[]string{"REJECT <type> <list>"},
+			nil,
+			[]string{
+				"Adds to blocklist and removes from allowlist.",
+				"List is comma or space separated; use ALL to block all.",
+			},
+		)
+		rejectLines = appendListSection(rejectLines, "Types:", filterListTypes(), helpMaxWidth)
+		rejectLines = appendListSection(rejectLines, "Feature toggles:", []string{
+			"REJECT BEACON",
+			"REJECT WWV",
+			"REJECT WCY",
+			"REJECT ANNOUNCE",
+			"REJECT SELF",
+		}, helpMaxWidth)
+		add("REJECT", "REJECT - Block filter matches.", rejectLines)
+
+		showDXLines := helpEntryLines(
+			"SHOW DX - Alias of SHOW MYDX (stored history).",
+			[]string{"SHOW DX [count]"},
+			[]string{"SH DX"},
+			[]string{
+				"Count range is 1-250 (default 50).",
+			},
+		)
+		add("SHOW DX", "SHOW DX - Alias of SHOW MYDX.", showDXLines, "SH DX")
+		shDXLines := helpEntryLines(
+			"SH DX - Alias of SHOW DX.",
+			[]string{"SH DX [count]"},
+			[]string{"SHOW DX"},
+			nil,
+		)
+		add("SH DX", "SH DX - Alias of SHOW DX.", shDXLines)
+
+		catalog.order = []string{
+			"HELP",
+			"DX",
+			"SHOW DX",
+			"SH DX",
+			"SHOW MYDX",
+			"SHOW DXCC",
+			"SHOW DEDUPE",
+			"SET DEDUPE",
+			"SET GRID",
+			"SET NOISE",
+			"SHOW FILTER",
+			"PASS",
+			"REJECT",
+			"RESET FILTER",
+			"DIALECT",
+			"BYE",
+		}
+	}
+
+	return catalog
+}
+
+func normalizeHelpTopic(dialect string, topic string) string {
+	upper := strings.ToUpper(strings.TrimSpace(topic))
+	if upper == "" {
+		return ""
+	}
+	upper = strings.Join(strings.Fields(upper), " ")
+
+	switch {
+	case strings.HasPrefix(upper, "SHOW DXCC"):
+		return "SHOW DXCC"
+	case strings.HasPrefix(upper, "SHOW MYDX"):
+		return "SHOW MYDX"
+	case strings.HasPrefix(upper, "SHOW DEDUPE"):
+		return "SHOW DEDUPE"
+	case strings.HasPrefix(upper, "SET DEDUPE"):
+		return "SET DEDUPE"
+	case strings.HasPrefix(upper, "SET GRID"):
+		return "SET GRID"
+	case strings.HasPrefix(upper, "SET NOISE"):
+		return "SET NOISE"
+	case strings.HasPrefix(upper, "RESET FILTER"):
+		return "RESET FILTER"
+	case strings.HasPrefix(upper, "DIALECT"):
+		return "DIALECT"
+	case upper == "BYE" || upper == "QUIT" || upper == "EXIT":
+		return "BYE"
+	case upper == "H":
+		return "HELP"
+	case upper == "HELP":
+		return "HELP"
+	case upper == "DX":
+		return "DX"
+	case upper == "SHOW":
+		return "SHOW"
+	}
+
+	if dialect == "cc" {
+		if strings.HasPrefix(upper, "SHOW FILTER") {
+			return "SHOW/FILTER"
+		}
+		if strings.HasPrefix(upper, "SHOW/DX") || upper == "SH/DX" {
+			return "SHOW/DX"
+		}
+		if strings.HasPrefix(upper, "SHOW/FILTER") || upper == "SH/FILTER" {
+			return "SHOW/FILTER"
+		}
+		if strings.HasPrefix(upper, "SET/FILTER DXBM") {
+			return "SET/FILTER"
+		}
+		if strings.HasPrefix(upper, "SET/FILTER ") || upper == "SET/FILTER" {
+			return "SET/FILTER"
+		}
+		if strings.HasPrefix(upper, "UNSET/FILTER") {
+			return "UNSET/FILTER"
+		}
+		if strings.HasPrefix(upper, "SET/NOFILTER") {
+			return "SET/NOFILTER"
+		}
+		if strings.HasPrefix(upper, "SET/NO") {
+			mode := strings.TrimPrefix(upper, "SET/NO")
+			if isCCHelpMode(mode) {
+				return "SET/NO<MODE>"
+			}
+		}
+		if strings.HasPrefix(upper, "SET/") && !strings.Contains(upper, "/NO") {
+			mode := strings.TrimPrefix(upper, "SET/")
+			if isCCHelpMode(mode) {
+				return "SET/<MODE>"
+			}
+		}
+		return upper
+	}
+
+	if strings.HasPrefix(upper, "PASS ") {
+		return "PASS"
+	}
+	if upper == "PASS" {
+		return "PASS"
+	}
+	if strings.HasPrefix(upper, "REJECT ") {
+		return "REJECT"
+	}
+	if upper == "REJECT" {
+		return "REJECT"
+	}
+	if strings.HasPrefix(upper, "SHOW FILTER") {
+		return "SHOW FILTER"
+	}
+	if strings.HasPrefix(upper, "SHOW DX") {
+		return "SHOW DX"
+	}
+	if upper == "SH DX" {
+		return "SHOW DX"
+	}
+
+	return upper
+}
+
+func isCCHelpMode(mode string) bool {
+	switch strings.ToUpper(strings.TrimSpace(mode)) {
+	case "CW", "FT4", "FT8", "RTTY":
+		return true
+	default:
+		return false
+	}
+}
+
+func helpEntryLines(summary string, usage []string, aliases []string, notes []string) []string {
+	lines := []string{summary}
+	lines = appendUsageLines(lines, usage)
+	lines = appendAliases(lines, aliases, helpMaxWidth)
+	lines = appendNotes(lines, notes, helpMaxWidth)
+	return lines
+}
+
+func appendUsageLines(lines []string, usage []string) []string {
+	if len(usage) == 0 {
+		return lines
+	}
+	for i, entry := range usage {
+		prefix := "Usage: "
+		if i > 0 {
+			prefix = "       "
+		}
+		lines = append(lines, prefix+entry)
+	}
+	return lines
+}
+
+func appendAliases(lines []string, aliases []string, width int) []string {
+	if len(aliases) == 0 {
+		return lines
+	}
+	lines = append(lines, wrapLabelList("Aliases:", aliases, width)...)
+	return lines
+}
+
+func appendNotes(lines []string, notes []string, width int) []string {
+	if len(notes) == 0 {
+		return lines
+	}
+	lines = append(lines, "Notes:")
+	for _, note := range notes {
+		lines = append(lines, wrapTextLines(note, width, "  ", "  ")...)
+	}
+	return lines
+}
+
+func appendListSection(lines []string, title string, items []string, width int) []string {
+	if len(items) == 0 {
+		return lines
+	}
+	lines = append(lines, title)
+	lines = append(lines, wrapListLines("", "  ", items, width)...)
+	return lines
+}
+
+func wrapLabelList(label string, items []string, width int) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	prefix := label + " "
+	indent := strings.Repeat(" ", len(prefix))
+	line := prefix
+	lines := []string{}
+	for _, item := range items {
+		candidate := line + item
+		if line != prefix {
+			candidate = line + ", " + item
+		}
+		if len(candidate) > width && line != prefix {
+			lines = append(lines, line)
+			line = indent + item
+			continue
+		}
+		line = candidate
+	}
+	if strings.TrimSpace(line) != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func wrapTextLines(text string, width int, indentFirst string, indentNext string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if width <= 0 {
+		return []string{indentFirst + text}
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return nil
+	}
+	lines := []string{}
+	line := indentFirst
+	limit := width
+	for _, word := range words {
+		if line == indentFirst || strings.TrimSpace(line) == "" {
+			if len(line)+len(word) > limit {
+				lines = append(lines, line)
+				line = indentNext + word
+				continue
+			}
+			line += word
+			continue
+		}
+		candidate := line + " " + word
+		if len(candidate) > limit {
+			lines = append(lines, line)
+			line = indentNext + word
+			continue
+		}
+		line = candidate
+	}
+	if strings.TrimSpace(line) != "" {
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 func filterHelpLines(dialect string) []string {
@@ -195,6 +824,7 @@ func filterHelpLines(dialect string) []string {
 			"SET/WCY | SET/NOWCY",
 			"SET/SKIMMER | SET/NOSKIMMER",
 			"SET/<MODE> | SET/NO<MODE> (CW, FT4, FT8, RTTY)",
+			"SET/NOFILTER",
 			"SET/FILTER <type> <list>",
 			"UNSET/FILTER <type> <list>",
 			"SET/FILTER <type>/ON  -> PASS <type> ALL",

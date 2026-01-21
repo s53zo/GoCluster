@@ -280,7 +280,7 @@ func TestHelpPerDialect(t *testing.T) {
 	p := NewProcessor(nil, nil, nil, nil, nil, nil)
 
 	classic := p.ProcessCommandForClient("HELP", "N2WQ", "", nil, "classic")
-	if !strings.Contains(classic, "Filter core rules:") || !strings.Contains(classic, "SHOW DX") {
+	if !strings.Contains(classic, "HELP <command>") || !strings.Contains(classic, "SHOW DX -") {
 		t.Fatalf("classic help missing expected content: %q", classic)
 	}
 	if !strings.Contains(classic, "List types:") || !strings.Contains(classic, "Supported bands:") {
@@ -288,7 +288,7 @@ func TestHelpPerDialect(t *testing.T) {
 	}
 
 	cc := p.ProcessCommandForClient("HELP", "N2WQ", "", nil, "cc")
-	if !strings.Contains(strings.ToUpper(cc), "CC SHORTCUTS:") || !strings.Contains(strings.ToUpper(cc), "SHOW/DX") || !strings.Contains(strings.ToUpper(cc), "RESET FILTER") {
+	if !strings.Contains(strings.ToUpper(cc), "CC SHORTCUTS:") || !strings.Contains(cc, "SHOW/DX -") || !strings.Contains(cc, "SET/ANN -") {
 		t.Fatalf("cc help missing cc aliases: %q", cc)
 	}
 	if !strings.Contains(cc, "SET/FILTER <type>/ON") || !strings.Contains(cc, "SET/FILTER <type>/OFF") {
@@ -331,6 +331,10 @@ func TestHelpLineWidth(t *testing.T) {
 	helps := []string{
 		p.ProcessCommandForClient("HELP", "N2WQ", "", nil, "classic"),
 		p.ProcessCommandForClient("HELP", "N2WQ", "", nil, "cc"),
+		p.ProcessCommandForClient("HELP DX", "N2WQ", "", nil, "go"),
+		p.ProcessCommandForClient("HELP PASS", "N2WQ", "", nil, "go"),
+		p.ProcessCommandForClient("HELP SHOW/DX", "N2WQ", "", nil, "cc"),
+		p.ProcessCommandForClient("HELP SET/FILTER", "N2WQ", "", nil, "cc"),
 	}
 	for _, help := range helps {
 		lines := strings.Split(help, "\n")
@@ -342,6 +346,125 @@ func TestHelpLineWidth(t *testing.T) {
 			if len(line) > 78 {
 				t.Fatalf("help line exceeds 78 chars: %q", line)
 			}
+		}
+	}
+}
+
+func TestHelpTopicGoDialect(t *testing.T) {
+	p := NewProcessor(nil, nil, nil, nil, nil, nil)
+
+	resp := p.ProcessCommandForClient("HELP DX", "N2WQ", "", nil, "go")
+	if !strings.Contains(resp, "Usage: DX <freq_khz> <callsign> [comment]") {
+		t.Fatalf("expected DX usage in help, got %q", resp)
+	}
+
+	resp = p.ProcessCommandForClient("HELP PASS", "N2WQ", "", nil, "go")
+	if !strings.Contains(resp, "Usage: PASS <type> <list>") || !strings.Contains(resp, "Types:") {
+		t.Fatalf("expected PASS usage and types, got %q", resp)
+	}
+
+	resp = p.ProcessCommandForClient("HELP SHOW DX", "N2WQ", "", nil, "go")
+	if !strings.Contains(resp, "Aliases:") || !strings.Contains(resp, "SHOW DX -") {
+		t.Fatalf("expected SHOW DX aliases, got %q", resp)
+	}
+}
+
+func TestHelpTopicCCDialect(t *testing.T) {
+	p := NewProcessor(nil, nil, nil, nil, nil, nil)
+
+	resp := p.ProcessCommandForClient("HELP SHOW/DX", "N2WQ", "", nil, "cc")
+	if !strings.Contains(resp, "Usage: SHOW/DX [count]") {
+		t.Fatalf("expected SHOW/DX usage, got %q", resp)
+	}
+
+	resp = p.ProcessCommandForClient("HELP SET/ANN", "N2WQ", "", nil, "cc")
+	if !strings.Contains(resp, "Alias of PASS ANNOUNCE") {
+		t.Fatalf("expected SET/ANN alias, got %q", resp)
+	}
+
+	resp = p.ProcessCommandForClient("HELP SET/FT8", "N2WQ", "", nil, "cc")
+	if !strings.Contains(resp, "Modes:") || !strings.Contains(resp, "FT8") {
+		t.Fatalf("expected mode shortcuts in help, got %q", resp)
+	}
+}
+
+func TestHelpEntriesGoDialect(t *testing.T) {
+	p := NewProcessor(nil, nil, nil, nil, nil, nil)
+	cases := []struct {
+		topic    string
+		contains []string
+	}{
+		{"HELP", []string{"HELP - Show command list", "Usage: HELP [command]"}},
+		{"DX", []string{"DX - Post a spot", "Usage: DX <freq_khz> <callsign> [comment]"}},
+		{"SHOW", []string{"SHOW - See SHOW subcommands.", "SHOW DXCC"}},
+		{"SHOW DX", []string{"SHOW DX - Alias of SHOW MYDX (stored history)", "Usage: SHOW DX [count]"}},
+		{"SHOW MYDX", []string{"SHOW MYDX - Show filtered spot history", "stored spots"}},
+		{"SHOW DXCC", []string{"SHOW DXCC - Look up DXCC/ADIF and zones", "other prefixes"}},
+		{"SHOW DEDUPE", []string{"SHOW DEDUPE - Show your broadcast dedupe policy", "FAST = shorter window"}},
+		{"SET DEDUPE", []string{"SET DEDUPE - Select broadcast dedupe policy", "FAST = shorter window"}},
+		{"SET GRID", []string{"SET GRID - Set your grid", "Usage: SET GRID <4-6 char maidenhead>"}},
+		{"SET NOISE", []string{"SET NOISE - Set your noise class for glyphs", "Usage: SET NOISE <QUIET|RURAL|SUBURBAN|URBAN>"}},
+		{"SHOW FILTER", []string{"SHOW FILTER - Display current filter state.", "Usage: SHOW FILTER"}},
+		{"PASS", []string{"PASS - Allow filter matches", "Usage: PASS <type> <list>", "Types:"}},
+		{"REJECT", []string{"REJECT - Block filter matches", "Usage: REJECT <type> <list>", "Types:"}},
+		{"RESET FILTER", []string{"RESET FILTER - Reset filters", "Usage: RESET FILTER"}},
+		{"DIALECT", []string{"DIALECT - Show or switch filter command dialect", "DIALECT LIST"}},
+		{"BYE", []string{"BYE - Disconnect", "Usage: BYE"}},
+	}
+	for _, tc := range cases {
+		resp := p.ProcessCommandForClient("HELP "+tc.topic, "N2WQ", "", nil, "go")
+		assertHelpContains(t, tc.topic, resp, tc.contains)
+	}
+}
+
+func TestHelpEntriesCCDialect(t *testing.T) {
+	p := NewProcessor(nil, nil, nil, nil, nil, nil)
+	cases := []struct {
+		topic    string
+		contains []string
+	}{
+		{"HELP", []string{"HELP - Show command list", "Usage: HELP [command]"}},
+		{"DX", []string{"DX - Post a spot", "Usage: DX <freq_khz> <callsign> [comment]"}},
+		{"SHOW", []string{"SHOW - See SHOW subcommands.", "SHOW DXCC"}},
+		{"SHOW/DX", []string{"SHOW/DX - Alias of SHOW MYDX (stored history)", "Usage: SHOW/DX [count]"}},
+		{"SHOW MYDX", []string{"SHOW MYDX - Show filtered spot history", "stored spots"}},
+		{"SHOW DXCC", []string{"SHOW DXCC - Look up DXCC/ADIF and zones", "other prefixes"}},
+		{"SHOW DEDUPE", []string{"SHOW DEDUPE - Show your broadcast dedupe policy", "FAST = shorter window"}},
+		{"SET DEDUPE", []string{"SET DEDUPE - Select broadcast dedupe policy", "FAST = shorter window"}},
+		{"SET GRID", []string{"SET GRID - Set your grid", "Usage: SET GRID <4-6 char maidenhead>"}},
+		{"SET NOISE", []string{"SET NOISE - Set your noise class for glyphs", "Usage: SET NOISE <QUIET|RURAL|SUBURBAN|URBAN>"}},
+		{"SHOW/FILTER", []string{"SHOW/FILTER - Display current filter state.", "Usage: SHOW/FILTER"}},
+		{"SET/FILTER", []string{"SET/FILTER - Allow list-based filters", "Example: SET/FILTER BAND/ON", "DXBM"}},
+		{"UNSET/FILTER", []string{"UNSET/FILTER - Block list-based filters", "Usage: UNSET/FILTER <type> <list>", "DXBM"}},
+		{"SET/NOFILTER", []string{"SET/NOFILTER - Allow everything", "Usage: SET/NOFILTER"}},
+		{"SET/ANN", []string{"SET/ANN - Enable announcements", "Alias of PASS ANNOUNCE"}},
+		{"SET/NOANN", []string{"SET/NOANN - Disable announcements", "Alias of REJECT ANNOUNCE"}},
+		{"SET/BEACON", []string{"SET/BEACON - Enable beacon spots", "Alias of PASS BEACON"}},
+		{"SET/NOBEACON", []string{"SET/NOBEACON - Disable beacon spots", "Alias of REJECT BEACON"}},
+		{"SET/WWV", []string{"SET/WWV - Enable WWV bulletins", "Alias of PASS WWV"}},
+		{"SET/NOWWV", []string{"SET/NOWWV - Disable WWV bulletins", "Alias of REJECT WWV"}},
+		{"SET/WCY", []string{"SET/WCY - Enable WCY bulletins", "Alias of PASS WCY"}},
+		{"SET/NOWCY", []string{"SET/NOWCY - Disable WCY bulletins", "Alias of REJECT WCY"}},
+		{"SET/SELF", []string{"SET/SELF - Enable self spots", "Alias of PASS SELF"}},
+		{"SET/NOSELF", []string{"SET/NOSELF - Disable self spots", "Alias of REJECT SELF"}},
+		{"SET/SKIMMER", []string{"SET/SKIMMER - Allow skimmer spots", "Alias of PASS SOURCE SKIMMER"}},
+		{"SET/NOSKIMMER", []string{"SET/NOSKIMMER - Block skimmer spots", "Alias of REJECT SOURCE SKIMMER"}},
+		{"SET/FT8", []string{"SET/<MODE> - Allow a mode", "Alias of PASS MODE <MODE>"}},
+		{"SET/NOFT8", []string{"SET/NO<MODE> - Block a mode", "Alias of REJECT MODE <MODE>"}},
+		{"DIALECT", []string{"DIALECT - Show or switch filter command dialect", "DIALECT LIST"}},
+		{"BYE", []string{"BYE - Disconnect", "Usage: BYE"}},
+	}
+	for _, tc := range cases {
+		resp := p.ProcessCommandForClient("HELP "+tc.topic, "N2WQ", "", nil, "cc")
+		assertHelpContains(t, tc.topic, resp, tc.contains)
+	}
+}
+
+func assertHelpContains(t *testing.T, topic string, resp string, contains []string) {
+	t.Helper()
+	for _, want := range contains {
+		if !strings.Contains(resp, want) {
+			t.Fatalf("help %q missing %q in %q", topic, want, resp)
 		}
 	}
 }

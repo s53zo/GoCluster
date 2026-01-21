@@ -21,7 +21,8 @@
       "Bash(stat:*)",
       "Bash(wc:*)",
       "Bash(grep:*)",
-      "Bash(xargs:*)"
+      "Bash(xargs:*)",
+      "Bash(go run:*)"
     ],
     "deny": [],
     "ask": []

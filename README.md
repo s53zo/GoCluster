@@ -172,7 +172,7 @@ Telnet clients can issue commands via the prompt once logged in. The processor, 
 
 - Test spotter calls: when a logged-in callsign ends with `TEST` (optionally `-<SSID>`) and has no slash segments, the base call (SSID stripped) must resolve in CTY or the `DX` command is rejected with a message. Accepted test spots are still filtered/broadcast locally and subject to reputation gating; they bypass FCC ULS validation, but are not stored in the ring buffer, not archived, and never peered.
 
-- `HELP` / `H` - display the help text that includes short summaries and valid bands/modes at the bottom of the message.
+- `HELP [command]` / `H` - list commands for the active dialect or show detailed help for a specific command (for example, `HELP DX`).
 - `SHOW DX [N]` / `SHOW/DX [N]` - alias of `SHOW MYDX`, streaming the most recent `N` filtered spots (`N` ranges from 1-250, default 50). Archive-only: if the Pebble archive is unavailable, the command returns `No spots available.` The command accepts the alias `SH DX` (or `SH/DX` in cc) as well.
 - `SHOW MYDX [N]` - stream the most recent `N` spots that match your filters (self-spots always pass; `N` ranges from 1-250, default 50). Archive-only: if the Pebble archive is unavailable, the command returns `No spots available.` Very narrow filters may return fewer than `N` results.
 - `BYE`, `QUIT`, `EXIT` - request a graceful logout; the server replies with `73!` and closes the connection.
