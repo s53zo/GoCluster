@@ -31,6 +31,7 @@ Commercial-grade from the first draft. Do not write simple code that needs harde
 - Confirm current Scope Ledger vN and what is Agreed/Pending.
 - Classify change (default Non-trivial unless proven Small).
 - Identify impacted contracts (protocol, ordering, drop/disconnect semantics, deadlines/timeouts, metrics/logs). If none: explicitly say “No contract changes.”
+- Identify user-visible behavior changes (timing, ordering, drops, disconnect reasons, error messages). If none: explicitly say “No user-visible behavior changes.”
 - Choose dependency rigor (Light vs Full) using the decision tree below.
 - For Non-trivial: provide Architecture Note before code (bounds, backpressure, shutdown, failure modes).
 - Implement with bounded resources and explicit invariants.
@@ -103,10 +104,12 @@ Decision tree:
 ### Default workflows
 Small change (lightweight workflow):
 - Short plan (1–5 bullets), implement, targeted tests (or explain why none), necessary comments/doc updates, verification commands.
+- If any user-visible behavior changes, treat as Non-trivial.
 
 Non-trivial change (full delivery workflow, default posture):
 1) Requirements & Edge Cases note
 2) Architecture Note (before code): concurrency model, goroutine bounds, ownership/lifetime, backpressure and precise drop semantics, deadlines/cancellation, shutdown sequencing, resource bounds, failure modes; include dependency impact (Light or Full per decision tree), contract changes (explicit list, or “No contract changes”), and boundary regression test plan; 2–3 alternatives if priorities change.
+2.1) User Impact and Determinism Note (before code): describe what changes for clients (or “No user-visible behavior changes”), including slow-client and overload behavior, ordering/drops/disconnect reasons, and why behavior remains deterministic; include second- and third-order consequences and mitigations.
 3) Implementation: bounded resources, clear invariants, cancellation/deadlines everywhere, maintainable hot paths.
 4) Tests: unit + deterministic queue/drop/disconnect tests; race-relevant coverage; fuzz/property tests for parsers when applicable.
 5) Performance evidence when hot paths change or any “faster” claim is made: before/after bench or pprof; include allocs/op.
@@ -230,6 +233,7 @@ Include:
 - Tradeoffs: latency vs delivery vs memory; strict vs lenient behavior impacts.
 - Risks and mitigations: correctness, overload behavior, compatibility, rollout considerations.
 - Contracts and compatibility: confirm whether protocol/ordering/drop/deadlines/metrics contracts changed; if yes, list changes and affected components.
+- User impact and determinism: confirm whether any user-visible behavior changed (or “No user-visible behavior changes”), including slow-client and overload behavior, ordering/drops/disconnect reasons, and why behavior remains deterministic.
 - Observability impact: metrics/log fields added/changed; how to interpret them.
 - Verification commands: exact commands to run and expected outcomes.
 - Scope-to-Code Traceability: map each Scope Ledger item with Status = Agreed/Pending (as of the start of this implementation cycle) to:
