@@ -162,6 +162,11 @@ func TestShouldPublishToPeersRxOnlyAllowsManual(t *testing.T) {
 	if shouldPublishToPeers(spotRBN, true) {
 		t.Fatalf("expected non-manual spot to skip peering in rx_only mode")
 	}
+	spotUpstream := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "FT8")
+	spotUpstream.SourceType = spot.SourceUpstream
+	if shouldPublishToPeers(spotUpstream, true) {
+		t.Fatalf("expected upstream spot to skip peering in rx_only mode")
+	}
 }
 
 // Purpose: Verify gridDBCheckOnMissEnabled defaults to true.

@@ -493,6 +493,8 @@ type PeeringConfig struct {
 	PC92Bitmap    int    `yaml:"pc92_bitmap"`
 	NodeCount     int    `yaml:"node_count"`
 	UserCount     int    `yaml:"user_count"`
+	// RxOnly limits outbound DX spot publishing to manual human spots only.
+	RxOnly bool `yaml:"rx_only"`
 	// LogKeepalive controls whether keepalive/PC51 chatter is emitted to logs.
 	LogKeepalive bool `yaml:"log_keepalive"`
 	// LogLineTooLong controls whether oversized peer lines are logged.
