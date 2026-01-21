@@ -271,6 +271,33 @@ func TestCollapseSSIDForBroadcast(t *testing.T) {
 	}
 }
 
+// Purpose: Ensure metadata lookups strip skimmer and numeric SSID suffixes only.
+// Key aspects: Preserves portable segments while normalizing skimmer suffixes.
+// Upstream: go test execution.
+// Downstream: normalizeCallForMetadata.
+func TestNormalizeCallForMetadata(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"VE6WZ-#", "VE6WZ"},
+		{"VE6WZ-1-#", "VE6WZ"},
+		{"VE6WZ-1", "VE6WZ"},
+		{"VE6WZ-TEST", "VE6WZ"},
+		{"VE6WZ/P", "VE6WZ/P"},
+		{"VE6WZ-1/P", "VE6WZ-1/P"},
+		{"K1ABC/VE3-#", "K1ABC/VE3"},
+		{"", ""},
+	}
+
+	for _, tc := range cases {
+		got := normalizeCallForMetadata(tc.input)
+		if got != tc.want {
+			t.Fatalf("normalizeCallForMetadata(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
 // Purpose: Helper to allocate a bool pointer.
 // Key aspects: Avoids inline address-of literals.
 // Upstream: grid DB check tests in this file.

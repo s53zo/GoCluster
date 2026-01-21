@@ -181,6 +181,23 @@ type gridMetrics struct {
 	cacheHits    atomic.Uint64
 }
 
+const (
+	gridSyncLookupWorkers   = 4
+	gridSyncLookupQueueDepth = 512
+	gridSyncLookupTimeout   = 8 * time.Millisecond
+)
+
+type gridLookupRequest struct {
+	baseCall string
+	rawCall  string
+	resp     chan gridLookupResult
+}
+
+type gridLookupResult struct {
+	grid string
+	ok   bool
+}
+
 // Purpose: Report whether stdout is a TTY for UI gating.
 // Key aspects: Uses term.IsTerminal on stdout fd.
 // Upstream: main UI selection.
@@ -535,7 +552,7 @@ func main() {
 	log.Printf("Gridstore: db_check_on_miss=%v (source=%s)", gridDBCheckOnMiss, gridDBCheckSource)
 
 	gridTTL := time.Duration(cfg.GridTTLDays) * 24 * time.Hour
-	gridUpdater, ctyUpdater, gridUpdateState, stopGridWriter, gridLookup := startGridWriter(gridStore, time.Duration(cfg.GridFlushSec)*time.Second, metaCache, gridTTL, gridDBCheckOnMiss)
+	gridUpdater, ctyUpdater, gridUpdateState, stopGridWriter, gridLookup, gridLookupSync := startGridWriter(gridStore, time.Duration(cfg.GridFlushSec)*time.Second, metaCache, gridTTL, gridDBCheckOnMiss)
 	defer func() {
 		if stopGridWriter != nil {
 			stopGridWriter()
@@ -603,18 +620,30 @@ func main() {
 	}
 
 	dedupInput := deduplicator.GetInputChannel()
-	ingestValidator := newIngestValidator(ctyLookup, metaCache, ctyUpdater, dedupInput, unlicensedReporter, dropReporter, cfg.CTY.Enabled)
+	ingestValidator := newIngestValidator(ctyLookup, metaCache, ctyUpdater, gridUpdater, dedupInput, unlicensedReporter, dropReporter, cfg.CTY.Enabled)
 	ingestValidator.Start()
 	ingestInput := ingestValidator.Input()
 
-	secondaryWindow := time.Duration(cfg.Dedup.SecondaryWindowSeconds) * time.Second
-	var secondaryDeduper *dedup.SecondaryDeduper
-	if secondaryWindow > 0 {
-		secondaryDeduper = dedup.NewSecondaryDeduper(secondaryWindow, cfg.Dedup.SecondaryPreferStrong)
-		secondaryDeduper.Start()
-		log.Printf("Secondary deduplication active with %v window (broadcast-only)", secondaryWindow)
+	secondaryFastWindow := time.Duration(cfg.Dedup.SecondaryFastWindowSeconds) * time.Second
+	secondarySlowWindow := time.Duration(cfg.Dedup.SecondarySlowWindowSeconds) * time.Second
+	var secondaryFast *dedup.SecondaryDeduper
+	var secondarySlow *dedup.SecondaryDeduper
+	if secondaryFastWindow > 0 {
+		secondaryFast = dedup.NewSecondaryDeduper(secondaryFastWindow, cfg.Dedup.SecondaryFastPreferStrong)
+		secondaryFast.Start()
+		log.Printf("Secondary dedupe (fast) active with %v window", secondaryFastWindow)
 	} else {
-		log.Println("Secondary deduplication disabled; all spots broadcast")
+		log.Println("Secondary dedupe (fast) disabled")
+	}
+	if secondarySlowWindow > 0 {
+		secondarySlow = dedup.NewSecondaryDeduper(secondarySlowWindow, cfg.Dedup.SecondarySlowPreferStrong)
+		secondarySlow.Start()
+		log.Printf("Secondary dedupe (slow) active with %v window", secondarySlowWindow)
+	} else {
+		log.Println("Secondary dedupe (slow) disabled")
+	}
+	if secondaryFastWindow <= 0 && secondarySlowWindow <= 0 {
+		log.Println("Warning: secondary dedupe disabled (fast+slow=0); spots broadcast without secondary suppression")
 	}
 
 	modeSeeds := make([]spot.ModeSeed, 0, len(cfg.ModeInference.DigitalSeeds))
@@ -704,6 +733,8 @@ func main() {
 		NoiseOffsets:            pathCfg.NoiseOffsets,
 		GridLookup:              gridLookup,
 		CTYLookup:               ctyLookup,
+		DedupeFastEnabled:       secondaryFastWindow > 0,
+		DedupeSlowEnabled:       secondarySlowWindow > 0,
 	}, processor)
 
 	err = telnetServer.Start()
@@ -721,11 +752,12 @@ func main() {
 
 	// Start the unified output processor once the telnet server is ready
 	var lastOutput atomic.Int64
+	var secondaryStageCount atomic.Uint64
 	// Purpose: Run the single-threaded output pipeline for deduped spots.
 	// Key aspects: Handles corrections, licensing, secondary dedupe, and fan-out.
 	// Upstream: main startup after wiring dependencies.
 	// Downstream: processOutputSpots.
-	go processOutputSpots(deduplicator, secondaryDeduper, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor)
+	go processOutputSpots(deduplicator, secondaryFast, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor)
 	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
@@ -844,7 +876,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryDeduper, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath, pathPredictor)
+	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath, pathPredictor)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -902,8 +934,11 @@ func main() {
 	if peerManager != nil {
 		peerManager.Stop()
 	}
-	if secondaryDeduper != nil {
-		secondaryDeduper.Stop()
+	if secondaryFast != nil {
+		secondaryFast.Stop()
+	}
+	if secondarySlow != nil {
+		secondarySlow.Stop()
 	}
 
 	// Stop RBN CW/RTTY client
@@ -1125,7 +1160,7 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string, pathPredictor *pathreliability.Predictor) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string, pathPredictor *pathreliability.Predictor) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -1175,42 +1210,51 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 		if dedup == nil {
 			pipelineLine = "Pipeline: primary dedup disabled"
 		} else {
-			primaryProcessed, primaryDupes, _ := dedup.GetStats()
-			primaryForwarded := primaryProcessed
-			if primaryDupes < primaryProcessed {
-				primaryForwarded = primaryProcessed - primaryDupes
-			} else {
-				primaryForwarded = 0
+			primaryProcessed, _, _ := dedup.GetStats()
+
+			secondaryStageCount := uint64(0)
+			if secondaryStage != nil {
+				secondaryStageCount = secondaryStage.Load()
 			}
 
-			if secondary != nil {
-				secProcessed, secDupes, _ := secondary.GetStats()
-				secondaryForwarded := secProcessed
+			fastForwarded := secondaryStageCount
+			slowForwarded := secondaryStageCount
+			if secondaryFast != nil {
+				secProcessed, secDupes, _ := secondaryFast.GetStats()
 				if secDupes < secProcessed {
-					secondaryForwarded = secProcessed - secDupes
+					fastForwarded = secProcessed - secDupes
 				} else {
-					secondaryForwarded = 0
+					fastForwarded = 0
 				}
-				percent := 0
-				if ingestTotal > 0 {
-					percent = int((secondaryForwarded * 100) / ingestTotal)
-				}
-				pipelineLine = fmt.Sprintf("Pipeline: %s | %s | %s (%d%%)",
-					humanize.Comma(int64(ingestTotal)),
-					humanize.Comma(int64(primaryProcessed)),
-					humanize.Comma(int64(secondaryForwarded)),
-					percent)
-			} else {
-				percent := 0
-				if ingestTotal > 0 {
-					percent = int((primaryForwarded * 100) / ingestTotal)
-				}
-				pipelineLine = fmt.Sprintf("Pipeline: %s | %s | %s (no secondary, %d%%)",
-					humanize.Comma(int64(ingestTotal)),
-					humanize.Comma(int64(primaryProcessed)),
-					humanize.Comma(int64(primaryForwarded)),
-					percent)
 			}
+			if secondarySlow != nil {
+				secProcessed, secDupes, _ := secondarySlow.GetStats()
+				if secDupes < secProcessed {
+					slowForwarded = secProcessed - secDupes
+				} else {
+					slowForwarded = 0
+				}
+			}
+			if secondaryFast == nil && secondarySlow != nil {
+				fastForwarded = slowForwarded
+			}
+			if secondarySlow == nil && secondaryFast != nil {
+				slowForwarded = fastForwarded
+			}
+
+			fastPercent := 0
+			slowPercent := 0
+			if ingestTotal > 0 {
+				fastPercent = int((fastForwarded * 100) / ingestTotal)
+				slowPercent = int((slowForwarded * 100) / ingestTotal)
+			}
+			pipelineLine = fmt.Sprintf("Pipeline: %s | %s | %s/%d%% (F) / %s/%d%% (S)",
+				humanize.Comma(int64(ingestTotal)),
+				humanize.Comma(int64(primaryProcessed)),
+				humanize.Comma(int64(fastForwarded)),
+				fastPercent,
+				humanize.Comma(int64(slowForwarded)),
+				slowPercent)
 		}
 
 		var queueDrops, clientDrops, senderFailures uint64
@@ -1222,11 +1266,11 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 
 		combinedRBN := rbnTotal + rbnFTTotal
 		lines := []string{
-			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, secondary, metaCache, knownPtr)), // 1
-			formatGridLineOrPlaceholder(gridStats, gridDB, pathPredictor),                                                               // 2
-			formatCTYLineOrPlaceholder(ctyLookup, ctyState),                                                                             // 3
-			formatFCCLineOrPlaceholder(fccSnap),                                                                                         // 4
-			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4),               // 5
+			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, secondaryFast, secondarySlow, metaCache, knownPtr)), // 1
+			formatGridLineOrPlaceholder(gridStats, gridDB, pathPredictor),                                                                                  // 2
+			formatCTYLineOrPlaceholder(ctyLookup, ctyState),                                                                                                // 3
+			formatFCCLineOrPlaceholder(fccSnap),                                                                                                            // 4
+			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4),                                  // 5
 			fmt.Sprintf("PSKReporter: %s TOTAL / %s CW / %s RTTY / %s FT8 / %s FT4 / %s MSK144",
 				humanize.Comma(int64(pskTotal)),
 				humanize.Comma(int64(pskCW)),
@@ -1369,7 +1413,9 @@ func isStale(s *spot.Spot, policy config.SpotPolicy) bool {
 // Downstream: grid updates, telnet broadcast, archive writer, peer publish.
 func processOutputSpots(
 	deduplicator *dedup.Deduplicator,
-	secondary *dedup.SecondaryDeduper,
+	secondaryFast *dedup.SecondaryDeduper,
+	secondarySlow *dedup.SecondaryDeduper,
+	secondaryStage *atomic.Uint64,
 	modeAssigner *spot.ModeAssigner,
 	buf *buffer.RingBuffer,
 	telnet *telnet.Server,
@@ -1387,6 +1433,7 @@ func processOutputSpots(
 	dash uiSurface,
 	gridUpdate func(call, grid string),
 	gridLookup func(call string) (string, bool),
+	gridLookupSync func(call string) (string, bool),
 	unlicensedReporter func(source, role, call, mode string, freq float64),
 	corrLogger spot.CorrectionTraceLogger,
 	callCooldown *spot.CallCooldown,
@@ -1399,6 +1446,7 @@ func processOutputSpots(
 	pathPredictor *pathreliability.Predictor,
 ) {
 	outputChan := deduplicator.GetOutputChannel()
+	secondaryActive := secondaryFast != nil || secondarySlow != nil
 
 	for s := range outputChan {
 		func() {
@@ -1560,11 +1608,12 @@ func processOutputSpots(
 			// Ensure DE metadata is populated before secondary dedupe. Upstream CTY lookups
 			// can be bypassed when spotters carry SSID tokens or CTY is missing; refresh
 			// here so secondary dedupe has DXCC/zone available.
-			if secondary != nil && (s.DEMetadata.ADIF <= 0 || s.DEMetadata.CQZone <= 0) && ctyDB != nil {
+			if secondaryActive && (s.DEMetadata.ADIF <= 0 || s.DEMetadata.CQZone <= 0) && ctyDB != nil {
 				call := s.DECallNorm
 				if call == "" {
 					call = s.DECall
 				}
+				call = normalizeCallForMetadata(call)
 				if info := effectivePrefixInfo(ctyDB, metaCache, call); info != nil {
 					deGrid := strings.TrimSpace(s.DEMetadata.Grid)
 					s.DEMetadata = metadataFromPrefix(info)
@@ -1586,13 +1635,24 @@ func processOutputSpots(
 
 			// Backfill grids before secondary dedupe so path reliability can use them.
 			if gridLookup != nil {
+				gridBackfilled := false
+				syncGrid := gridLookupSync != nil && isRBNGridSource(s)
 				dxCall := s.DXCallNorm
 				if dxCall == "" {
 					dxCall = s.DXCall
 				}
 				if strings.TrimSpace(s.DXMetadata.Grid) == "" {
-					if grid, ok := gridLookup(dxCall); ok {
-						s.DXMetadata.Grid = grid
+					if syncGrid {
+						if grid, ok := gridLookupSync(dxCall); ok {
+							s.DXMetadata.Grid = grid
+							gridBackfilled = true
+						}
+					}
+					if strings.TrimSpace(s.DXMetadata.Grid) == "" {
+						if grid, ok := gridLookup(dxCall); ok {
+							s.DXMetadata.Grid = grid
+							gridBackfilled = true
+						}
 					}
 				}
 				deCall := s.DECallNorm
@@ -1600,9 +1660,22 @@ func processOutputSpots(
 					deCall = s.DECall
 				}
 				if strings.TrimSpace(s.DEMetadata.Grid) == "" {
-					if grid, ok := gridLookup(deCall); ok {
-						s.DEMetadata.Grid = grid
+					if syncGrid {
+						if grid, ok := gridLookupSync(deCall); ok {
+							s.DEMetadata.Grid = grid
+							gridBackfilled = true
+						}
 					}
+					if strings.TrimSpace(s.DEMetadata.Grid) == "" {
+						if grid, ok := gridLookup(deCall); ok {
+							s.DEMetadata.Grid = grid
+							gridBackfilled = true
+						}
+					}
+				}
+				if gridBackfilled {
+					s.InvalidateMetadataCache()
+					s.EnsureNormalized()
 				}
 			}
 
@@ -1641,8 +1714,21 @@ func processOutputSpots(
 				}
 			}
 
+			if secondaryStage != nil {
+				secondaryStage.Add(1)
+			}
+			// Evaluate secondary dedupe per policy; slow falls back to fast when disabled.
+			allowFast := true
+			if secondaryFast != nil {
+				allowFast = secondaryFast.ShouldForward(s)
+			}
+			allowSlow := allowFast
+			if secondarySlow != nil {
+				allowSlow = secondarySlow.ShouldForward(s)
+			}
+
 			// Broadcast-only dedupe: ring/history already updated above for non-test spots.
-			if secondary != nil && !secondary.ShouldForward(s) {
+			if !allowFast && !allowSlow {
 				if telnet != nil {
 					telnet.DeliverSelfSpot(s)
 				}
@@ -1670,14 +1756,14 @@ func processOutputSpots(
 				lastOutput.Store(time.Now().UTC().UnixNano())
 			}
 
-			if archiveWriter != nil && shouldArchiveSpot(s) {
+			if archiveWriter != nil && allowSlow && shouldArchiveSpot(s) {
 				archiveWriter.Enqueue(s)
 			}
 
 			if telnet != nil {
-				telnet.BroadcastSpot(s)
+				telnet.BroadcastSpot(s, allowFast, allowSlow)
 			}
-			if peerManager != nil && shouldPublishToPeers(s) {
+			if peerManager != nil && allowSlow && shouldPublishToPeers(s) {
 				peerSpot := cloneSpotForPeerPublish(s)
 				peerManager.PublishDX(peerSpot)
 			}
@@ -1816,6 +1902,50 @@ func stripNumericSSID(call string) string {
 	return call[:idx]
 }
 
+// stripTrailingHyphenSuffix removes any trailing hyphen suffix after the last slash.
+// It preserves portable segments (e.g., "K1ABC-1/P") by only trimming when the
+// suffix is the final segment.
+func stripTrailingHyphenSuffix(call string) string {
+	slash := strings.LastIndexByte(call, '/')
+	start := 0
+	if slash >= 0 {
+		start = slash + 1
+	}
+	idx := strings.IndexByte(call[start:], '-')
+	if idx < 0 {
+		return call
+	}
+	trimAt := start + idx
+	if trimAt <= 0 {
+		return call
+	}
+	return call[:trimAt]
+}
+
+// normalizeCallForMetadata strips skimmer and hyphen suffixes before metadata lookups.
+// It preserves portable segments (e.g., "/P") and does not mutate canonical calls.
+func normalizeCallForMetadata(call string) string {
+	call = strings.ToUpper(strings.TrimSpace(call))
+	if call == "" {
+		return call
+	}
+	return stripTrailingHyphenSuffix(call)
+}
+
+// isRBNGridSource reports whether a spot should use synchronous grid backfill.
+// It targets RBN-originated feeds where grid data is often missing at ingest.
+func isRBNGridSource(s *spot.Spot) bool {
+	if s == nil {
+		return false
+	}
+	switch s.SourceType {
+	case spot.SourceRBN, spot.SourceFT8, spot.SourceFT4:
+		return true
+	default:
+		return false
+	}
+}
+
 // cloneSpotForPeerPublish ensures manual spots carry an inferred mode to peers
 // even when the user omitted a comment. Peers only see the comment field in
 // PC61/PC11 frames, so we fall back to the inferred mode when the comment is
@@ -1896,10 +2026,12 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, metaCache *callMetaC
 	if deCall == "" {
 		deCall = s.DECall
 	}
+	dxLookupCall := normalizeCallForMetadata(dxCall)
+	deLookupCall := normalizeCallForMetadata(deCall)
 	needsMetadata := s.DXMetadata.ADIF == 0 || s.DEMetadata.ADIF == 0 || s.Confidence == "C"
 	if needsMetadata {
-		dxInfo := effectivePrefixInfo(ctyDB, metaCache, dxCall)
-		deInfo := effectivePrefixInfo(ctyDB, metaCache, deCall)
+		dxInfo := effectivePrefixInfo(ctyDB, metaCache, dxLookupCall)
+		deInfo := effectivePrefixInfo(ctyDB, metaCache, deLookupCall)
 
 		// Refresh metadata from the final CTY match but preserve any grid data we already attached.
 		dxGrid := strings.TrimSpace(s.DXMetadata.Grid)
@@ -2876,23 +3008,29 @@ func seedKnownCalls(store *gridstore.Store, known *spot.KnownCallsigns) error {
 // Key aspects: Provides enqueue, metrics, stop, and lookup functions.
 // Upstream: main grid store setup.
 // Downstream: gridstore.Store and callMetaCache methods.
-func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache *callMetaCache, ttl time.Duration, dbCheckOnMiss bool) (func(call, grid string), func(call string, info *cty.PrefixInfo), *gridMetrics, func(), func(call string) (string, bool)) {
+func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache *callMetaCache, ttl time.Duration, dbCheckOnMiss bool) (func(call, grid string), func(call string, info *cty.PrefixInfo), *gridMetrics, func(), func(call string) (string, bool), func(call string) (string, bool)) {
 	if store == nil {
-		return nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil
 	}
 	if flushInterval <= 0 {
 		flushInterval = 60 * time.Second
 	}
 	metrics := &gridMetrics{}
-	// Synchronous DB reads are disabled on the hot path to keep output non-blocking.
-	// dbCheckOnMiss now gates async cache backfill instead of in-band reads.
+	// dbCheckOnMiss gates async cache backfill and tight-timeout sync lookups.
+	// Sync lookups are opt-in per caller so the main hot path stays non-blocking.
 	asyncLookupEnabled := dbCheckOnMiss
+	syncLookupEnabled := dbCheckOnMiss && gridSyncLookupWorkers > 0 && gridSyncLookupQueueDepth > 0 && gridSyncLookupTimeout > 0
 	updates := make(chan gridstore.Record, 8192)
 	done := make(chan struct{})
-	lookupQueue := make(chan string, 4096)
+	lookupQueue := make(chan gridLookupRequest, 4096)
 	lookupDone := make(chan struct{})
 	var lookupPendingMu sync.Mutex
 	lookupPending := make(map[string]struct{})
+	var syncLookupQueue chan gridLookupRequest
+	var syncLookupWG sync.WaitGroup
+	if syncLookupEnabled {
+		syncLookupQueue = make(chan gridLookupRequest, gridSyncLookupQueueDepth)
+	}
 
 	mergePending := func(existing, incoming gridstore.Record) gridstore.Record {
 		merged := existing
@@ -2927,6 +3065,20 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 			merged.ExpiresAt = incoming.ExpiresAt
 		}
 		return merged
+	}
+
+	lookupRecord := func(baseCall, rawCall string) (*gridstore.Record, error) {
+		if baseCall == "" {
+			return nil, nil
+		}
+		rec, err := store.Get(baseCall)
+		if err != nil || rec != nil {
+			return rec, err
+		}
+		if rawCall != "" && rawCall != baseCall {
+			return store.Get(rawCall)
+		}
+		return nil, nil
 	}
 
 	// Purpose: Background writer loop to batch metadata updates and periodic TTL purges.
@@ -2989,7 +3141,7 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 					flush()
 					return
 				}
-				call := strings.TrimSpace(strings.ToUpper(rec.Call))
+				call := normalizeCallForMetadata(rec.Call)
 				if call == "" {
 					continue
 				}
@@ -3020,7 +3172,7 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 	// Upstream: processOutputSpots gridUpdate hook.
 	// Downstream: cache.UpdateGrid and updates channel.
 	gridUpdateFn := func(call, grid string) {
-		call = strings.TrimSpace(strings.ToUpper(call))
+		call = normalizeCallForMetadata(call)
 		grid = strings.TrimSpace(strings.ToUpper(grid))
 		if call == "" || len(grid) < 4 {
 			return
@@ -3051,7 +3203,7 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		if info == nil {
 			return
 		}
-		call = strings.TrimSpace(strings.ToUpper(call))
+		call = normalizeCallForMetadata(call)
 		if call == "" {
 			return
 		}
@@ -3085,6 +3237,10 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 			close(lookupQueue)
 			<-lookupDone
 		}
+		if syncLookupEnabled {
+			close(syncLookupQueue)
+			syncLookupWG.Wait()
+		}
 	}
 
 	// Purpose: Lookup a grid entry with optional async backfill on cache miss.
@@ -3092,24 +3248,25 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 	// Upstream: processOutputSpots gridLookup hook.
 	// Downstream: cache.LookupGrid and lookupQueue enqueue.
 	lookupFn := func(call string) (string, bool) {
-		call = strings.TrimSpace(strings.ToUpper(call))
-		if call == "" {
+		rawCall := strings.ToUpper(strings.TrimSpace(call))
+		baseCall := normalizeCallForMetadata(rawCall)
+		if baseCall == "" {
 			return "", false
 		}
 		if cache != nil {
-			if grid, ok := cache.LookupGrid(call, metrics); ok {
+			if grid, ok := cache.LookupGrid(baseCall, metrics); ok {
 				return grid, true
 			}
 		}
 		// Cache miss: enqueue async lookup to avoid blocking output.
 		if asyncLookupEnabled {
 			lookupPendingMu.Lock()
-			if _, exists := lookupPending[call]; !exists {
-				lookupPending[call] = struct{}{}
+			if _, exists := lookupPending[baseCall]; !exists {
+				lookupPending[baseCall] = struct{}{}
 				select {
-				case lookupQueue <- call:
+				case lookupQueue <- gridLookupRequest{baseCall: baseCall, rawCall: rawCall}:
 				default:
-					delete(lookupPending, call)
+					delete(lookupPending, baseCall)
 				}
 			}
 			lookupPendingMu.Unlock()
@@ -3124,17 +3281,17 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		// Downstream: store.Get and cache.ApplyRecord.
 		go func() {
 			defer close(lookupDone)
-			for call := range lookupQueue {
-				rec, err := store.Get(call)
+			for req := range lookupQueue {
+				rec, err := lookupRecord(req.baseCall, req.rawCall)
 				if err == nil && rec != nil {
 					if cache != nil {
 						cache.ApplyRecord(*rec)
 					}
 				} else if err != nil && !gridstore.IsBusyError(err) {
-					log.Printf("Warning: gridstore async lookup failed for %s: %v", call, err)
+					log.Printf("Warning: gridstore async lookup failed for %s: %v", req.baseCall, err)
 				}
 				lookupPendingMu.Lock()
-				delete(lookupPending, call)
+				delete(lookupPending, req.baseCall)
 				lookupPendingMu.Unlock()
 			}
 		}()
@@ -3142,7 +3299,100 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		close(lookupDone)
 	}
 
-	return gridUpdateFn, ctyUpdateFn, metrics, stopFn, lookupFn
+	resolveGrid := func(rec *gridstore.Record) (string, bool) {
+		if rec == nil || !rec.Grid.Valid {
+			return "", false
+		}
+		grid := strings.TrimSpace(strings.ToUpper(rec.Grid.String))
+		if grid == "" {
+			return "", false
+		}
+		return grid, true
+	}
+
+	if syncLookupEnabled {
+		// Purpose: Bounded synchronous backfill worker pool for tight-timeout lookups.
+		// Key aspects: Uses a fixed worker count and buffered queue to cap concurrency.
+		// Upstream: gridLookupSync enqueue path.
+		// Downstream: store.Get and cache.ApplyRecord.
+		for i := 0; i < gridSyncLookupWorkers; i++ {
+			syncLookupWG.Add(1)
+			go func() {
+				defer syncLookupWG.Done()
+				for req := range syncLookupQueue {
+					rec, err := lookupRecord(req.baseCall, req.rawCall)
+					if err == nil && rec != nil {
+						if cache != nil {
+							cache.ApplyRecord(*rec)
+						}
+						if req.resp != nil {
+							grid, ok := resolveGrid(rec)
+							req.resp <- gridLookupResult{grid: grid, ok: ok}
+						}
+						continue
+					}
+					if err != nil && !gridstore.IsBusyError(err) {
+						log.Printf("Warning: gridstore sync lookup failed for %s: %v", req.baseCall, err)
+					}
+					if req.resp != nil {
+						req.resp <- gridLookupResult{}
+					}
+				}
+			}()
+		}
+	}
+
+	var lookupSyncFn func(call string) (string, bool)
+	if syncLookupEnabled {
+		// Purpose: Provide a tight-timeout synchronous lookup path for first-spot grids.
+		// Key aspects: Bounds enqueue time and total wait time; falls back to miss on timeout.
+		// Upstream: processOutputSpots grid backfill for RBN.
+		// Downstream: syncLookupQueue and cache.ApplyRecord.
+		lookupSyncFn = func(call string) (string, bool) {
+			rawCall := strings.ToUpper(strings.TrimSpace(call))
+			baseCall := normalizeCallForMetadata(rawCall)
+			if baseCall == "" {
+				return "", false
+			}
+			if cache != nil {
+				if grid, ok := cache.LookupGrid(baseCall, metrics); ok {
+					return grid, true
+				}
+			}
+			resp := make(chan gridLookupResult, 1)
+			req := gridLookupRequest{baseCall: baseCall, rawCall: rawCall, resp: resp}
+			deadline := time.Now().Add(gridSyncLookupTimeout)
+			timer := time.NewTimer(gridSyncLookupTimeout)
+			defer timer.Stop()
+
+			select {
+			case syncLookupQueue <- req:
+			case <-timer.C:
+				return "", false
+			}
+
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return "", false
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(remaining)
+
+			select {
+			case res := <-resp:
+				return res.grid, res.ok
+			case <-timer.C:
+				return "", false
+			}
+		}
+	}
+
+	return gridUpdateFn, ctyUpdateFn, metrics, stopFn, lookupFn, lookupSyncFn
 }
 
 // Purpose: Load FCC ULS database stats for dashboard display.
@@ -3196,12 +3446,12 @@ func sqlNullString(v string) sql.NullString {
 }
 
 // formatMemoryLine reports memory-ish metrics in order:
-// exec alloc / ring buffer / primary dedup (dup%) / secondary dedup / call meta cache (hit%) / known calls (hit%).
+// exec alloc / ring buffer / primary dedup (dup%) / secondary dedup (fast+slow) / call meta cache (hit%) / known calls (hit%).
 // Purpose: Format the memory/status line for the stats pane.
 // Key aspects: Reports ring buffer occupancy and cache hit stats.
 // Upstream: displayStatsWithFCC.
 // Downstream: buffer.RingBuffer stats and cache lookups.
-func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, secondary *dedup.SecondaryDeduper, metaCache *callMetaCache, knownPtr *atomic.Pointer[spot.KnownCallsigns]) string {
+func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, metaCache *callMetaCache, knownPtr *atomic.Pointer[spot.KnownCallsigns]) string {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	execMB := bytesToMB(mem.Alloc)
@@ -3221,9 +3471,13 @@ func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, seconda
 			dedupeRatio = float64(duplicates) / float64(processed) * 100
 		}
 	}
-	if secondary != nil {
-		_, _, cacheSize := secondary.GetStats()
-		secondaryMB = bytesToMB(uint64(cacheSize * dedupeEntryBytes))
+	if secondaryFast != nil {
+		_, _, cacheSize := secondaryFast.GetStats()
+		secondaryMB += bytesToMB(uint64(cacheSize * dedupeEntryBytes))
+	}
+	if secondarySlow != nil {
+		_, _, cacheSize := secondarySlow.GetStats()
+		secondaryMB += bytesToMB(uint64(cacheSize * dedupeEntryBytes))
 	}
 
 	metaMB := 0.0

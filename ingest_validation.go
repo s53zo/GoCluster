@@ -25,6 +25,7 @@ type ingestValidator struct {
 	ctyLookup          func() *cty.CTYDatabase
 	metaCache          *callMetaCache
 	ctyUpdater         func(call string, info *cty.PrefixInfo)
+	gridUpdate         func(call, grid string)
 	unlicensedReporter func(source, role, call, mode string, freq float64)
 	dropReporter       func(line string)
 	isLicensedUS       func(call string) bool
@@ -40,6 +41,7 @@ func newIngestValidator(
 	ctyLookup func() *cty.CTYDatabase,
 	metaCache *callMetaCache,
 	ctyUpdater func(call string, info *cty.PrefixInfo),
+	gridUpdate func(call, grid string),
 	dedupInput chan<- *spot.Spot,
 	unlicensedReporter func(source, role, call, mode string, freq float64),
 	dropReporter func(line string),
@@ -55,6 +57,7 @@ func newIngestValidator(
 		ctyLookup:          ctyLookup,
 		metaCache:          metaCache,
 		ctyUpdater:         ctyUpdater,
+		gridUpdate:         gridUpdate,
 		unlicensedReporter: unlicensedReporter,
 		dropReporter:       dropReporter,
 		isLicensedUS:       uls.IsLicensedUS,
@@ -139,12 +142,20 @@ func (v *ingestValidator) validateSpot(s *spot.Spot) bool {
 	}
 
 	now := time.Now()
-	dxInfo, ok := v.lookupCTY(ctyDB, dxCall)
+	dxLookupCall := normalizeCallForMetadata(dxCall)
+	deLookupCall := normalizeCallForMetadata(deCall)
+	if dxLookupCall == "" {
+		dxLookupCall = dxCall
+	}
+	if deLookupCall == "" {
+		deLookupCall = deCall
+	}
+	dxInfo, ok := v.lookupCTY(ctyDB, dxLookupCall)
 	if !ok {
 		v.logCTYDrop("DX", dxCall, s)
 		return false
 	}
-	deInfo, ok := v.lookupCTY(ctyDB, deCall)
+	deInfo, ok := v.lookupCTY(ctyDB, deLookupCall)
 	if !ok {
 		v.logCTYDrop("DE", deCall, s)
 		return false
@@ -163,6 +174,11 @@ func (v *ingestValidator) validateSpot(s *spot.Spot) bool {
 	// Metadata refresh can change continent/grid; clear cached norms and rebuild.
 	s.InvalidateMetadataCache()
 	s.EnsureNormalized()
+
+	// Seed the grid cache early when DE grid is present (e.g., PSKReporter).
+	if v.gridUpdate != nil && deGrid != "" {
+		v.gridUpdate(deLookupCall, deGrid)
+	}
 
 	if s.IsTestSpotter {
 		return true

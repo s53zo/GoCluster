@@ -420,14 +420,16 @@ func (c *PSKReporterConfig) SubscriptionTopics() []string {
 //   - A positive window enables deduplication for that many seconds.
 //   - A zero or negative window effectively disables dedup (spots pass through immediately).
 //
-// The SNR policy governs how we handle duplicates from the same DX/spotter/frequency
-// bucket—when enabled we keep the strongest SNR representative.
+// Secondary dedupe has two policy windows (fast/slow) with independent SNR behavior.
+// When enabled, stronger SNR updates may replace the cached entry and be forwarded.
 type DedupConfig struct {
-	ClusterWindowSeconds   int  `yaml:"cluster_window_seconds"`        // <=0 disables primary dedup
-	SecondaryWindowSeconds int  `yaml:"secondary_window_seconds"`      // <=0 uses default (60s)
-	PreferStrongerSNR      bool `yaml:"prefer_stronger_snr"`           // keep max SNR when dropping duplicates
-	SecondaryPreferStrong  bool `yaml:"secondary_prefer_stronger_snr"` // keep max SNR in secondary dedupe buckets
-	OutputBufferSize       int  `yaml:"output_buffer_size"`            // channel capacity for dedup output
+	ClusterWindowSeconds       int  `yaml:"cluster_window_seconds"`             // <=0 disables primary dedup
+	SecondaryFastWindowSeconds int  `yaml:"secondary_fast_window_seconds"`      // <=0 disables fast secondary dedupe
+	SecondarySlowWindowSeconds int  `yaml:"secondary_slow_window_seconds"`      // <=0 disables slow secondary dedupe
+	PreferStrongerSNR          bool `yaml:"prefer_stronger_snr"`                // keep max SNR when dropping duplicates
+	SecondaryFastPreferStrong  bool `yaml:"secondary_fast_prefer_stronger_snr"` // keep max SNR in fast secondary buckets
+	SecondarySlowPreferStrong  bool `yaml:"secondary_slow_prefer_stronger_snr"` // keep max SNR in slow secondary buckets
+	OutputBufferSize           int  `yaml:"output_buffer_size"`                 // channel capacity for dedup output
 }
 
 // FilterConfig holds default filter behavior for new users.
@@ -755,9 +757,18 @@ func Load(path string) (*Config, error) {
 	cfg.LoadedFrom = filepath.Clean(path)
 
 	ctyEnabledSet := yamlKeyPresent(raw, "cty", "enabled")
-	hasSecondaryPrefer := yamlKeyPresent(raw, "dedup", "secondary_prefer_stronger_snr")
+	hasSecondaryFastPrefer := yamlKeyPresent(raw, "dedup", "secondary_fast_prefer_stronger_snr")
+	hasSecondarySlowPrefer := yamlKeyPresent(raw, "dedup", "secondary_slow_prefer_stronger_snr")
+	hasSecondaryFastWindow := yamlKeyPresent(raw, "dedup", "secondary_fast_window_seconds")
+	hasSecondarySlowWindow := yamlKeyPresent(raw, "dedup", "secondary_slow_window_seconds")
+	legacySecondaryWindow := yamlKeyPresent(raw, "dedup", "secondary_window_seconds")
+	legacySecondaryPrefer := yamlKeyPresent(raw, "dedup", "secondary_prefer_stronger_snr")
 	hasAdaptiveMinReportsEnabled := yamlKeyPresent(raw, "call_correction", "adaptive_min_reports", "enabled")
 	hasArchiveCleanupYield := yamlKeyPresent(raw, "archive", "cleanup_batch_yield_ms")
+
+	if legacySecondaryWindow || legacySecondaryPrefer {
+		fmt.Printf("Warning: dedup.secondary_window_seconds and dedup.secondary_prefer_stronger_snr are deprecated and ignored; use secondary_fast_* and secondary_slow_* instead.\n")
+	}
 
 	// UI defaults favor the lightweight ANSI renderer unless overridden. Mode
 	// is normalized to a small, explicit set to keep startup behavior
@@ -1403,14 +1414,23 @@ func Load(path string) (*Config, error) {
 	if cfg.Dedup.ClusterWindowSeconds < 0 {
 		cfg.Dedup.ClusterWindowSeconds = 0
 	}
-	if cfg.Dedup.SecondaryWindowSeconds < 0 {
-		cfg.Dedup.SecondaryWindowSeconds = 0
+	if cfg.Dedup.SecondaryFastWindowSeconds < 0 {
+		cfg.Dedup.SecondaryFastWindowSeconds = 0
 	}
-	if cfg.Dedup.SecondaryWindowSeconds == 0 {
-		cfg.Dedup.SecondaryWindowSeconds = 60
+	if cfg.Dedup.SecondarySlowWindowSeconds < 0 {
+		cfg.Dedup.SecondarySlowWindowSeconds = 0
 	}
-	if !cfg.Dedup.SecondaryPreferStrong && !hasSecondaryPrefer && cfg.Dedup.PreferStrongerSNR {
-		cfg.Dedup.SecondaryPreferStrong = cfg.Dedup.PreferStrongerSNR
+	if !hasSecondaryFastWindow && cfg.Dedup.SecondaryFastWindowSeconds == 0 {
+		cfg.Dedup.SecondaryFastWindowSeconds = 120
+	}
+	if !hasSecondarySlowWindow && cfg.Dedup.SecondarySlowWindowSeconds == 0 {
+		cfg.Dedup.SecondarySlowWindowSeconds = 300
+	}
+	if !cfg.Dedup.SecondaryFastPreferStrong && !hasSecondaryFastPrefer && cfg.Dedup.PreferStrongerSNR {
+		cfg.Dedup.SecondaryFastPreferStrong = cfg.Dedup.PreferStrongerSNR
+	}
+	if !cfg.Dedup.SecondarySlowPreferStrong && !hasSecondarySlowPrefer && cfg.Dedup.PreferStrongerSNR {
+		cfg.Dedup.SecondarySlowPreferStrong = cfg.Dedup.PreferStrongerSNR
 	}
 	if cfg.Dedup.OutputBufferSize <= 0 {
 		cfg.Dedup.OutputBufferSize = 1000
@@ -1755,11 +1775,21 @@ func (c *Config) Print() {
 	if c.Dedup.ClusterWindowSeconds > 0 {
 		clusterWindow = fmt.Sprintf("%ds", c.Dedup.ClusterWindowSeconds)
 	}
-	secondaryWindow := "disabled"
-	if c.Dedup.SecondaryWindowSeconds > 0 {
-		secondaryWindow = fmt.Sprintf("%ds", c.Dedup.SecondaryWindowSeconds)
+	secondaryFast := "disabled"
+	if c.Dedup.SecondaryFastWindowSeconds > 0 {
+		secondaryFast = fmt.Sprintf("%ds", c.Dedup.SecondaryFastWindowSeconds)
 	}
-	fmt.Printf("Dedup: cluster=%s (prefer_stronger=%t) secondary=%s (prefer_stronger=%t)\n", clusterWindow, c.Dedup.PreferStrongerSNR, secondaryWindow, c.Dedup.SecondaryPreferStrong)
+	secondarySlow := "disabled"
+	if c.Dedup.SecondarySlowWindowSeconds > 0 {
+		secondarySlow = fmt.Sprintf("%ds", c.Dedup.SecondarySlowWindowSeconds)
+	}
+	fmt.Printf("Dedup: cluster=%s (prefer_stronger=%t) secondary_fast=%s (prefer_stronger=%t) secondary_slow=%s (prefer_stronger=%t)\n",
+		clusterWindow,
+		c.Dedup.PreferStrongerSNR,
+		secondaryFast,
+		c.Dedup.SecondaryFastPreferStrong,
+		secondarySlow,
+		c.Dedup.SecondarySlowPreferStrong)
 	if len(c.Filter.DefaultModes) > 0 {
 		fmt.Printf("Default modes: %s\n", strings.Join(c.Filter.DefaultModes, ", "))
 	}

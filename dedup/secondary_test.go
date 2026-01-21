@@ -45,3 +45,29 @@ func TestSecondaryDeduperSplitsBySourceClass(t *testing.T) {
 		t.Fatal("expected skimmer duplicate to be suppressed within window")
 	}
 }
+
+// Purpose: Verify secondary dedupe still hashes when DE grid2 is missing.
+// Key aspects: Missing grid2 should not bypass duplicates within the window.
+// Upstream: go test execution.
+// Downstream: SecondaryDeduper.ShouldForward.
+func TestSecondaryDeduperWithMissingDEGrid2(t *testing.T) {
+	d := NewSecondaryDeduper(5*time.Minute, false)
+	now := time.Unix(1_700_000_100, 0).UTC()
+
+	makeSpot := func(at time.Time) *spot.Spot {
+		s := spot.NewSpot("K1ABC", "W1XYZ", 14074.0, "FT8")
+		s.Time = at
+		s.DEMetadata.ADIF = 291
+		s.DEMetadata.CQZone = 5
+		s.DEMetadata.Grid = ""
+		s.EnsureNormalized()
+		return s
+	}
+
+	if !d.ShouldForward(makeSpot(now)) {
+		t.Fatal("expected first spot to pass secondary dedupe")
+	}
+	if d.ShouldForward(makeSpot(now.Add(30 * time.Second))) {
+		t.Fatal("expected duplicate to be suppressed even without DE grid2")
+	}
+}

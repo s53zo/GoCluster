@@ -61,7 +61,7 @@ func loadIngestCTY(t *testing.T) *cty.CTYDatabase {
 func TestIngestValidatorPreservesGrids(t *testing.T) {
 	licCache = newLicenseCache(5 * time.Minute)
 	db := loadIngestCTY(t)
-	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, make(chan *spot.Spot, 1), nil, nil, true)
+	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, nil, make(chan *spot.Spot, 1), nil, nil, true)
 	v.isLicensedUS = func(call string) bool { return true }
 
 	s := spot.NewSpotNormalized("DL1ABC", "K1ABC", 14074.0, "FT8")
@@ -93,7 +93,7 @@ func TestIngestValidatorDropsUnlicensedUSSpotter(t *testing.T) {
 	var gotFreq float64
 	reported := false
 
-	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, make(chan *spot.Spot, 1), nil, nil, true)
+	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, nil, make(chan *spot.Spot, 1), nil, nil, true)
 	v.unlicensedReporter = func(source, role, call, mode string, freq float64) {
 		reported = true
 		gotSource = source
@@ -135,7 +135,7 @@ func TestIngestValidatorSkipsULSForTestSpotter(t *testing.T) {
 	db := loadIngestCTY(t)
 	reported := false
 
-	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, make(chan *spot.Spot, 1), nil, nil, true)
+	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, nil, make(chan *spot.Spot, 1), nil, nil, true)
 	v.unlicensedReporter = func(source, role, call, mode string, freq float64) {
 		reported = true
 	}

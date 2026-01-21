@@ -147,6 +147,8 @@ func (p *Processor) handleHelp(dialect string) string {
 		"SHOW DXCC <prefix|callsign> - Look up DXCC/ADIF and zones",
 		"SET GRID <grid> - Set your grid (4-6 chars) for glyphs",
 		"SET NOISE <class> - Set noise class (QUIET|RURAL|SUBURBAN|URBAN)",
+		"SET DEDUPE <FAST|SLOW> - Select secondary dedupe policy",
+		"SHOW DEDUPE - Show secondary dedupe policy",
 		"BYE - Disconnect",
 		"DIALECT [name|LIST] - Show or set filter command dialect (go, cc)",
 	)

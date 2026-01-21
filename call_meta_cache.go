@@ -14,7 +14,8 @@ import (
 const callMetaCacheShardCount = 16
 
 // callMetaCache stores per-call grid/CTY/known metadata with a bounded LRU.
-// Calls must be normalized (uppercase, trimmed) before lookup to avoid duplicates.
+// Grid lookups normalize to a base identity (uppercase, trimmed, hyphen suffix stripped)
+// to avoid duplicate entries across source variants.
 type callMetaCache struct {
 	shards   []callMetaCacheShard
 	gridTTL  time.Duration
@@ -182,7 +183,11 @@ func (c *callMetaCache) LookupCTY(call string, db *cty.CTYDatabase) (*cty.Prefix
 // Upstream: grid backfill path.
 // Downstream: per-shard LRU and TTL checks.
 func (c *callMetaCache) LookupGrid(call string, metrics *gridMetrics) (string, bool) {
-	if call == "" || c == nil {
+	if c == nil {
+		return "", false
+	}
+	call = normalizeCallForMetadata(call)
+	if call == "" {
 		return "", false
 	}
 	if metrics != nil {
@@ -216,7 +221,11 @@ func (c *callMetaCache) LookupGrid(call string, metrics *gridMetrics) (string, b
 // Upstream: grid update hook.
 // Downstream: per-shard LRU mutation.
 func (c *callMetaCache) UpdateGrid(call, grid string) bool {
-	if c == nil || call == "" || grid == "" {
+	if c == nil {
+		return false
+	}
+	call = normalizeCallForMetadata(call)
+	if call == "" || grid == "" {
 		return false
 	}
 	shard := c.shardFor(call)
@@ -250,7 +259,7 @@ func (c *callMetaCache) ApplyRecord(rec gridstore.Record) {
 	if c == nil {
 		return
 	}
-	call := strings.ToUpper(strings.TrimSpace(rec.Call))
+	call := normalizeCallForMetadata(rec.Call)
 	if call == "" {
 		return
 	}

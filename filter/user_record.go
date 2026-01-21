@@ -16,9 +16,10 @@ const maxRecentIPs = 5
 // UserRecord stores per-callsign metadata that should survive across sessions.
 // The Filter fields are inline so legacy files that only contain filters still load.
 type UserRecord struct {
-	Filter    `yaml:",inline"`
-	RecentIPs []string `yaml:"recent_ips,omitempty"`
-	Dialect   string   `yaml:"dialect,omitempty"`
+	Filter       `yaml:",inline"`
+	RecentIPs    []string `yaml:"recent_ips,omitempty"`
+	Dialect      string   `yaml:"dialect,omitempty"`
+	DedupePolicy string   `yaml:"dedupe_policy,omitempty"`
 	// LastLoginUTC records the timestamp of the previous successful login (UTC).
 	LastLoginUTC time.Time `yaml:"last_login_utc,omitempty"`
 	Grid         string    `yaml:"grid,omitempty"`        // Optional user-supplied grid (uppercased)
@@ -49,6 +50,7 @@ func LoadUserRecord(callsign string) (*UserRecord, error) {
 	if strings.TrimSpace(record.Dialect) == "" {
 		record.Dialect = "go"
 	}
+	record.DedupePolicy = NormalizeDedupePolicy(record.DedupePolicy)
 	record.Grid = strings.ToUpper(strings.TrimSpace(record.Grid))
 	record.NoiseClass = strings.ToUpper(strings.TrimSpace(record.NoiseClass))
 	return &record, nil
@@ -63,7 +65,7 @@ func TouchUserRecordIP(callsign, ip string) (*UserRecord, bool, error) {
 	created := false
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			record = &UserRecord{Filter: *NewFilter(), Dialect: "go"}
+			record = &UserRecord{Filter: *NewFilter(), Dialect: "go", DedupePolicy: DedupePolicyFast}
 			created = true
 		} else {
 			return nil, false, err
@@ -88,7 +90,7 @@ func TouchUserRecordLogin(callsign, ip string, loginTime time.Time) (record *Use
 	record, err = LoadUserRecord(callsign)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			record = &UserRecord{Filter: *NewFilter(), Dialect: "go"}
+			record = &UserRecord{Filter: *NewFilter(), Dialect: "go", DedupePolicy: DedupePolicyFast}
 			created = true
 		} else {
 			return nil, false, time.Time{}, "", err
@@ -122,6 +124,7 @@ func SaveUserRecord(callsign string, record *UserRecord) error {
 		return err
 	}
 	record.RecentIPs = trimRecentIPs(record.RecentIPs, maxRecentIPs)
+	record.DedupePolicy = NormalizeDedupePolicy(record.DedupePolicy)
 	bs, err := yaml.Marshal(record)
 	if err != nil {
 		return err

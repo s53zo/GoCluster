@@ -53,6 +53,41 @@ import (
 	ztelnet "github.com/ziutek/telnet"
 )
 
+type dedupePolicy uint8
+
+const (
+	dedupePolicyFast dedupePolicy = iota
+	dedupePolicySlow
+)
+
+func parseDedupePolicy(value string) dedupePolicy {
+	switch filter.NormalizeDedupePolicy(value) {
+	case filter.DedupePolicySlow:
+		return dedupePolicySlow
+	default:
+		return dedupePolicyFast
+	}
+}
+
+func parseDedupePolicyToken(value string) (dedupePolicy, bool) {
+	trimmed := strings.ToUpper(strings.TrimSpace(value))
+	switch trimmed {
+	case filter.DedupePolicyFast:
+		return dedupePolicyFast, true
+	case filter.DedupePolicySlow:
+		return dedupePolicySlow, true
+	default:
+		return dedupePolicyFast, false
+	}
+}
+
+func (p dedupePolicy) label() string {
+	if p == dedupePolicySlow {
+		return filter.DedupePolicySlow
+	}
+	return filter.DedupePolicyFast
+}
+
 // Server represents a multi-client telnet server for DX Cluster connections.
 //
 // The server maintains a map of connected clients and broadcasts spots to all clients
@@ -93,7 +128,7 @@ type Server struct {
 	clients           map[string]*Client          // Map of callsign → Client
 	clientsMutex      sync.RWMutex                // Protects clients map
 	shutdown          chan struct{}               // Shutdown coordination channel
-	broadcast         chan *spot.Spot             // Broadcast channel for spots (buffered, configurable)
+	broadcast         chan *broadcastPayload      // Broadcast channel for spots (buffered, configurable)
 	broadcastWorkers  int                         // Number of goroutines delivering spots
 	workerQueues      []chan *broadcastJob        // Per-worker job queues
 	workerQueueSize   int                         // Capacity of each worker's queue
@@ -118,6 +153,8 @@ type Server struct {
 	pathDisplay       bool                        // Toggle glyph rendering
 	noiseOffsets      map[string]float64          // Noise class lookup
 	gridLookup        func(string) (string, bool) // Optional grid lookup from store
+	dedupeFastEnabled bool                        // Fast secondary dedupe policy enabled
+	dedupeSlowEnabled bool                        // Slow secondary dedupe policy enabled
 }
 
 // Client represents a connected telnet client session.
@@ -147,6 +184,7 @@ type Client struct {
 	noiseClass   string                 // Noise class token (e.g., QUIET, URBAN)
 	noisePenalty float64                // dB penalty applied DX->user
 	skipNextEOL  bool                   // Consume a single LF/NUL after CR (RFC 854 compliance)
+	dedupePolicy atomic.Uint32          // Secondary dedupe policy (fast/slow)
 
 	// filterMu guards filter, which is read by telnet broadcast workers while the
 	// client session goroutine mutates it in response to PASS/REJECT commands.
@@ -194,11 +232,12 @@ func (c *Client) saveFilter() error {
 	c.filterMu.RLock()
 	defer c.filterMu.RUnlock()
 	record := &filter.UserRecord{
-		Filter:     *c.filter,
-		RecentIPs:  c.recentIPs,
-		Dialect:    string(c.dialect),
-		Grid:       strings.ToUpper(strings.TrimSpace(c.grid)),
-		NoiseClass: strings.ToUpper(strings.TrimSpace(c.noiseClass)),
+		Filter:       *c.filter,
+		RecentIPs:    c.recentIPs,
+		Dialect:      string(c.dialect),
+		DedupePolicy: c.getDedupePolicy().label(),
+		Grid:         strings.ToUpper(strings.TrimSpace(c.grid)),
+		NoiseClass:   strings.ToUpper(strings.TrimSpace(c.noiseClass)),
 	}
 	if existing, err := filter.LoadUserRecord(callsign); err == nil {
 		record.RecentIPs = filter.MergeRecentIPs(record.RecentIPs, existing.RecentIPs)
@@ -209,6 +248,20 @@ func (c *Client) saveFilter() error {
 	}
 	log.Printf("Saved user record for %s", callsign)
 	return nil
+}
+
+func (c *Client) setDedupePolicy(policy dedupePolicy) {
+	if c == nil {
+		return
+	}
+	c.dedupePolicy.Store(uint32(policy))
+}
+
+func (c *Client) getDedupePolicy() dedupePolicy {
+	if c == nil {
+		return dedupePolicyFast
+	}
+	return dedupePolicy(c.dedupePolicy.Load())
 }
 
 // updateFilter applies a mutation to the per-client Filter while holding the
@@ -222,9 +275,17 @@ func (c *Client) updateFilter(fn func(f *filter.Filter)) {
 	c.filterMu.Unlock()
 }
 
+type broadcastPayload struct {
+	spot      *spot.Spot
+	allowFast bool
+	allowSlow bool
+}
+
 type broadcastJob struct {
-	spot    *spot.Spot
-	clients []*Client
+	spot      *spot.Spot
+	allowFast bool
+	allowSlow bool
+	clients   []*Client
 }
 
 type bulletin struct {
@@ -386,6 +447,92 @@ func (s *Server) handlePathSettingsCommand(client *Client, line string) (string,
 	}
 }
 
+func (s *Server) resolveDedupePolicy(requested dedupePolicy) dedupePolicy {
+	if s == nil {
+		return requested
+	}
+	if requested == dedupePolicySlow && s.dedupeSlowEnabled {
+		return dedupePolicySlow
+	}
+	if s.dedupeFastEnabled {
+		return dedupePolicyFast
+	}
+	if s.dedupeSlowEnabled {
+		return dedupePolicySlow
+	}
+	return dedupePolicyFast
+}
+
+func (s *Server) formatDedupeStatus(client *Client) string {
+	if client == nil {
+		return ""
+	}
+	policy := client.getDedupePolicy().label()
+	if !s.dedupeFastEnabled && !s.dedupeSlowEnabled {
+		return fmt.Sprintf("Dedupe: %s (secondary disabled)\n", policy)
+	}
+	fastLabel := "off"
+	if s.dedupeFastEnabled {
+		fastLabel = "on"
+	}
+	slowLabel := "off"
+	if s.dedupeSlowEnabled {
+		slowLabel = "on"
+	}
+	return fmt.Sprintf("Dedupe: %s (fast=%s slow=%s)\n", policy, fastLabel, slowLabel)
+}
+
+// handleDedupeCommand processes SET/SHOW DEDUPE commands.
+func (s *Server) handleDedupeCommand(client *Client, line string) (string, bool) {
+	if client == nil || s == nil {
+		return "", false
+	}
+	upper := strings.Fields(strings.ToUpper(strings.TrimSpace(line)))
+	if len(upper) < 2 {
+		return "", false
+	}
+	switch upper[0] {
+	case "SHOW":
+		if upper[1] != "DEDUPE" {
+			return "", false
+		}
+		return s.formatDedupeStatus(client), true
+	case "SET":
+		if upper[1] != "DEDUPE" {
+			return "", false
+		}
+		if len(upper) < 3 {
+			return "Usage: SET DEDUPE <FAST|SLOW>\n", true
+		}
+		requested, ok := parseDedupePolicyToken(upper[2])
+		if !ok {
+			return "Usage: SET DEDUPE <FAST|SLOW>\n", true
+		}
+		effective := s.resolveDedupePolicy(requested)
+		client.setDedupePolicy(effective)
+		saveErr := client.saveFilter()
+
+		if !s.dedupeFastEnabled && !s.dedupeSlowEnabled {
+			if saveErr != nil {
+				return fmt.Sprintf("Dedupe policy set to %s (secondary disabled; warning: failed to persist: %v)\n", effective.label(), saveErr), true
+			}
+			return fmt.Sprintf("Dedupe policy set to %s (secondary disabled)\n", effective.label()), true
+		}
+		if requested != effective {
+			if saveErr != nil {
+				return fmt.Sprintf("Dedupe policy set to %s (requested %s disabled; warning: failed to persist: %v)\n", effective.label(), requested.label(), saveErr), true
+			}
+			return fmt.Sprintf("Dedupe policy set to %s (requested %s disabled)\n", effective.label(), requested.label()), true
+		}
+		if saveErr != nil {
+			return fmt.Sprintf("Dedupe policy set to %s (warning: failed to persist: %v)\n", effective.label(), saveErr), true
+		}
+		return fmt.Sprintf("Dedupe policy set to %s\n", effective.label()), true
+	default:
+		return "", false
+	}
+}
+
 func shouldLogQueueDrop(total uint64) bool {
 	return total == 1 || total%100 == 0
 }
@@ -468,6 +615,8 @@ type ServerOptions struct {
 	NoiseOffsets            map[string]float64
 	GridLookup              func(string) (string, bool)
 	CTYLookup               func() *cty.CTYDatabase
+	DedupeFastEnabled       bool
+	DedupeSlowEnabled       bool
 }
 
 // NewServer creates a new telnet server
@@ -492,7 +641,7 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		clusterCall:       config.ClusterCall,
 		clients:           make(map[string]*Client),
 		shutdown:          make(chan struct{}),
-		broadcast:         make(chan *spot.Spot, config.BroadcastQueue),
+		broadcast:         make(chan *broadcastPayload, config.BroadcastQueue),
 		broadcastWorkers:  config.BroadcastWorkers,
 		workerQueueSize:   config.WorkerQueue,
 		batchInterval:     config.BroadcastBatchInterval,
@@ -513,6 +662,8 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		pathDisplay:       opts.PathDisplayEnabled,
 		noiseOffsets:      opts.NoiseOffsets,
 		gridLookup:        opts.GridLookup,
+		dedupeFastEnabled: config.DedupeFastEnabled,
+		dedupeSlowEnabled: config.DedupeSlowEnabled,
 	}
 }
 
@@ -616,8 +767,8 @@ func (s *Server) handleBroadcasts() {
 		select {
 		case <-s.shutdown:
 			return
-		case spot := <-s.broadcast:
-			s.broadcastSpot(spot)
+		case payload := <-s.broadcast:
+			s.broadcastSpot(payload)
 		}
 	}
 }
@@ -641,10 +792,14 @@ func (s *Server) keepaliveLoop() {
 	}
 }
 
-// BroadcastSpot sends a spot to all connected clients
-func (s *Server) BroadcastSpot(spot *spot.Spot) {
+// BroadcastSpot sends a spot to all connected clients with per-policy gates.
+func (s *Server) BroadcastSpot(spot *spot.Spot, allowFast, allowSlow bool) {
+	if s == nil || spot == nil {
+		return
+	}
+	payload := &broadcastPayload{spot: spot, allowFast: allowFast, allowSlow: allowSlow}
 	select {
-	case s.broadcast <- spot:
+	case s.broadcast <- payload:
 	default:
 		drops := atomic.AddUint64(&s.metrics.queueDrops, 1)
 		if shouldLogQueueDrop(drops) {
@@ -807,10 +962,13 @@ func normalizeWWVKind(kind string) string {
 	}
 }
 
-// broadcastSpot segments clients into shards and enqueues jobs for workers
-func (s *Server) broadcastSpot(spot *spot.Spot) {
+// broadcastSpot segments clients into shards and enqueues jobs for workers.
+func (s *Server) broadcastSpot(payload *broadcastPayload) {
+	if payload == nil || payload.spot == nil {
+		return
+	}
 	shards := s.cachedClientShards()
-	s.dispatchSpotToWorkers(spot, shards)
+	s.dispatchSpotToWorkers(payload, shards)
 }
 
 func (s *Server) startWorkerPool() {
@@ -831,7 +989,7 @@ func (s *Server) startWorkerPool() {
 	}
 }
 
-func (s *Server) dispatchSpotToWorkers(spot *spot.Spot, shards [][]*Client) {
+func (s *Server) dispatchSpotToWorkers(payload *broadcastPayload, shards [][]*Client) {
 	for i, clients := range shards {
 		if len(clients) == 0 {
 			continue
@@ -839,7 +997,12 @@ func (s *Server) dispatchSpotToWorkers(spot *spot.Spot, shards [][]*Client) {
 		for _, client := range clients {
 			client.pendingDeliveries.Add(1)
 		}
-		job := &broadcastJob{spot: spot, clients: clients}
+		job := &broadcastJob{
+			spot:      payload.spot,
+			allowFast: payload.allowFast,
+			allowSlow: payload.allowSlow,
+			clients:   clients,
+		}
 		select {
 		case s.workerQueues[i] <- job:
 		default:
@@ -968,8 +1131,14 @@ func (s *Server) deliverJob(job *broadcastJob) {
 			continue
 		}
 		client.pendingDeliveries.Done()
-		// Self-match spots can bypass filters when SELF is enabled.
-		if isSelfMatch(job.spot, client.callsign) {
+		policyAllowed := job.allowFast
+		if client.getDedupePolicy() == dedupePolicySlow {
+			policyAllowed = job.allowSlow
+		}
+		if !policyAllowed {
+			if !isSelfMatch(job.spot, client.callsign) {
+				continue
+			}
 			client.filterMu.RLock()
 			allowSelf := client.filter.SelfEnabled()
 			client.filterMu.RUnlock()
@@ -977,11 +1146,21 @@ func (s *Server) deliverJob(job *broadcastJob) {
 				continue
 			}
 		} else {
-			client.filterMu.RLock()
-			matches := client.filter.Matches(job.spot)
-			client.filterMu.RUnlock()
-			if !matches {
-				continue
+			// Self-match spots can bypass filters when SELF is enabled.
+			if isSelfMatch(job.spot, client.callsign) {
+				client.filterMu.RLock()
+				allowSelf := client.filter.SelfEnabled()
+				client.filterMu.RUnlock()
+				if !allowSelf {
+					continue
+				}
+			} else {
+				client.filterMu.RLock()
+				matches := client.filter.Matches(job.spot)
+				client.filterMu.RUnlock()
+				if !matches {
+					continue
+				}
 			}
 		}
 		select {
@@ -1159,6 +1338,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		client.filter = &record.Filter
 		client.recentIPs = record.RecentIPs
 		client.dialect = normalizeDialectName(record.Dialect)
+		client.setDedupePolicy(s.resolveDedupePolicy(parseDedupePolicy(record.DedupePolicy)))
 		client.grid = strings.ToUpper(strings.TrimSpace(record.Grid))
 		client.gridCell = pathreliability.EncodeCell(client.grid)
 		client.noiseClass = strings.ToUpper(strings.TrimSpace(record.NoiseClass))
@@ -1172,6 +1352,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		client.filter = filter.NewFilter()
 		client.recentIPs = filter.UpdateRecentIPs(nil, spotterIP(client.address))
 		client.dialect = s.filterEngine.defaultDialect
+		client.setDedupePolicy(s.resolveDedupePolicy(dedupePolicyFast))
 		client.gridCell = pathreliability.InvalidCell
 		client.noiseClass = "QUIET"
 		client.noisePenalty = s.noisePenaltyForClass(client.noiseClass)
@@ -1255,6 +1436,13 @@ func (s *Server) handleClient(conn net.Conn) {
 		}
 
 		if resp, handled := s.handlePathSettingsCommand(client, line); handled {
+			if resp != "" {
+				client.Send(resp)
+			}
+			continue
+		}
+
+		if resp, handled := s.handleDedupeCommand(client, line); handled {
 			if resp != "" {
 				client.Send(resp)
 			}
@@ -1353,6 +1541,7 @@ type templateData struct {
 	dialect        string
 	dialectSource  string
 	dialectDefault string
+	dedupePolicy   string
 	grid           string
 	noiseClass     string
 }
@@ -1485,6 +1674,7 @@ func applyWelcomeTokens(msg string, now time.Time) string {
 //	<USER_COUNT>  -> current connected user count
 //	<LAST_LOGIN>  -> previous login timestamp or "(first login)"
 //	<LAST_IP>     -> previous login IP or "(unknown)"
+//	<DEDUPE>      -> active dedupe policy (FAST/SLOW)
 func applyTemplateTokens(msg string, data templateData) string {
 	if msg == "" {
 		return msg
@@ -1527,6 +1717,7 @@ func applyTemplateTokens(msg string, data templateData) string {
 		"<DIALECT>", data.dialect,
 		"<DIALECT_SOURCE>", data.dialectSource,
 		"<DIALECT_DEFAULT>", data.dialectDefault,
+		"<DEDUPE>", data.dedupePolicy,
 		"<GRID>", data.grid,
 		"<NOISE>", data.noiseClass,
 	)
@@ -1615,6 +1806,7 @@ func (s *Server) preLoginTemplateData(now time.Time) templateData {
 		dialect:        dialect,
 		dialectSource:  s.dialectSourceDef,
 		dialectDefault: defaultDialect,
+		dedupePolicy:   filter.DedupePolicyFast,
 	}
 }
 
@@ -1637,6 +1829,7 @@ func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin 
 	grid := ""
 	noise := ""
 	dialect := ""
+	dedupePolicy := filter.DedupePolicyFast
 	if client != nil {
 		callsign = client.callsign
 		grid = strings.TrimSpace(client.grid)
@@ -1645,6 +1838,7 @@ func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin 
 		}
 		noise = strings.TrimSpace(client.noiseClass)
 		dialect = strings.ToUpper(string(client.dialect))
+		dedupePolicy = client.getDedupePolicy().label()
 	}
 	return templateData{
 		now:            now,
@@ -1657,6 +1851,7 @@ func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin 
 		dialect:        dialect,
 		dialectSource:  dialectSource,
 		dialectDefault: dialectDefault,
+		dedupePolicy:   dedupePolicy,
 		grid:           grid,
 		noiseClass:     noise,
 	}

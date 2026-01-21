@@ -56,6 +56,9 @@ func TestTouchUserRecordIP(t *testing.T) {
 	if !created {
 		t.Fatalf("expected new record to be created")
 	}
+	if record.DedupePolicy != DedupePolicyFast {
+		t.Fatalf("expected default dedupe policy FAST, got %q", record.DedupePolicy)
+	}
 	if len(record.RecentIPs) != 1 || record.RecentIPs[0] != "203.0.113.9" {
 		t.Fatalf("unexpected recent IPs: %v", record.RecentIPs)
 	}
@@ -86,6 +89,9 @@ func TestTouchUserRecordLogin(t *testing.T) {
 	}
 	if !created {
 		t.Fatalf("expected new record to be created")
+	}
+	if record.DedupePolicy != DedupePolicyFast {
+		t.Fatalf("expected default dedupe policy FAST, got %q", record.DedupePolicy)
 	}
 	if !record.LastLoginUTC.Equal(firstLogin) {
 		t.Fatalf("expected last login %v, got %v", firstLogin, record.LastLoginUTC)
@@ -129,10 +135,11 @@ func TestUserRecordRoundTrip(t *testing.T) {
 	f := NewFilter()
 	f.SetMode("CW", true)
 	record := &UserRecord{
-		Filter:     *f,
-		RecentIPs:  []string{"203.0.113.10", "198.51.100.42"},
-		Grid:       "FN31",
-		NoiseClass: "URBAN",
+		Filter:       *f,
+		RecentIPs:    []string{"203.0.113.10", "198.51.100.42"},
+		DedupePolicy: DedupePolicySlow,
+		Grid:         "FN31",
+		NoiseClass:   "URBAN",
 	}
 	if err := SaveUserRecord("k3to", record); err != nil {
 		t.Fatalf("SaveUserRecord failed: %v", err)
@@ -153,6 +160,9 @@ func TestUserRecordRoundTrip(t *testing.T) {
 	}
 	if loaded.NoiseClass != "URBAN" {
 		t.Fatalf("expected noise class URBAN, got %s", loaded.NoiseClass)
+	}
+	if loaded.DedupePolicy != DedupePolicySlow {
+		t.Fatalf("expected dedupe policy SLOW, got %s", loaded.DedupePolicy)
 	}
 }
 
@@ -180,6 +190,9 @@ func TestLoadUserRecordLegacyFilter(t *testing.T) {
 	if !record.Bands["20m"] {
 		t.Fatalf("expected legacy band filter to load into user record")
 	}
+	if record.DedupePolicy != DedupePolicyFast {
+		t.Fatalf("expected legacy record to default dedupe policy FAST, got %q", record.DedupePolicy)
+	}
 }
 
 func TestSaveUserFilterPreservesRecentIPs(t *testing.T) {
@@ -191,8 +204,9 @@ func TestSaveUserFilterPreservesRecentIPs(t *testing.T) {
 	base := NewFilter()
 	base.SetMode("CW", true)
 	record := &UserRecord{
-		Filter:    *base,
-		RecentIPs: []string{"192.0.2.1"},
+		Filter:       *base,
+		RecentIPs:    []string{"192.0.2.1"},
+		DedupePolicy: DedupePolicySlow,
 	}
 	if err := SaveUserRecord("N0CALL", record); err != nil {
 		t.Fatalf("SaveUserRecord failed: %v", err)
@@ -213,5 +227,8 @@ func TestSaveUserFilterPreservesRecentIPs(t *testing.T) {
 	}
 	if !loaded.Modes["USB"] {
 		t.Fatalf("expected updated filter settings to persist")
+	}
+	if loaded.DedupePolicy != DedupePolicySlow {
+		t.Fatalf("expected dedupe policy to persist, got %q", loaded.DedupePolicy)
 	}
 }
