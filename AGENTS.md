@@ -24,6 +24,7 @@ Commercial-grade from the first draft. Do not write simple code that needs harde
 - Architecture before non-trivial changes: concurrency model, backpressure strategy, failure/recovery modes, resource bounds, shutdown sequencing.
 - Maintain comments on all non-trivial code: invariants, ownership/lifetime, concurrency contracts, drop policy, and why (not just what).
 - Be concise in responses. Skip ceremony for small edits; apply the full delivery workflow for non-trivial work.
+- No placeholders: Do not emit “// …” or “TODO: implement” style gaps for any file touched. Provide complete, buildable, reviewable code (including error handling and tests required by this contract). If response size is a constraint, explicitly ask to split the work into multiple messages or proceed file-by-file.
 
 ## EXECUTION PACKAGE (what “go ahead” means)
 
