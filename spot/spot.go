@@ -244,7 +244,7 @@ const (
 const dxDisplayMaxLen = 10
 
 const (
-	dxClusterDefaultLineLength = 78
+	dxClusterDefaultLineLength = 76
 	dxClusterMinLineLength     = 65
 	dxClusterTailLength        = 15
 )

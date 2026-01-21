@@ -1175,7 +1175,7 @@ func Load(path string) (*Config, error) {
 		cfg.Telnet.CommandLineLimit = 128
 	}
 	if cfg.Telnet.OutputLineLength <= 0 {
-		cfg.Telnet.OutputLineLength = 78
+		cfg.Telnet.OutputLineLength = 76
 	}
 	if cfg.Telnet.OutputLineLength < 65 {
 		return nil, fmt.Errorf("invalid telnet.output_line_length %d (minimum 65)", cfg.Telnet.OutputLineLength)
