@@ -132,6 +132,36 @@ func TestFormatDXClusterUsesStrippedDECall(t *testing.T) {
 	}
 }
 
+func TestCloneWithCommentResetsFormatting(t *testing.T) {
+	s := &Spot{
+		DXCall:    "KE0UI",
+		DECall:    "W2NAF",
+		Frequency: 7014.0,
+		Mode:      "CW",
+		Comment:   "ORIG",
+		Time:      time.Date(2025, time.November, 22, 4, 54, 0, 0, time.UTC),
+	}
+
+	orig := s.FormatDXCluster()
+	if !strings.Contains(orig, "ORIG") {
+		t.Fatalf("expected original comment, got %q", orig)
+	}
+
+	clone := s.CloneWithComment("DIAG")
+	if clone == nil {
+		t.Fatalf("expected clone")
+	}
+	cloneLine := clone.FormatDXCluster()
+	if !strings.Contains(cloneLine, "DIAG") {
+		t.Fatalf("expected clone comment, got %q", cloneLine)
+	}
+
+	origAgain := s.FormatDXCluster()
+	if !strings.Contains(origAgain, "ORIG") {
+		t.Fatalf("expected original comment unchanged, got %q", origAgain)
+	}
+}
+
 func TestFormatDXClusterDXCallDisplayTruncatesAndStripsSuffix(t *testing.T) {
 	s := &Spot{
 		DXCall:    "HB9/TA1EYE/P",

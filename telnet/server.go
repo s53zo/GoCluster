@@ -185,6 +185,7 @@ type Client struct {
 	noisePenalty float64                // dB penalty applied DX->user
 	skipNextEOL  bool                   // Consume a single LF/NUL after CR (RFC 854 compliance)
 	dedupePolicy atomic.Uint32          // Secondary dedupe policy (fast/slow)
+	diagEnabled  atomic.Bool            // Diagnostic comment override enabled
 
 	// filterMu guards filter, which is read by telnet broadcast workers while the
 	// client session goroutine mutates it in response to PASS/REJECT commands.
@@ -480,6 +481,29 @@ func (s *Server) formatDedupeStatus(client *Client) string {
 		slowLabel = "on"
 	}
 	return fmt.Sprintf("Dedupe: %s (fast=%s slow=%s)\n", policy, fastLabel, slowLabel)
+}
+
+func (s *Server) handleDiagCommand(client *Client, line string) (string, bool) {
+	if client == nil {
+		return "", false
+	}
+	upper := strings.Fields(strings.ToUpper(strings.TrimSpace(line)))
+	if len(upper) < 2 || upper[0] != "SET" || upper[1] != "DIAG" {
+		return "", false
+	}
+	if len(upper) < 3 {
+		return "Usage: SET DIAG <ON|OFF>\n", true
+	}
+	switch upper[2] {
+	case "ON":
+		client.diagEnabled.Store(true)
+		return "Diagnostic comments: ON\n", true
+	case "OFF":
+		client.diagEnabled.Store(false)
+		return "Diagnostic comments: OFF\n", true
+	default:
+		return "Usage: SET DIAG <ON|OFF>\n", true
+	}
 }
 
 // handleDedupeCommand processes SET/SHOW DEDUPE commands.
@@ -1449,6 +1473,13 @@ func (s *Server) handleClient(conn net.Conn) {
 			continue
 		}
 
+		if resp, handled := s.handleDiagCommand(client, line); handled {
+			if resp != "" {
+				client.Send(resp)
+			}
+			continue
+		}
+
 		// Check for filter commands under the active dialect.
 		if resp, handled := s.filterEngine.Handle(client, line); handled {
 			if resp != "" {
@@ -1570,7 +1601,30 @@ func (s *Server) formatSpotForClient(client *Client, sp *spot.Spot) string {
 	if sp == nil {
 		return ""
 	}
+	if client != nil && client.diagEnabled.Load() {
+		return s.formatSpotForClientWithDiag(client, sp)
+	}
 	base := sp.FormatDXCluster()
+	if s == nil || s.pathPredictor == nil || !s.pathDisplay {
+		return base + "\n"
+	}
+	glyphs := s.pathGlyphsForClient(client, sp)
+	if glyphs != "" {
+		base = injectGlyphs(base, glyphs)
+	}
+	return base + "\n"
+}
+
+func (s *Server) formatSpotForClientWithDiag(client *Client, sp *spot.Spot) string {
+	if sp == nil {
+		return ""
+	}
+	clone := sp.CloneWithComment(diagTagForSpot(client, sp))
+	if clone == nil {
+		return ""
+	}
+
+	base := clone.FormatDXCluster()
 	if s == nil || s.pathPredictor == nil || !s.pathDisplay {
 		return base + "\n"
 	}
@@ -1622,6 +1676,94 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 	res := s.pathPredictor.Predict(userCell, dxCell, userGrid2, dxGrid2, band, mode, client.noisePenalty, now)
 	g := res.Glyph
 	return g
+}
+
+func diagTagForSpot(client *Client, sp *spot.Spot) string {
+	if client == nil || sp == nil {
+		return ""
+	}
+	source := diagSourceToken(sp)
+	dedxcc := " "
+	if sp.DEMetadata.ADIF > 0 {
+		dedxcc = strconv.Itoa(sp.DEMetadata.ADIF)
+	}
+	deGrid2 := diagDEGrid2(sp)
+	if deGrid2 == "" {
+		deGrid2 = " "
+	}
+	band := diagBandToken(sp)
+	if band == "" {
+		band = " "
+	}
+	policy := diagPolicyToken(client.getDedupePolicy())
+
+	var b strings.Builder
+	b.Grow(len(source) + len(dedxcc) + len(deGrid2) + len(band) + len(policy))
+	b.WriteString(source)
+	b.WriteString(dedxcc)
+	b.WriteString(deGrid2)
+	b.WriteString(band)
+	b.WriteString(policy)
+	return b.String()
+}
+
+func diagSourceToken(sp *spot.Spot) string {
+	switch sp.SourceType {
+	case spot.SourceRBN, spot.SourceFT8, spot.SourceFT4:
+		return "R"
+	case spot.SourcePSKReporter:
+		return "P"
+	case spot.SourceUpstream, spot.SourcePeer, spot.SourceManual:
+		return "H"
+	default:
+		return "H"
+	}
+}
+
+func diagDEGrid2(sp *spot.Spot) string {
+	grid2 := sp.DEGrid2
+	if grid2 == "" {
+		grid := sp.DEGridNorm
+		if grid == "" {
+			grid = sp.DEMetadata.Grid
+		}
+		if len(grid) >= 2 {
+			grid2 = grid[:2]
+		}
+	}
+	grid2 = strings.ToUpper(strings.TrimSpace(grid2))
+	if len(grid2) > 2 {
+		grid2 = grid2[:2]
+	}
+	if len(grid2) < 2 {
+		return ""
+	}
+	return grid2
+}
+
+func diagBandToken(sp *spot.Spot) string {
+	band := strings.TrimSpace(sp.BandNorm)
+	if band == "" {
+		band = strings.TrimSpace(sp.Band)
+	}
+	if band == "" {
+		band = spot.FreqToBand(sp.Frequency)
+	}
+	band = strings.TrimSpace(spot.NormalizeBand(band))
+	if band == "" || band == "???" {
+		return ""
+	}
+	if strings.HasSuffix(band, "m") && !strings.HasSuffix(band, "cm") {
+		band = strings.TrimSuffix(band, "m")
+	}
+	return band
+}
+
+func diagPolicyToken(policy dedupePolicy) string {
+	if policy == dedupePolicySlow {
+		return "S"
+	}
+	return "F"
 }
 
 func injectGlyphs(base string, glyph string) string {

@@ -262,6 +262,16 @@ func buildHelpCatalog(dialect string) helpCatalog {
 	)
 	add("SET DEDUPE", "SET DEDUPE - Select dedupe policy.", setDedupeLines)
 
+	setDiagLines := helpEntryLines(
+		"SET DIAG - Toggle diagnostic comments.",
+		[]string{"SET DIAG <ON|OFF>"},
+		nil,
+		[]string{
+			"ON replaces the comment field with a diagnostic tag.",
+		},
+	)
+	add("SET DIAG", "SET DIAG - Toggle diagnostic comments.", setDiagLines)
+
 	setGridLines := helpEntryLines(
 		"SET GRID - Set your grid for path reliability glyphs.",
 		[]string{"SET GRID <4-6 char maidenhead>"},
@@ -448,6 +458,7 @@ func buildHelpCatalog(dialect string) helpCatalog {
 			"SHOW DXCC",
 			"SHOW DEDUPE",
 			"SET DEDUPE",
+			"SET DIAG",
 			"SET GRID",
 			"SET NOISE",
 			"SHOW/FILTER",
@@ -558,6 +569,7 @@ func buildHelpCatalog(dialect string) helpCatalog {
 			"SHOW DXCC",
 			"SHOW DEDUPE",
 			"SET DEDUPE",
+			"SET DIAG",
 			"SET GRID",
 			"SET NOISE",
 			"SHOW FILTER",
@@ -588,6 +600,8 @@ func normalizeHelpTopic(dialect string, topic string) string {
 		return "SHOW DEDUPE"
 	case strings.HasPrefix(upper, "SET DEDUPE"):
 		return "SET DEDUPE"
+	case strings.HasPrefix(upper, "SET DIAG"):
+		return "SET DIAG"
 	case strings.HasPrefix(upper, "SET GRID"):
 		return "SET GRID"
 	case strings.HasPrefix(upper, "SET NOISE"):

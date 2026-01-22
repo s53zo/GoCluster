@@ -409,6 +409,19 @@ func (s *Spot) EnsureNormalized() {
 	}
 }
 
+// CloneWithComment returns a shallow copy of the spot with the comment replaced.
+// The formatted cache is reset so formatting reflects the new comment.
+func (s *Spot) CloneWithComment(comment string) *Spot {
+	if s == nil {
+		return nil
+	}
+	clone := *s
+	clone.Comment = comment
+	clone.formatted = ""
+	clone.formatOnce = sync.Once{}
+	return &clone
+}
+
 // InvalidateMetadataCache clears cached fields derived from DXMetadata/DEMetadata.
 // Call after mutating metadata so a subsequent EnsureNormalized repopulates
 // continent/grid values. Caller must ensure no concurrent readers of cached fields.
