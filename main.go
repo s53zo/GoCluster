@@ -179,12 +179,18 @@ type gridMetrics struct {
 	learnedTotal atomic.Uint64
 	cacheLookups atomic.Uint64
 	cacheHits    atomic.Uint64
+	asyncDrops   atomic.Uint64
+	syncDrops    atomic.Uint64
+
+	rateMu          sync.Mutex
+	lastLookupCount uint64
+	lastSample      time.Time
 }
 
 const (
-	gridSyncLookupWorkers   = 4
+	gridSyncLookupWorkers    = 4
 	gridSyncLookupQueueDepth = 512
-	gridSyncLookupTimeout   = 8 * time.Millisecond
+	gridSyncLookupTimeout    = 8 * time.Millisecond
 )
 
 type gridLookupRequest struct {
@@ -194,8 +200,9 @@ type gridLookupRequest struct {
 }
 
 type gridLookupResult struct {
-	grid string
-	ok   bool
+	grid    string
+	derived bool
+	ok      bool
 }
 
 // Purpose: Report whether stdout is a TTY for UI gating.
@@ -552,7 +559,7 @@ func main() {
 	log.Printf("Gridstore: db_check_on_miss=%v (source=%s)", gridDBCheckOnMiss, gridDBCheckSource)
 
 	gridTTL := time.Duration(cfg.GridTTLDays) * 24 * time.Hour
-	gridUpdater, ctyUpdater, gridUpdateState, stopGridWriter, gridLookup, gridLookupSync := startGridWriter(gridStore, time.Duration(cfg.GridFlushSec)*time.Second, metaCache, gridTTL, gridDBCheckOnMiss)
+	gridUpdater, ctyUpdater, gridUpdateState, stopGridWriter, gridLookup, gridLookupSync := startGridWriter(gridStore, time.Duration(cfg.GridFlushSec)*time.Second, metaCache, gridTTL, gridDBCheckOnMiss, ctyLookup)
 	defer func() {
 		if stopGridWriter != nil {
 			stopGridWriter()
@@ -1432,8 +1439,8 @@ func processOutputSpots(
 	spotPolicy config.SpotPolicy,
 	dash uiSurface,
 	gridUpdate func(call, grid string),
-	gridLookup func(call string) (string, bool),
-	gridLookupSync func(call string) (string, bool),
+	gridLookup func(call string) (string, bool, bool),
+	gridLookupSync func(call string) (string, bool, bool),
 	unlicensedReporter func(source, role, call, mode string, freq float64),
 	corrLogger spot.CorrectionTraceLogger,
 	callCooldown *spot.CallCooldown,
@@ -1616,9 +1623,11 @@ func processOutputSpots(
 				call = normalizeCallForMetadata(call)
 				if info := effectivePrefixInfo(ctyDB, metaCache, call); info != nil {
 					deGrid := strings.TrimSpace(s.DEMetadata.Grid)
+					deGridDerived := s.DEMetadata.GridDerived
 					s.DEMetadata = metadataFromPrefix(info)
 					if deGrid != "" {
 						s.DEMetadata.Grid = deGrid
+						s.DEMetadata.GridDerived = deGridDerived
 					}
 					// Metadata refresh can change continent/grid; clear cached norms and rebuild.
 					s.InvalidateMetadataCache()
@@ -1634,25 +1643,17 @@ func processOutputSpots(
 			}
 
 			// Backfill grids before secondary dedupe so path reliability can use them.
-			if gridLookup != nil {
+			if gridLookup != nil || gridLookupSync != nil {
 				gridBackfilled := false
-				syncGrid := gridLookupSync != nil && isRBNGridSource(s)
 				dxCall := s.DXCallNorm
 				if dxCall == "" {
 					dxCall = s.DXCall
 				}
 				if strings.TrimSpace(s.DXMetadata.Grid) == "" {
-					if syncGrid {
-						if grid, ok := gridLookupSync(dxCall); ok {
-							s.DXMetadata.Grid = grid
-							gridBackfilled = true
-						}
-					}
-					if strings.TrimSpace(s.DXMetadata.Grid) == "" {
-						if grid, ok := gridLookup(dxCall); ok {
-							s.DXMetadata.Grid = grid
-							gridBackfilled = true
-						}
+					if grid, derived, ok := lookupGridUnified(dxCall, gridLookupSync, gridLookup); ok {
+						s.DXMetadata.Grid = grid
+						s.DXMetadata.GridDerived = derived
+						gridBackfilled = true
 					}
 				}
 				deCall := s.DECallNorm
@@ -1660,17 +1661,10 @@ func processOutputSpots(
 					deCall = s.DECall
 				}
 				if strings.TrimSpace(s.DEMetadata.Grid) == "" {
-					if syncGrid {
-						if grid, ok := gridLookupSync(deCall); ok {
-							s.DEMetadata.Grid = grid
-							gridBackfilled = true
-						}
-					}
-					if strings.TrimSpace(s.DEMetadata.Grid) == "" {
-						if grid, ok := gridLookup(deCall); ok {
-							s.DEMetadata.Grid = grid
-							gridBackfilled = true
-						}
+					if grid, derived, ok := lookupGridUnified(deCall, gridLookupSync, gridLookup); ok {
+						s.DEMetadata.Grid = grid
+						s.DEMetadata.GridDerived = derived
+						gridBackfilled = true
 					}
 				}
 				if gridBackfilled {
@@ -1736,14 +1730,14 @@ func processOutputSpots(
 			}
 
 			if gridUpdate != nil {
-				if dxGrid := strings.TrimSpace(s.DXMetadata.Grid); dxGrid != "" {
+				if dxGrid := strings.TrimSpace(s.DXMetadata.Grid); dxGrid != "" && !s.DXMetadata.GridDerived {
 					dxCall := s.DXCallNorm
 					if dxCall == "" {
 						dxCall = s.DXCall
 					}
 					gridUpdate(dxCall, dxGrid)
 				}
-				if deGrid := strings.TrimSpace(s.DEMetadata.Grid); deGrid != "" {
+				if deGrid := strings.TrimSpace(s.DEMetadata.Grid); deGrid != "" && !s.DEMetadata.GridDerived {
 					deCall := s.DECallNorm
 					if deCall == "" {
 						deCall = s.DECall
@@ -1932,18 +1926,20 @@ func normalizeCallForMetadata(call string) string {
 	return stripTrailingHyphenSuffix(call)
 }
 
-// isRBNGridSource reports whether a spot should use synchronous grid backfill.
-// It targets RBN-originated feeds where grid data is often missing at ingest.
-func isRBNGridSource(s *spot.Spot) bool {
-	if s == nil {
-		return false
+// Purpose: Run the shared grid backfill routine (sync first, async fallback).
+// Key aspects: Uses the same bounded sync routine for all callers to keep behavior consistent.
+// Upstream: processOutputSpots grid backfill path.
+// Downstream: gridLookupSync and gridLookup helpers.
+func lookupGridUnified(call string, gridLookupSync func(string) (string, bool, bool), gridLookup func(string) (string, bool, bool)) (string, bool, bool) {
+	if gridLookupSync != nil {
+		if grid, derived, ok := gridLookupSync(call); ok {
+			return grid, derived, true
+		}
 	}
-	switch s.SourceType {
-	case spot.SourceRBN, spot.SourceFT8, spot.SourceFT4:
-		return true
-	default:
-		return false
+	if gridLookup != nil {
+		return gridLookup(call)
 	}
+	return "", false, false
 }
 
 // cloneSpotForPeerPublish ensures manual spots carry an inferred mode to peers
@@ -2036,13 +2032,17 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, metaCache *callMetaC
 		// Refresh metadata from the final CTY match but preserve any grid data we already attached.
 		dxGrid := strings.TrimSpace(s.DXMetadata.Grid)
 		deGrid := strings.TrimSpace(s.DEMetadata.Grid)
+		dxGridDerived := s.DXMetadata.GridDerived
+		deGridDerived := s.DEMetadata.GridDerived
 		s.DXMetadata = metadataFromPrefix(dxInfo)
 		s.DEMetadata = metadataFromPrefix(deInfo)
 		if dxGrid != "" {
 			s.DXMetadata.Grid = dxGrid
+			s.DXMetadata.GridDerived = dxGridDerived
 		}
 		if deGrid != "" {
 			s.DEMetadata.Grid = deGrid
+			s.DEMetadata.GridDerived = deGridDerived
 		}
 		// Metadata refresh can change continent/grid; clear cached norms and rebuild.
 		s.InvalidateMetadataCache()
@@ -2803,13 +2803,15 @@ func ctyRefreshHourMinute(cfg config.CTYConfig) (int, int) {
 }
 
 // Purpose: Format the grid database status line for stats output.
-// Key aspects: Uses cache hit rate and DB counts when available.
+// Key aspects: Uses cache hit rate, lookup rate, and drop counts when available.
 // Upstream: displayStatsWithFCC.
 // Downstream: gridstore.Store.Count and humanize.Comma.
 func formatGridLine(metrics *gridMetrics, store *gridstore.Store, predictor *pathreliability.Predictor) string {
 	updatesSinceStart := metrics.learnedTotal.Load()
 	cacheLookups := metrics.cacheLookups.Load()
 	cacheHits := metrics.cacheHits.Load()
+	asyncDrops := metrics.asyncDrops.Load()
+	syncDrops := metrics.syncDrops.Load()
 
 	dbTotal := int64(-1)
 	if store != nil {
@@ -2825,26 +2827,48 @@ func formatGridLine(metrics *gridMetrics, store *gridstore.Store, predictor *pat
 	}
 	hitPercent := int(math.Ceil(hitRate))
 
+	lookupsPerMin := int64(0)
+	now := time.Now().UTC()
+	metrics.rateMu.Lock()
+	if !metrics.lastSample.IsZero() {
+		elapsed := now.Sub(metrics.lastSample)
+		if elapsed > 0 && cacheLookups >= metrics.lastLookupCount {
+			delta := cacheLookups - metrics.lastLookupCount
+			lookupsPerMin = int64(math.Round(float64(delta) / elapsed.Minutes()))
+		}
+	}
+	metrics.lastLookupCount = cacheLookups
+	metrics.lastSample = now
+	metrics.rateMu.Unlock()
+
 	var propPairs string
 	if predictor != nil {
 		stats := predictor.Stats(time.Now().UTC())
 		if stats.BaselineFine > 0 || stats.BaselineCoarse > 0 || stats.NarrowFine > 0 || stats.NarrowCoarse > 0 {
-			propPairs = fmt.Sprintf(" | Prop pairs: base %s/%s nb %s/%s",
+			propPairs = fmt.Sprintf(" | Pairs b %s/%s n %s/%s",
 				humanize.Comma(int64(stats.BaselineFine)),
 				humanize.Comma(int64(stats.BaselineCoarse)),
 				humanize.Comma(int64(stats.NarrowFine)),
 				humanize.Comma(int64(stats.NarrowCoarse)))
 		}
 	}
+	drops := fmt.Sprintf(" | Drop a%s s%s",
+		humanize.Comma(int64(asyncDrops)),
+		humanize.Comma(int64(syncDrops)))
+	lookupRate := humanize.Comma(lookupsPerMin)
 	if dbTotal >= 0 {
-		return fmt.Sprintf("Grid database: %s TOTAL / %d%%%s",
+		return fmt.Sprintf("Grids: %s TOTAL / %d%% / %s%s%s",
 			humanize.Comma(dbTotal),
 			hitPercent,
+			lookupRate,
+			drops,
 			propPairs)
 	}
-	return fmt.Sprintf("Grid database: %s UPDATED / %d%%%s",
+	return fmt.Sprintf("Grids: %s UPDATED / %d%% / %s%s%s",
 		humanize.Comma(int64(updatesSinceStart)),
 		hitPercent,
+		lookupRate,
+		drops,
 		propPairs)
 }
 
@@ -2937,7 +2961,7 @@ func formatFCCLine(fcc *fccSnapshot) string {
 // Downstream: formatGridLine.
 func formatGridLineOrPlaceholder(metrics *gridMetrics, store *gridstore.Store, predictor *pathreliability.Predictor) string {
 	if metrics == nil {
-		return "Grid database: (not available)"
+		return "Grids: (not available)"
 	}
 	return formatGridLine(metrics, store, predictor)
 }
@@ -3005,10 +3029,10 @@ func seedKnownCalls(store *gridstore.Store, known *spot.KnownCallsigns) error {
 }
 
 // Purpose: Start the grid writer pipeline and return update hooks.
-// Key aspects: Provides enqueue, metrics, stop, and lookup functions.
+// Key aspects: Provides enqueue, metrics, stop, lookup functions, and CTY-derived grids on misses.
 // Upstream: main grid store setup.
 // Downstream: gridstore.Store and callMetaCache methods.
-func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache *callMetaCache, ttl time.Duration, dbCheckOnMiss bool) (func(call, grid string), func(call string, info *cty.PrefixInfo), *gridMetrics, func(), func(call string) (string, bool), func(call string) (string, bool)) {
+func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache *callMetaCache, ttl time.Duration, dbCheckOnMiss bool, ctyLookup func() *cty.CTYDatabase) (func(call, grid string), func(call string, info *cty.PrefixInfo), *gridMetrics, func(), func(call string) (string, bool, bool), func(call string) (string, bool, bool)) {
 	if store == nil {
 		return nil, nil, nil, nil, nil, nil
 	}
@@ -3071,14 +3095,84 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		if baseCall == "" {
 			return nil, nil
 		}
+		var baseRec *gridstore.Record
 		rec, err := store.Get(baseCall)
-		if err != nil || rec != nil {
-			return rec, err
+		if err != nil {
+			return nil, err
+		}
+		if rec != nil {
+			if rec.Grid.Valid {
+				return rec, nil
+			}
+			baseRec = rec
 		}
 		if rawCall != "" && rawCall != baseCall {
-			return store.Get(rawCall)
+			rec, err = store.Get(rawCall)
+			if err != nil {
+				return nil, err
+			}
+			if rec != nil {
+				if rec.Grid.Valid {
+					return rec, nil
+				}
+				if baseRec == nil {
+					baseRec = rec
+				}
+			}
 		}
-		return nil, nil
+		if ctyLookup == nil {
+			if baseRec != nil {
+				return baseRec, nil
+			}
+			return nil, nil
+		}
+		ctyDB := ctyLookup()
+		if ctyDB == nil {
+			if baseRec != nil {
+				return baseRec, nil
+			}
+			return nil, nil
+		}
+		info := effectivePrefixInfo(ctyDB, cache, baseCall)
+		if info == nil {
+			if baseRec != nil {
+				return baseRec, nil
+			}
+			return nil, nil
+		}
+		derivedGrid, ok := cty.Grid4FromLatLon(info.Latitude, info.Longitude)
+		if !ok {
+			if baseRec != nil {
+				return baseRec, nil
+			}
+			return nil, nil
+		}
+		now := time.Now().UTC()
+		derivedRec := gridstore.Record{
+			Call:         baseCall,
+			Grid:         sqlNullString(derivedGrid),
+			GridDerived:  true,
+			Observations: 1,
+			FirstSeen:    now,
+			UpdatedAt:    now,
+		}
+		if baseRec != nil {
+			derivedRec.IsKnown = baseRec.IsKnown
+			if baseRec.CTYValid {
+				derivedRec.CTYValid = true
+				derivedRec.CTYADIF = baseRec.CTYADIF
+				derivedRec.CTYCQZone = baseRec.CTYCQZone
+				derivedRec.CTYITUZone = baseRec.CTYITUZone
+				derivedRec.CTYContinent = baseRec.CTYContinent
+				derivedRec.CTYCountry = baseRec.CTYCountry
+			}
+		}
+		select {
+		case updates <- derivedRec:
+		default:
+			// Drop silently to avoid backpressure on the lookup pipeline.
+		}
+		return &derivedRec, nil
 	}
 
 	// Purpose: Background writer loop to batch metadata updates and periodic TTL purges.
@@ -3177,7 +3271,7 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		if call == "" || len(grid) < 4 {
 			return
 		}
-		if cache != nil && !cache.UpdateGrid(call, grid) {
+		if cache != nil && !cache.UpdateGrid(call, grid, false) {
 			return
 		}
 		now := time.Now().UTC()
@@ -3247,15 +3341,15 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 	// Key aspects: Avoids synchronous DB reads on the output pipeline.
 	// Upstream: processOutputSpots gridLookup hook.
 	// Downstream: cache.LookupGrid and lookupQueue enqueue.
-	lookupFn := func(call string) (string, bool) {
+	lookupFn := func(call string) (string, bool, bool) {
 		rawCall := strings.ToUpper(strings.TrimSpace(call))
 		baseCall := normalizeCallForMetadata(rawCall)
 		if baseCall == "" {
-			return "", false
+			return "", false, false
 		}
 		if cache != nil {
-			if grid, ok := cache.LookupGrid(baseCall, metrics); ok {
-				return grid, true
+			if grid, derived, ok := cache.LookupGrid(baseCall, metrics); ok {
+				return grid, derived, true
 			}
 		}
 		// Cache miss: enqueue async lookup to avoid blocking output.
@@ -3267,11 +3361,12 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 				case lookupQueue <- gridLookupRequest{baseCall: baseCall, rawCall: rawCall}:
 				default:
 					delete(lookupPending, baseCall)
+					metrics.asyncDrops.Add(1)
 				}
 			}
 			lookupPendingMu.Unlock()
 		}
-		return "", false
+		return "", false, false
 	}
 
 	if asyncLookupEnabled {
@@ -3299,15 +3394,15 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		close(lookupDone)
 	}
 
-	resolveGrid := func(rec *gridstore.Record) (string, bool) {
+	resolveGrid := func(rec *gridstore.Record) (string, bool, bool) {
 		if rec == nil || !rec.Grid.Valid {
-			return "", false
+			return "", false, false
 		}
 		grid := strings.TrimSpace(strings.ToUpper(rec.Grid.String))
 		if grid == "" {
-			return "", false
+			return "", false, false
 		}
-		return grid, true
+		return grid, rec.GridDerived, true
 	}
 
 	if syncLookupEnabled {
@@ -3326,8 +3421,8 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 							cache.ApplyRecord(*rec)
 						}
 						if req.resp != nil {
-							grid, ok := resolveGrid(rec)
-							req.resp <- gridLookupResult{grid: grid, ok: ok}
+							grid, derived, ok := resolveGrid(rec)
+							req.resp <- gridLookupResult{grid: grid, derived: derived, ok: ok}
 						}
 						continue
 					}
@@ -3342,21 +3437,21 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		}
 	}
 
-	var lookupSyncFn func(call string) (string, bool)
+	var lookupSyncFn func(call string) (string, bool, bool)
 	if syncLookupEnabled {
 		// Purpose: Provide a tight-timeout synchronous lookup path for first-spot grids.
 		// Key aspects: Bounds enqueue time and total wait time; falls back to miss on timeout.
 		// Upstream: processOutputSpots grid backfill for RBN.
 		// Downstream: syncLookupQueue and cache.ApplyRecord.
-		lookupSyncFn = func(call string) (string, bool) {
+		lookupSyncFn = func(call string) (string, bool, bool) {
 			rawCall := strings.ToUpper(strings.TrimSpace(call))
 			baseCall := normalizeCallForMetadata(rawCall)
 			if baseCall == "" {
-				return "", false
+				return "", false, false
 			}
 			if cache != nil {
-				if grid, ok := cache.LookupGrid(baseCall, metrics); ok {
-					return grid, true
+				if grid, derived, ok := cache.LookupGrid(baseCall, metrics); ok {
+					return grid, derived, true
 				}
 			}
 			resp := make(chan gridLookupResult, 1)
@@ -3368,12 +3463,13 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 			select {
 			case syncLookupQueue <- req:
 			case <-timer.C:
-				return "", false
+				metrics.syncDrops.Add(1)
+				return "", false, false
 			}
 
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
-				return "", false
+				return "", false, false
 			}
 			if !timer.Stop() {
 				select {
@@ -3385,9 +3481,9 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 
 			select {
 			case res := <-resp:
-				return res.grid, res.ok
+				return res.grid, res.derived, res.ok
 			case <-timer.C:
-				return "", false
+				return "", false, false
 			}
 		}
 	}

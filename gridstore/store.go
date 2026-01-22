@@ -25,8 +25,9 @@ const (
 )
 
 const (
-	recordFlagKnown    = 1 << 0
-	recordFlagCTYValid = 1 << 1
+	recordFlagKnown       = 1 << 0
+	recordFlagCTYValid    = 1 << 1
+	recordFlagGridDerived = 1 << 2
 )
 
 const (
@@ -68,6 +69,7 @@ type Record struct {
 	Call         string
 	IsKnown      bool
 	Grid         sql.NullString
+	GridDerived  bool
 	CTYValid     bool
 	CTYADIF      int
 	CTYCQZone    int
@@ -84,6 +86,7 @@ type recordValue struct {
 	isKnown      bool
 	grid         string
 	gridValid    bool
+	gridDerived  bool
 	ctyValid     bool
 	ctyADIF      uint32
 	ctyCQZone    uint16
@@ -648,6 +651,7 @@ func normalizeRecordValue(rec Record, now time.Time) recordValue {
 		expires = rec.ExpiresAt.UTC().Unix()
 	}
 	grid, gridValid := normalizeGrid(rec.Grid)
+	gridDerived := rec.GridDerived && gridValid
 	ctyContinent, ctyCountry, ctyValid := normalizeCTY(rec)
 	ctyADIF := clampUint32(rec.CTYADIF)
 	ctyCQZone := clampUint16(rec.CTYCQZone)
@@ -667,6 +671,7 @@ func normalizeRecordValue(rec Record, now time.Time) recordValue {
 		isKnown:      rec.IsKnown,
 		grid:         grid,
 		gridValid:    gridValid,
+		gridDerived:  gridDerived,
 		ctyValid:     ctyValid,
 		ctyADIF:      ctyADIF,
 		ctyCQZone:    ctyCQZone,
@@ -689,6 +694,11 @@ func mergeRecordValue(existing recordValue, found bool, incoming recordValue) re
 	if !incoming.gridValid {
 		merged.grid = existing.grid
 		merged.gridValid = existing.gridValid
+		merged.gridDerived = existing.gridDerived
+	} else if incoming.gridDerived && existing.gridValid && !existing.gridDerived {
+		merged.grid = existing.grid
+		merged.gridValid = true
+		merged.gridDerived = false
 	}
 	if !incoming.ctyValid {
 		merged.ctyValid = existing.ctyValid
@@ -737,6 +747,7 @@ func recordValueToRecord(call string, val recordValue) Record {
 		Call:         call,
 		IsKnown:      val.isKnown,
 		Grid:         grid,
+		GridDerived:  val.gridDerived && val.gridValid,
 		CTYValid:     val.ctyValid,
 		CTYADIF:      ctyADIF,
 		CTYCQZone:    ctyCQZone,
@@ -773,6 +784,9 @@ func encodeRecordValue(val recordValue) []byte {
 	if val.ctyValid {
 		flags |= recordFlagCTYValid
 	}
+	if val.gridValid && val.gridDerived {
+		flags |= recordFlagGridDerived
+	}
 	buf[1] = flags
 	binary.BigEndian.PutUint64(buf[2:], val.observations)
 	binary.BigEndian.PutUint64(buf[10:], uint64(val.firstSeen))
@@ -807,6 +821,7 @@ func decodeRecordValue(raw []byte) (recordValue, error) {
 	flags := raw[1]
 	isKnown := (flags & recordFlagKnown) != 0
 	ctyValid := (flags & recordFlagCTYValid) != 0
+	gridDerived := (flags & recordFlagGridDerived) != 0
 	observations := binary.BigEndian.Uint64(raw[2:])
 	firstSeen := int64(binary.BigEndian.Uint64(raw[10:]))
 	updatedAt := int64(binary.BigEndian.Uint64(raw[18:]))
@@ -854,6 +869,7 @@ func decodeRecordValue(raw []byte) (recordValue, error) {
 		isKnown:      isKnown,
 		grid:         grid,
 		gridValid:    gridValid,
+		gridDerived:  gridDerived && gridValid,
 		ctyValid:     ctyValid,
 		ctyADIF:      ctyADIF,
 		ctyCQZone:    ctyCQZone,

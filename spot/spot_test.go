@@ -113,6 +113,25 @@ func TestFormatDXClusterUsesGridAndConfidence(t *testing.T) {
 	}
 }
 
+func TestFormatDXClusterLowercasesDerivedGrid(t *testing.T) {
+	s := &Spot{
+		DXCall:    "KE0UI",
+		DECall:    "W2NAF",
+		Frequency: 7014.0,
+		Mode:      "CW",
+		Time:      time.Date(2025, time.November, 22, 4, 54, 0, 0, time.UTC),
+		DXMetadata: CallMetadata{
+			Grid:        "FN20",
+			GridDerived: true,
+		},
+	}
+
+	got := s.FormatDXCluster()
+	if !strings.Contains(got, "fn20") {
+		t.Fatalf("expected derived grid to be lowercase, got %q", got)
+	}
+}
+
 func TestFormatDXClusterUsesStrippedDECall(t *testing.T) {
 	s := &Spot{
 		DXCall:         "K1ABC",
@@ -201,7 +220,7 @@ func TestFormatCommentTrimsWhitespace(t *testing.T) {
 }
 
 func TestFormatGridLabelTruncates(t *testing.T) {
-	if got := formatGridLabel("FN20AA"); got != "FN20" {
+	if got := formatGridLabel("FN20AA", false); got != "FN20" {
 		t.Fatalf("expected grid to truncate to FN20, got %q", got)
 	}
 }

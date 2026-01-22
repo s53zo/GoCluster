@@ -95,12 +95,13 @@ func CanonicalPSKMode(mode string) (canonical string, variant string, isPSK bool
 
 // CallMetadata stores geographic metadata for a callsign
 type CallMetadata struct {
-	Continent string
-	Country   string
-	CQZone    int
-	Grid      string
-	ITUZone   int
-	ADIF      int // ADIF/DXCC country code from CTY lookup
+	Continent   string
+	Country     string
+	CQZone      int
+	Grid        string
+	GridDerived bool
+	ITUZone     int
+	ADIF        int // ADIF/DXCC country code from CTY lookup
 }
 
 // Purpose: Construct a new spot with normalized defaults.
@@ -632,7 +633,7 @@ func (s *Spot) FormatDXCluster() string {
 			}
 		}
 
-		gridLabel := formatGridLabel(s.DXMetadata.Grid)
+		gridLabel := formatGridLabel(s.DXMetadata.Grid, s.DXMetadata.GridDerived)
 		if gridLabel == "" {
 			gridLabel = strings.Repeat(" ", gridWidth)
 		} else if len(gridLabel) < gridWidth {
@@ -743,13 +744,18 @@ func formatCQZoneLabel(zone int) string {
 }
 
 // Purpose: Format a grid label for display.
-// Key aspects: Normalizes to uppercase and truncates to 4 chars.
+// Key aspects: Lowercases derived grids and truncates to 4 chars.
 // Upstream: formatZoneGridComment.
 // Downstream: strings.ToUpper/TrimSpace.
-func formatGridLabel(grid string) string {
-	grid = strings.TrimSpace(strings.ToUpper(grid))
+func formatGridLabel(grid string, derived bool) string {
+	grid = strings.TrimSpace(grid)
 	if grid == "" {
 		return ""
+	}
+	if derived {
+		grid = strings.ToLower(grid)
+	} else {
+		grid = strings.ToUpper(grid)
 	}
 	if len(grid) > 4 {
 		grid = grid[:4]

@@ -3,8 +3,10 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"dxcluster/config"
 	"dxcluster/spot"
@@ -158,6 +160,66 @@ func TestGridDBCheckOnMissEnabled_UsesLoadedFromWhenSet(t *testing.T) {
 	_, source := gridDBCheckOnMissEnabled(cfg)
 	if source != "data/config" {
 		t.Fatalf("expected source=data/config, got %s", source)
+	}
+}
+
+func TestLookupGridUnifiedUsesSyncThenAsync(t *testing.T) {
+	syncCalls := 0
+	asyncCalls := 0
+	syncFn := func(call string) (string, bool, bool) {
+		syncCalls++
+		return "", false, false
+	}
+	asyncFn := func(call string) (string, bool, bool) {
+		asyncCalls++
+		return "FN20", true, true
+	}
+	grid, derived, ok := lookupGridUnified("K1ABC", syncFn, asyncFn)
+	if !ok || grid != "FN20" || !derived {
+		t.Fatalf("expected async fallback grid FN20 derived=true, got %q ok=%v derived=%v", grid, ok, derived)
+	}
+	if syncCalls != 1 || asyncCalls != 1 {
+		t.Fatalf("expected sync=1 async=1, got sync=%d async=%d", syncCalls, asyncCalls)
+	}
+
+	syncCalls = 0
+	asyncCalls = 0
+	syncFn = func(call string) (string, bool, bool) {
+		syncCalls++
+		return "EM12", false, true
+	}
+	asyncFn = func(call string) (string, bool, bool) {
+		asyncCalls++
+		return "", false, false
+	}
+	grid, derived, ok = lookupGridUnified("K1ABC", syncFn, asyncFn)
+	if !ok || grid != "EM12" || derived {
+		t.Fatalf("expected sync grid EM12 derived=false, got %q ok=%v derived=%v", grid, ok, derived)
+	}
+	if syncCalls != 1 || asyncCalls != 0 {
+		t.Fatalf("expected sync=1 async=0, got sync=%d async=%d", syncCalls, asyncCalls)
+	}
+}
+
+func TestFormatGridLineIncludesLookupRateAndDrops(t *testing.T) {
+	metrics := &gridMetrics{}
+	metrics.learnedTotal.Store(5)
+	metrics.cacheLookups.Store(160)
+	metrics.cacheHits.Store(80)
+	metrics.asyncDrops.Store(12)
+	metrics.syncDrops.Store(3)
+	now := time.Now().UTC()
+	metrics.rateMu.Lock()
+	metrics.lastLookupCount = 100
+	metrics.lastSample = now.Add(-time.Minute)
+	metrics.rateMu.Unlock()
+
+	line := formatGridLine(metrics, nil, nil)
+	if !strings.Contains(line, "Grids:") {
+		t.Fatalf("expected Grids label, got %q", line)
+	}
+	if !strings.Contains(line, " / 60 | Drop a12 s3") {
+		t.Fatalf("expected lookup rate and drop counts, got %q", line)
 	}
 }
 

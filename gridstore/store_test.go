@@ -72,6 +72,54 @@ func TestUpsertBatchMerge(t *testing.T) {
 	}
 }
 
+func TestDerivedGridDoesNotOverwriteActual(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+
+	now := time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
+	actual := Record{
+		Call:         "K1ABC",
+		Grid:         sql.NullString{String: "FN20", Valid: true},
+		GridDerived:  false,
+		Observations: 1,
+		FirstSeen:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.UpsertBatch([]Record{actual}); err != nil {
+		t.Fatalf("upsert actual: %v", err)
+	}
+	derived := Record{
+		Call:         "K1ABC",
+		Grid:         sql.NullString{String: "FN21", Valid: true},
+		GridDerived:  true,
+		Observations: 1,
+		FirstSeen:    now.Add(time.Minute),
+		UpdatedAt:    now.Add(time.Minute),
+	}
+	if err := store.UpsertBatch([]Record{derived}); err != nil {
+		t.Fatalf("upsert derived: %v", err)
+	}
+	got := mustGet(t, store, "K1ABC")
+	assertGrid(t, got, "FN20", true)
+	if got.GridDerived {
+		t.Fatalf("expected actual grid to remain non-derived")
+	}
+
+	store = openTestStore(t)
+	defer store.Close()
+	if err := store.UpsertBatch([]Record{derived}); err != nil {
+		t.Fatalf("upsert derived first: %v", err)
+	}
+	if err := store.UpsertBatch([]Record{actual}); err != nil {
+		t.Fatalf("upsert actual second: %v", err)
+	}
+	got = mustGet(t, store, "K1ABC")
+	assertGrid(t, got, "FN20", true)
+	if got.GridDerived {
+		t.Fatalf("expected actual grid to clear derived flag")
+	}
+}
+
 func TestClearKnownFlags(t *testing.T) {
 	store := openTestStore(t)
 	defer store.Close()

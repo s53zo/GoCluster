@@ -109,52 +109,52 @@ func (p dedupePolicy) label() string {
 //   - BroadcastSpot() is thread-safe (uses mutex)
 //   - Each client goroutine operates independently
 type Server struct {
-	port              int                         // TCP port to listen on
-	welcomeMessage    string                      // Welcome message for new connections
-	maxConnections    int                         // Maximum concurrent client connections
-	duplicateLoginMsg string                      // Message sent to evicted duplicate session
-	greetingTemplate  string                      // Post-login greeting with placeholders
-	loginPrompt       string                      // Login prompt before callsign entry
-	loginEmptyMessage string                      // Message for empty callsign
-	loginInvalidMsg   string                      // Message for invalid callsign
-	inputTooLongMsg   string                      // Template for input length violations
-	inputInvalidMsg   string                      // Template for invalid character violations
-	dialectWelcomeMsg string                      // Template for dialect welcome line
-	dialectSourceDef  string                      // Label for default dialect source
-	dialectSourcePers string                      // Label for persisted dialect source
-	pathStatusMsg     string                      // Template for path reliability status line
-	clusterCall       string                      // Cluster/node callsign for greeting substitution
-	listener          net.Listener                // TCP listener
-	clients           map[string]*Client          // Map of callsign → Client
-	clientsMutex      sync.RWMutex                // Protects clients map
-	shutdown          chan struct{}               // Shutdown coordination channel
-	broadcast         chan *broadcastPayload      // Broadcast channel for spots (buffered, configurable)
-	broadcastWorkers  int                         // Number of goroutines delivering spots
-	workerQueues      []chan *broadcastJob        // Per-worker job queues
-	workerQueueSize   int                         // Capacity of each worker's queue
-	batchInterval     time.Duration               // Broadcast batch interval; 0 means immediate
-	batchMax          int                         // Max jobs per batch before flush
-	metrics           broadcastMetrics            // Broadcast metrics counters
-	keepaliveInterval time.Duration               // Optional periodic CRLF to keep idle sessions alive
-	clientShards      [][]*Client                 // Cached shard layout for broadcasts
-	shardsDirty       atomic.Bool                 // Flag to rebuild shards on client add/remove
-	processor         *commands.Processor         // Command processor for user commands
-	skipHandshake     bool                        // When true, omit Telnet IAC negotiation
-	transport         string                      // Telnet transport backend ("native" or "ziutek")
-	useZiutek         bool                        // True when the external telnet transport is enabled
-	echoMode          string                      // Input echo policy ("server", "local", "off")
-	clientBufferSize  int                         // Per-client spot channel capacity
-	loginLineLimit    int                         // Maximum bytes accepted for login/callsign input
-	commandLineLimit  int                         // Maximum bytes accepted for post-login commands
-	filterEngine      *filterCommandEngine        // Table-driven filter command parser/executor
-	reputationGate    *reputation.Gate            // Optional reputation gate for login metadata
-	startTime         time.Time                   // Process start time for uptime tokens
-	pathPredictor     *pathreliability.Predictor  // Optional path reliability predictor
-	pathDisplay       bool                        // Toggle glyph rendering
-	noiseOffsets      map[string]float64          // Noise class lookup
-	gridLookup        func(string) (string, bool) // Optional grid lookup from store
-	dedupeFastEnabled bool                        // Fast secondary dedupe policy enabled
-	dedupeSlowEnabled bool                        // Slow secondary dedupe policy enabled
+	port              int                               // TCP port to listen on
+	welcomeMessage    string                            // Welcome message for new connections
+	maxConnections    int                               // Maximum concurrent client connections
+	duplicateLoginMsg string                            // Message sent to evicted duplicate session
+	greetingTemplate  string                            // Post-login greeting with placeholders
+	loginPrompt       string                            // Login prompt before callsign entry
+	loginEmptyMessage string                            // Message for empty callsign
+	loginInvalidMsg   string                            // Message for invalid callsign
+	inputTooLongMsg   string                            // Template for input length violations
+	inputInvalidMsg   string                            // Template for invalid character violations
+	dialectWelcomeMsg string                            // Template for dialect welcome line
+	dialectSourceDef  string                            // Label for default dialect source
+	dialectSourcePers string                            // Label for persisted dialect source
+	pathStatusMsg     string                            // Template for path reliability status line
+	clusterCall       string                            // Cluster/node callsign for greeting substitution
+	listener          net.Listener                      // TCP listener
+	clients           map[string]*Client                // Map of callsign → Client
+	clientsMutex      sync.RWMutex                      // Protects clients map
+	shutdown          chan struct{}                     // Shutdown coordination channel
+	broadcast         chan *broadcastPayload            // Broadcast channel for spots (buffered, configurable)
+	broadcastWorkers  int                               // Number of goroutines delivering spots
+	workerQueues      []chan *broadcastJob              // Per-worker job queues
+	workerQueueSize   int                               // Capacity of each worker's queue
+	batchInterval     time.Duration                     // Broadcast batch interval; 0 means immediate
+	batchMax          int                               // Max jobs per batch before flush
+	metrics           broadcastMetrics                  // Broadcast metrics counters
+	keepaliveInterval time.Duration                     // Optional periodic CRLF to keep idle sessions alive
+	clientShards      [][]*Client                       // Cached shard layout for broadcasts
+	shardsDirty       atomic.Bool                       // Flag to rebuild shards on client add/remove
+	processor         *commands.Processor               // Command processor for user commands
+	skipHandshake     bool                              // When true, omit Telnet IAC negotiation
+	transport         string                            // Telnet transport backend ("native" or "ziutek")
+	useZiutek         bool                              // True when the external telnet transport is enabled
+	echoMode          string                            // Input echo policy ("server", "local", "off")
+	clientBufferSize  int                               // Per-client spot channel capacity
+	loginLineLimit    int                               // Maximum bytes accepted for login/callsign input
+	commandLineLimit  int                               // Maximum bytes accepted for post-login commands
+	filterEngine      *filterCommandEngine              // Table-driven filter command parser/executor
+	reputationGate    *reputation.Gate                  // Optional reputation gate for login metadata
+	startTime         time.Time                         // Process start time for uptime tokens
+	pathPredictor     *pathreliability.Predictor        // Optional path reliability predictor
+	pathDisplay       bool                              // Toggle glyph rendering
+	noiseOffsets      map[string]float64                // Noise class lookup
+	gridLookup        func(string) (string, bool, bool) // Optional grid lookup from store
+	dedupeFastEnabled bool                              // Fast secondary dedupe policy enabled
+	dedupeSlowEnabled bool                              // Slow secondary dedupe policy enabled
 }
 
 // Client represents a connected telnet client session.
@@ -180,6 +180,7 @@ type Client struct {
 	echoInput    bool                   // True when we should echo typed characters back to the client
 	dialect      DialectName            // Active command dialect for filter commands
 	grid         string                 // User grid (4+ chars) for path reliability
+	gridDerived  bool                   // True when grid was derived from CTY prefix info
 	gridCell     pathreliability.CellID // Cached cell for path reliability
 	noiseClass   string                 // Noise class token (e.g., QUIET, URBAN)
 	noisePenalty float64                // dB penalty applied DX->user
@@ -383,6 +384,17 @@ func (s *Server) dialectSourceLabel(active DialectName, created bool, loadErr er
 	return source
 }
 
+func displayGrid(grid string, derived bool) string {
+	grid = strings.TrimSpace(grid)
+	if grid == "" {
+		return ""
+	}
+	if derived {
+		return strings.ToLower(grid)
+	}
+	return strings.ToUpper(grid)
+}
+
 func (s *Server) formatPathStatusMessage(client *Client) string {
 	if s == nil || client == nil {
 		return ""
@@ -391,7 +403,7 @@ func (s *Server) formatPathStatusMessage(client *Client) string {
 	if strings.TrimSpace(template) == "" {
 		return ""
 	}
-	grid := strings.TrimSpace(client.grid)
+	grid := displayGrid(client.grid, client.gridDerived)
 	noise := strings.TrimSpace(client.noiseClass)
 	replacer := strings.NewReplacer(
 		"<GRID>", grid,
@@ -423,6 +435,7 @@ func (s *Server) handlePathSettingsCommand(client *Client, line string) (string,
 			return "Invalid grid. Please provide a 4-6 character Maidenhead locator.\n", true
 		}
 		client.grid = grid
+		client.gridDerived = false
 		client.gridCell = cell
 		if err := client.saveFilter(); err != nil {
 			return fmt.Sprintf("Grid set to %s (warning: failed to persist: %v)\n", grid, err), true
@@ -637,7 +650,7 @@ type ServerOptions struct {
 	PathPredictor           *pathreliability.Predictor
 	PathDisplayEnabled      bool
 	NoiseOffsets            map[string]float64
-	GridLookup              func(string) (string, bool)
+	GridLookup              func(string) (string, bool, bool)
 	CTYLookup               func() *cty.CTYDatabase
 	DedupeFastEnabled       bool
 	DedupeSlowEnabled       bool
@@ -1364,6 +1377,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		client.dialect = normalizeDialectName(record.Dialect)
 		client.setDedupePolicy(s.resolveDedupePolicy(parseDedupePolicy(record.DedupePolicy)))
 		client.grid = strings.ToUpper(strings.TrimSpace(record.Grid))
+		client.gridDerived = false
 		client.gridCell = pathreliability.EncodeCell(client.grid)
 		client.noiseClass = strings.ToUpper(strings.TrimSpace(record.NoiseClass))
 		client.noisePenalty = s.noisePenaltyForClass(client.noiseClass)
@@ -1378,6 +1392,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		client.dialect = s.filterEngine.defaultDialect
 		client.setDedupePolicy(s.resolveDedupePolicy(dedupePolicyFast))
 		client.gridCell = pathreliability.InvalidCell
+		client.gridDerived = false
 		client.noiseClass = "QUIET"
 		client.noisePenalty = s.noisePenaltyForClass(client.noiseClass)
 		log.Printf("Warning: failed to load user record for %s: %v", client.callsign, err)
@@ -1388,8 +1403,9 @@ func (s *Server) handleClient(conn net.Conn) {
 
 	// Seed grid from lookup when none is stored.
 	if strings.TrimSpace(client.grid) == "" && s.gridLookup != nil {
-		if g, ok := s.gridLookup(client.callsign); ok {
+		if g, derived, ok := s.gridLookup(client.callsign); ok {
 			client.grid = strings.ToUpper(strings.TrimSpace(g))
+			client.gridDerived = derived
 			client.gridCell = pathreliability.EncodeCell(client.grid)
 		}
 	}
@@ -1974,7 +1990,7 @@ func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin 
 	dedupePolicy := filter.DedupePolicyFast
 	if client != nil {
 		callsign = client.callsign
-		grid = strings.TrimSpace(client.grid)
+		grid = displayGrid(client.grid, client.gridDerived)
 		if grid == "" {
 			grid = "unset"
 		}

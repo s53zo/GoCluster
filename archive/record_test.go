@@ -35,3 +35,27 @@ func TestArchiveRecordStoresStrippedDECall(t *testing.T) {
 		t.Fatalf("expected decoded stripped DE call, got %q", decoded.DECallStripped)
 	}
 }
+
+func TestArchiveRecordPreservesDerivedGridFlags(t *testing.T) {
+	s := spot.NewSpot("K1ABC", "W1XYZ", 14074.0, "FT8")
+	s.DXMetadata.Grid = "FN20"
+	s.DXMetadata.GridDerived = true
+	s.DEMetadata.Grid = "EM10"
+	s.DEMetadata.GridDerived = true
+
+	raw := encodeRecord(s)
+	rec, err := decodeRecord(raw)
+	if err != nil {
+		t.Fatalf("decodeRecord failed: %v", err)
+	}
+	if !rec.dxGridDerived || !rec.deGridDerived {
+		t.Fatalf("expected derived grid flags to be set")
+	}
+	decoded, err := decodeSpot(time.Now().UTC().UnixNano(), raw)
+	if err != nil {
+		t.Fatalf("decodeSpot failed: %v", err)
+	}
+	if !decoded.DXMetadata.GridDerived || !decoded.DEMetadata.GridDerived {
+		t.Fatalf("expected decoded spots to retain derived flags")
+	}
+}

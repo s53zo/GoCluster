@@ -58,6 +58,8 @@ const (
 const (
 	flagHasReport = 1 << iota
 	flagIsHuman
+	flagDXGridDerived
+	flagDEGridDerived
 )
 
 var errInvalidRecord = errors.New("archive: invalid record encoding")
@@ -545,6 +547,8 @@ type archiveRecord struct {
 	band           string
 	dxGrid         string
 	deGrid         string
+	dxGridDerived  bool
+	deGridDerived  bool
 	dxCont         string
 	deCont         string
 	freq           float64
@@ -622,6 +626,12 @@ func encodeRecord(s *spot.Spot) []byte {
 	}
 	if s.IsHuman {
 		flags |= flagIsHuman
+	}
+	if s.DXMetadata.GridDerived {
+		flags |= flagDXGridDerived
+	}
+	if s.DEMetadata.GridDerived {
+		flags |= flagDEGridDerived
 	}
 	buf[1] = flags
 	buf[2] = s.TTL
@@ -713,6 +723,8 @@ func decodeRecord(raw []byte) (archiveRecord, error) {
 		band:           fields[fieldBand],
 		dxGrid:         fields[fieldDXGrid],
 		deGrid:         fields[fieldDEGrid],
+		dxGridDerived:  flags&flagDXGridDerived != 0,
+		deGridDerived:  flags&flagDEGridDerived != 0,
 		dxCont:         fields[fieldDXCont],
 		deCont:         fields[fieldDECont],
 		freq:           freq,
@@ -757,16 +769,18 @@ func decodeSpot(ts int64, raw []byte) (*spot.Spot, error) {
 		s.DECallNormStripped = rec.deCallStripped
 	}
 	s.DXMetadata = spot.CallMetadata{
-		Grid:      rec.dxGrid,
-		Continent: rec.dxCont,
-		CQZone:    rec.dxCQZone,
-		ADIF:      rec.dxADIF,
+		Grid:        rec.dxGrid,
+		GridDerived: rec.dxGridDerived,
+		Continent:   rec.dxCont,
+		CQZone:      rec.dxCQZone,
+		ADIF:        rec.dxADIF,
 	}
 	s.DEMetadata = spot.CallMetadata{
-		Grid:      rec.deGrid,
-		Continent: rec.deCont,
-		CQZone:    rec.deCQZone,
-		ADIF:      rec.deADIF,
+		Grid:        rec.deGrid,
+		GridDerived: rec.deGridDerived,
+		Continent:   rec.deCont,
+		CQZone:      rec.deCQZone,
+		ADIF:        rec.deADIF,
 	}
 	s.EnsureNormalized()
 	s.RefreshBeaconFlag()

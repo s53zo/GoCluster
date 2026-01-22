@@ -331,10 +331,11 @@ fcc_uls:
 ## Grid Persistence and Caching
 
 - Grids, known-call flags, and CTY metadata (ADIF/CQ/ITU/continent/country) are stored in Pebble at `grid_db` (default `data/grids/pebble`, a directory). Each batch is committed with `Sync` for durability; the in-memory cache continues serving while backfills rebuild on new spots.
+- When a call lacks a stored grid, the CTY prefix latitude/longitude is used to derive a 4-character Maidenhead grid and persist it as "derived"; derived grids never overwrite non-derived entries. Telnet output renders derived grids in lowercase while internal storage and computations remain uppercase.
 - Writes are batched by `grid_flush_seconds` (default `60s`); a final flush runs during shutdown.
 - The unified call metadata cache is a bounded LRU of size `grid_cache_size` (default `100000`). It caches grid/CTY/known lookups and only applies the TTL (`grid_cache_ttl_seconds`) to grid entries; CTY/SCP refreshes clear the cache. Cache misses fall back to Pebble via the async backfill path when `grid_db_check_on_miss` is true; RBN grid misses also attempt a tight-timeout sync lookup to seed the cache before secondary dedupe/path reliability.
 - Pebble tuning knobs (defaults tuned for read-heavy durability): `grid_block_cache_mb=64`, `grid_bloom_filter_bits=10`, `grid_memtable_size_mb=32`, `grid_l0_compaction_threshold=4`, `grid_l0_stop_writes_threshold=16`, `grid_write_queue_depth=64`.
-- The stats line `Grids: +X / Y since start / Z in DB` counts accepted grid changes (not repeated identical reports); `Z` is the current entry count maintained in Pebble metadata.
+- The stats line `Grids: <TOTAL|UPDATED> / <hit%> / <lookups/min> | Drop aX sY` reports gridstore totals (or updates since start if the DB is unavailable), cache hit rate, lookup rate per minute, and async/sync lookup queue drops.
 - If you set `grid_ttl_days > 0`, the store purges rows whose `updated_at` timestamp is older than that many days right after each SCP refresh. Continuous SCP membership or live grid updates keep records fresh automatically.
 - `grid_preflight_timeout_ms` is ignored for the Pebble prototype (retained for config compatibility).
 

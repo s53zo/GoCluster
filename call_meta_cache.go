@@ -37,6 +37,7 @@ type callMetaEntry struct {
 
 	grid          string
 	gridValid     bool
+	gridDerived   bool
 	gridUpdatedAt time.Time
 
 	isKnown      bool
@@ -179,16 +180,16 @@ func (c *callMetaCache) LookupCTY(call string, db *cty.CTYDatabase) (*cty.Prefix
 }
 
 // Purpose: Lookup a cached grid by callsign with TTL enforcement.
-// Key aspects: Counts cache lookups/hits when metrics are provided.
+// Key aspects: Returns derived flag and counts cache lookups/hits when metrics are provided.
 // Upstream: grid backfill path.
 // Downstream: per-shard LRU and TTL checks.
-func (c *callMetaCache) LookupGrid(call string, metrics *gridMetrics) (string, bool) {
+func (c *callMetaCache) LookupGrid(call string, metrics *gridMetrics) (string, bool, bool) {
 	if c == nil {
-		return "", false
+		return "", false, false
 	}
 	call = normalizeCallForMetadata(call)
 	if call == "" {
-		return "", false
+		return "", false, false
 	}
 	if metrics != nil {
 		metrics.cacheLookups.Add(1)
@@ -198,7 +199,7 @@ func (c *callMetaCache) LookupGrid(call string, metrics *gridMetrics) (string, b
 	defer shard.mu.Unlock()
 	elem, ok := shard.entries[call]
 	if !ok {
-		return "", false
+		return "", false, false
 	}
 	entry := elem.Value.(*callMetaEntry)
 	shard.order.MoveToFront(elem)
@@ -206,21 +207,22 @@ func (c *callMetaCache) LookupGrid(call string, metrics *gridMetrics) (string, b
 		if c.gridTTL > 0 && !entry.gridUpdatedAt.IsZero() && time.Since(entry.gridUpdatedAt) > c.gridTTL {
 			entry.gridValid = false
 			entry.grid = ""
-			return "", false
+			entry.gridDerived = false
+			return "", false, false
 		}
 		if metrics != nil {
 			metrics.cacheHits.Add(1)
 		}
-		return entry.grid, true
+		return entry.grid, entry.gridDerived, true
 	}
-	return "", false
+	return "", false, false
 }
 
 // Purpose: Update cached grid and indicate whether persistence is needed.
-// Key aspects: Suppresses writes when grid matches and TTL is fresh.
+// Key aspects: Honors derived-vs-actual precedence and suppresses writes when unchanged.
 // Upstream: grid update hook.
 // Downstream: per-shard LRU mutation.
-func (c *callMetaCache) UpdateGrid(call, grid string) bool {
+func (c *callMetaCache) UpdateGrid(call, grid string, derived bool) bool {
 	if c == nil {
 		return false
 	}
@@ -236,17 +238,22 @@ func (c *callMetaCache) UpdateGrid(call, grid string) bool {
 		entry := elem.Value.(*callMetaEntry)
 		shard.order.MoveToFront(elem)
 		expired := c.gridTTL > 0 && !entry.gridUpdatedAt.IsZero() && now.Sub(entry.gridUpdatedAt) > c.gridTTL
-		if entry.gridValid && entry.grid == grid && !expired {
+		if entry.gridValid && entry.grid == grid && entry.gridDerived == derived && !expired {
+			return false
+		}
+		if derived && entry.gridValid && !entry.gridDerived {
 			return false
 		}
 		entry.grid = grid
 		entry.gridValid = true
+		entry.gridDerived = derived
 		entry.gridUpdatedAt = now
 		return true
 	}
 	entry := shard.addEntry(call)
 	entry.grid = grid
 	entry.gridValid = true
+	entry.gridDerived = derived
 	entry.gridUpdatedAt = now
 	return true
 }
@@ -271,10 +278,14 @@ func (c *callMetaCache) ApplyRecord(rec gridstore.Record) {
 	if rec.Grid.Valid {
 		grid := strings.ToUpper(strings.TrimSpace(rec.Grid.String))
 		if grid != "" {
-			if !entry.gridValid || rec.UpdatedAt.After(entry.gridUpdatedAt) {
-				entry.grid = grid
-				entry.gridValid = true
-				entry.gridUpdatedAt = rec.UpdatedAt
+			incomingDerived := rec.GridDerived
+			if !(entry.gridValid && !entry.gridDerived && incomingDerived) {
+				if !entry.gridValid || rec.UpdatedAt.After(entry.gridUpdatedAt) || (entry.gridDerived && !incomingDerived) {
+					entry.grid = grid
+					entry.gridValid = true
+					entry.gridDerived = incomingDerived
+					entry.gridUpdatedAt = rec.UpdatedAt
+				}
 			}
 		}
 	}

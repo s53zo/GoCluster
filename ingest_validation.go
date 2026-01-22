@@ -163,13 +163,17 @@ func (v *ingestValidator) validateSpot(s *spot.Spot) bool {
 
 	dxGrid := strings.TrimSpace(s.DXMetadata.Grid)
 	deGrid := strings.TrimSpace(s.DEMetadata.Grid)
+	dxGridDerived := s.DXMetadata.GridDerived
+	deGridDerived := s.DEMetadata.GridDerived
 	s.DXMetadata = metadataFromPrefix(dxInfo)
 	s.DEMetadata = metadataFromPrefix(deInfo)
 	if dxGrid != "" {
 		s.DXMetadata.Grid = dxGrid
+		s.DXMetadata.GridDerived = dxGridDerived
 	}
 	if deGrid != "" {
 		s.DEMetadata.Grid = deGrid
+		s.DEMetadata.GridDerived = deGridDerived
 	}
 	// Metadata refresh can change continent/grid; clear cached norms and rebuild.
 	s.InvalidateMetadataCache()
