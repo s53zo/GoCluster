@@ -7,6 +7,7 @@ import (
 
 	"dxcluster/cty"
 	"dxcluster/filter"
+	"dxcluster/pathreliability"
 	"dxcluster/spot"
 )
 
@@ -15,6 +16,11 @@ func newTestClient() *Client {
 		filter:  filter.NewFilter(),
 		dialect: DialectGo,
 	}
+}
+
+func newTestPathPredictor() *pathreliability.Predictor {
+	cfg := pathreliability.DefaultConfig()
+	return pathreliability.NewPredictor(cfg, []string{"20m"})
 }
 
 const sampleCTYPLIST = `<?xml version="1.0" encoding="UTF-8"?>
@@ -64,6 +70,32 @@ func loadTestCTY(t *testing.T) *cty.CTYDatabase {
 		t.Fatalf("failed to load CTY sample: %v", err)
 	}
 	return db
+}
+
+type filterCommandCase struct {
+	name     string
+	setup    func(*Client)
+	commands []string
+	check    func(*testing.T, *filter.Filter)
+}
+
+func runFilterCommandCase(t *testing.T, tt filterCommandCase) {
+	t.Helper()
+	client := newTestClient()
+	engine := newFilterCommandEngine()
+	if tt.setup != nil {
+		tt.setup(client)
+	}
+	for _, cmd := range tt.commands {
+		resp, handled := engine.Handle(client, cmd)
+		if !handled {
+			t.Fatalf("command %q was not handled", cmd)
+		}
+		if resp == "" {
+			t.Fatalf("expected response for command %q", cmd)
+		}
+	}
+	tt.check(t, client.filter)
 }
 
 func TestPassCommands(t *testing.T) {
@@ -187,6 +219,38 @@ func TestPassCommands(t *testing.T) {
 				}
 				if !f.Confidence["P"] || !f.Confidence["V"] {
 					t.Fatalf("expected confidence symbols P and V to be enabled")
+				}
+			},
+		},
+		{
+			name: "pass path list",
+			cmd:  "PASS PATH HIGH,LOW",
+			setup: func(c *Client) {
+				c.server = &Server{pathPredictor: newTestPathPredictor()}
+			},
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.AllPathClasses {
+					t.Fatalf("AllPathClasses should be false when specific classes are set")
+				}
+				if !f.PathClasses["HIGH"] || !f.PathClasses["LOW"] {
+					t.Fatalf("expected path classes HIGH and LOW to be enabled")
+				}
+			},
+		},
+		{
+			name: "pass path all",
+			cmd:  "PASS PATH ALL",
+			setup: func(c *Client) {
+				c.server = &Server{pathPredictor: newTestPathPredictor()}
+				c.filter.SetPathClass(filter.PathClassHigh, true)
+				c.filter.SetPathClass(filter.PathClassLow, false)
+			},
+			check: func(t *testing.T, f *filter.Filter) {
+				if !f.AllPathClasses || f.BlockAllPathClasses {
+					t.Fatalf("expected AllPathClasses=true and BlockAllPathClasses=false after PASS PATH ALL")
+				}
+				if len(f.PathClasses) != 0 || len(f.BlockPathClasses) != 0 {
+					t.Fatalf("expected PASS PATH ALL to clear allow and block sets")
 				}
 			},
 		},
@@ -360,6 +424,34 @@ func TestRejectCommands(t *testing.T) {
 			},
 		},
 		{
+			name: "reject path list",
+			cmd:  "REJECT PATH UNLIKELY",
+			setup: func(c *Client) {
+				c.server = &Server{pathPredictor: newTestPathPredictor()}
+			},
+			check: func(t *testing.T, f *filter.Filter) {
+				if !f.BlockPathClasses["UNLIKELY"] {
+					t.Fatalf("expected UNLIKELY path class to be blocked")
+				}
+				if !f.AllPathClasses || f.BlockAllPathClasses {
+					t.Fatalf("expected AllPathClasses=true and BlockAllPathClasses=false after REJECT PATH UNLIKELY")
+				}
+			},
+		},
+		{
+			name: "reject path all",
+			cmd:  "REJECT PATH ALL",
+			setup: func(c *Client) {
+				c.server = &Server{pathPredictor: newTestPathPredictor()}
+				c.filter.SetPathClass(filter.PathClassHigh, true)
+			},
+			check: func(t *testing.T, f *filter.Filter) {
+				if !f.BlockAllPathClasses || f.AllPathClasses {
+					t.Fatalf("expected BlockAllPathClasses=true and AllPathClasses=false after REJECT PATH ALL")
+				}
+			},
+		},
+		{
 			name: "reject degrid2 list",
 			cmd:  "REJECT DEGRID2 FN",
 			check: func(t *testing.T, f *filter.Filter) {
@@ -481,6 +573,182 @@ func TestRejectCommands(t *testing.T) {
 	}
 }
 
+func TestCombinedPassRejectStringMapFilters(t *testing.T) {
+	tests := []filterCommandCase{
+		{
+			name:     "band pass list then reject one",
+			commands: []string{"PASS BAND 20M,40M", "REJECT BAND 20M"},
+			check: func(t *testing.T, f *filter.Filter) {
+				b20 := spot.NormalizeBand("20M")
+				b40 := spot.NormalizeBand("40M")
+				if f.Bands[b20] {
+					t.Fatalf("expected band %s removed from allow list", b20)
+				}
+				if !f.Bands[b40] {
+					t.Fatalf("expected band %s to remain allowed", b40)
+				}
+				if !f.BlockBands[b20] {
+					t.Fatalf("expected band %s in block list", b20)
+				}
+				if f.AllBands || f.BlockAllBands {
+					t.Fatalf("expected band filter to remain scoped (not ALL or block-all)")
+				}
+			},
+		},
+		{
+			name:     "mode pass then reject",
+			commands: []string{"PASS MODE FT8", "REJECT MODE FT8"},
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.Modes["FT8"] {
+					t.Fatalf("expected FT8 removed from allow list")
+				}
+				if !f.Modes["CW"] {
+					t.Fatalf("expected default mode CW to remain allowed")
+				}
+				if !f.BlockModes["FT8"] {
+					t.Fatalf("expected FT8 in block list")
+				}
+				if f.AllModes || f.BlockAllModes {
+					t.Fatalf("expected mode filter to remain scoped (not ALL or block-all)")
+				}
+			},
+		},
+		{
+			name:     "source pass then reject",
+			commands: []string{"PASS SOURCE HUMAN", "PASS SOURCE SKIMMER", "REJECT SOURCE SKIMMER"},
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.Sources["SKIMMER"] {
+					t.Fatalf("expected SKIMMER removed from allow list")
+				}
+				if !f.Sources["HUMAN"] {
+					t.Fatalf("expected HUMAN source to remain allowed")
+				}
+				if !f.BlockSources["SKIMMER"] {
+					t.Fatalf("expected SKIMMER in block list")
+				}
+				if f.AllSources || f.BlockAllSources {
+					t.Fatalf("expected source filter to remain scoped (not ALL or block-all)")
+				}
+			},
+		},
+		{
+			name:     "confidence pass list then reject one",
+			commands: []string{"PASS CONFIDENCE P,V", "REJECT CONFIDENCE P"},
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.Confidence["P"] {
+					t.Fatalf("expected P removed from allow list")
+				}
+				if !f.Confidence["V"] {
+					t.Fatalf("expected V to remain allowed")
+				}
+				if !f.BlockConfidence["P"] {
+					t.Fatalf("expected P in block list")
+				}
+				if f.AllConfidence || f.BlockAllConfidence {
+					t.Fatalf("expected confidence filter to remain scoped (not ALL or block-all)")
+				}
+			},
+		},
+		{
+			name:     "path pass list then reject one",
+			setup:    func(c *Client) { c.server = &Server{pathPredictor: newTestPathPredictor()} },
+			commands: []string{"PASS PATH HIGH,LOW", "REJECT PATH HIGH"},
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.PathClasses["HIGH"] {
+					t.Fatalf("expected HIGH removed from allow list")
+				}
+				if !f.PathClasses["LOW"] {
+					t.Fatalf("expected LOW to remain allowed")
+				}
+				if !f.BlockPathClasses["HIGH"] {
+					t.Fatalf("expected HIGH in block list")
+				}
+				if f.AllPathClasses || f.BlockAllPathClasses {
+					t.Fatalf("expected path filter to remain scoped (not ALL or block-all)")
+				}
+			},
+		},
+		{
+			name:     "dxcont pass list then reject one",
+			commands: []string{"PASS DXCONT EU,NA", "REJECT DXCONT EU"},
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.DXContinents["EU"] {
+					t.Fatalf("expected EU removed from allow list")
+				}
+				if !f.DXContinents["NA"] {
+					t.Fatalf("expected NA to remain allowed")
+				}
+				if !f.BlockDXContinents["EU"] {
+					t.Fatalf("expected EU in block list")
+				}
+				if f.AllDXContinents || f.BlockAllDXContinents {
+					t.Fatalf("expected DXCONT filter to remain scoped (not ALL or block-all)")
+				}
+			},
+		},
+		{
+			name:     "decont pass list then reject one",
+			commands: []string{"PASS DECONT EU,NA", "REJECT DECONT NA"},
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.DEContinents["NA"] {
+					t.Fatalf("expected NA removed from allow list")
+				}
+				if !f.DEContinents["EU"] {
+					t.Fatalf("expected EU to remain allowed")
+				}
+				if !f.BlockDEContinents["NA"] {
+					t.Fatalf("expected NA in block list")
+				}
+				if f.AllDEContinents || f.BlockAllDEContinents {
+					t.Fatalf("expected DECONT filter to remain scoped (not ALL or block-all)")
+				}
+			},
+		},
+		{
+			name:     "dxgrid2 pass list then reject one",
+			commands: []string{"PASS DXGRID2 FN,EM", "REJECT DXGRID2 FN"},
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.DXGrid2Prefixes["FN"] {
+					t.Fatalf("expected FN removed from allow list")
+				}
+				if !f.DXGrid2Prefixes["EM"] {
+					t.Fatalf("expected EM to remain allowed")
+				}
+				if !f.BlockDXGrid2["FN"] {
+					t.Fatalf("expected FN in block list")
+				}
+				if f.AllDXGrid2 || f.BlockAllDXGrid2 {
+					t.Fatalf("expected DXGRID2 filter to remain scoped (not ALL or block-all)")
+				}
+			},
+		},
+		{
+			name:     "degrid2 pass list then reject one",
+			commands: []string{"PASS DEGRID2 FN,EM", "REJECT DEGRID2 EM"},
+			check: func(t *testing.T, f *filter.Filter) {
+				if f.DEGrid2Prefixes["EM"] {
+					t.Fatalf("expected EM removed from allow list")
+				}
+				if !f.DEGrid2Prefixes["FN"] {
+					t.Fatalf("expected FN to remain allowed")
+				}
+				if !f.BlockDEGrid2["EM"] {
+					t.Fatalf("expected EM in block list")
+				}
+				if f.AllDEGrid2 || f.BlockAllDEGrid2 {
+					t.Fatalf("expected DEGRID2 filter to remain scoped (not ALL or block-all)")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runFilterCommandCase(t, tt)
+		})
+	}
+}
+
 func TestShowFilterSnapshotDefault(t *testing.T) {
 	client := newTestClient()
 	engine := newFilterCommandEngine()
@@ -500,6 +768,9 @@ func TestShowFilterSnapshotDefault(t *testing.T) {
 	}
 	if !strings.Contains(resp, "DXCALL: allow=ALL block=NONE") {
 		t.Fatalf("expected DXCALL line to show allow/block defaults, got: %q", resp)
+	}
+	if !strings.Contains(resp, "PATH: allow=ALL block=NONE") {
+		t.Fatalf("expected PATH line to show allow/block defaults, got: %q", resp)
 	}
 	if !strings.Contains(resp, "SELF: ON") {
 		t.Fatalf("expected SELF line in snapshot, got: %q", resp)
@@ -651,6 +922,23 @@ func TestInvalidFilterCommandShowsHelpHint(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(resp), "help") {
 		t.Fatalf("expected help hint in response, got: %q", resp)
+	}
+}
+
+func TestPathCommandIgnoredWhenPredictorDisabled(t *testing.T) {
+	client := newTestClient()
+	client.server = &Server{}
+	engine := newFilterCommandEngine()
+
+	resp, handled := engine.Handle(client, "PASS PATH HIGH")
+	if !handled {
+		t.Fatalf("expected PASS PATH to be handled")
+	}
+	if !strings.Contains(strings.ToLower(resp), "path predictor disabled") {
+		t.Fatalf("expected predictor disabled warning, got: %q", resp)
+	}
+	if !client.filter.AllPathClasses || len(client.filter.PathClasses) != 0 || len(client.filter.BlockPathClasses) != 0 {
+		t.Fatalf("expected PASS PATH to be ignored when predictor disabled")
 	}
 }
 
@@ -946,6 +1234,12 @@ func assertFilterMatchesDefaults(t *testing.T, got *filter.Filter) {
 	}
 	if got.AllConfidence != expected.AllConfidence || got.BlockAllConfidence != expected.BlockAllConfidence {
 		t.Fatalf("confidence defaults mismatch: got AllConfidence=%v BlockAllConfidence=%v", got.AllConfidence, got.BlockAllConfidence)
+	}
+	if got.AllPathClasses != expected.AllPathClasses || got.BlockAllPathClasses != expected.BlockAllPathClasses {
+		t.Fatalf("path defaults mismatch: got AllPathClasses=%v BlockAllPathClasses=%v", got.AllPathClasses, got.BlockAllPathClasses)
+	}
+	if !reflect.DeepEqual(got.PathClasses, expected.PathClasses) || !reflect.DeepEqual(got.BlockPathClasses, expected.BlockPathClasses) {
+		t.Fatalf("path defaults mismatch: got allow=%v block=%v", got.PathClasses, got.BlockPathClasses)
 	}
 	if got.BeaconsEnabled() != expected.BeaconsEnabled() || got.WWVEnabled() != expected.WWVEnabled() || got.WCYEnabled() != expected.WCYEnabled() || got.AnnounceEnabled() != expected.AnnounceEnabled() {
 		t.Fatalf("feature defaults mismatch: got beacon=%v wwv=%v wcy=%v announce=%v", got.BeaconsEnabled(), got.WWVEnabled(), got.WCYEnabled(), got.AnnounceEnabled())

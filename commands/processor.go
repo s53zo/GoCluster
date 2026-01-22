@@ -878,7 +878,7 @@ func filterListTypes() []string {
 	return []string{
 		"BAND", "MODE", "SOURCE", "DXCALL", "DECALL", "DXGRID2",
 		"DEGRID2", "DXCONT", "DECONT", "DXZONE", "DEZONE", "DXDXCC",
-		"DEDXCC", "CONFIDENCE",
+		"DEDXCC", "CONFIDENCE", "PATH",
 	}
 }
 

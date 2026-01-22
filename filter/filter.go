@@ -5,6 +5,7 @@
 //   - Mode (e.g., CW, USB, JS8, SSTV, FT8, RTTY)
 //   - Callsign patterns (e.g., W1*, LZ5VV, *ABC) for DX and DE calls
 //   - Source category (HUMAN vs SKIMMER/automated)
+//   - Path reliability class (HIGH/MEDIUM/LOW/UNLIKELY/INSUFFICIENT)
 //
 // Filter Logic:
 //   - Multiple filters use AND logic (all must match)
@@ -17,8 +18,8 @@
 package filter
 
 import (
-	"fmt"
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strconv"
@@ -132,6 +133,35 @@ var confidenceSymbolScores = map[string]int{
 	"V": 100,
 	"C": 100,
 }
+
+const (
+	PathClassHigh         = "HIGH"
+	PathClassMedium       = "MEDIUM"
+	PathClassLow          = "LOW"
+	PathClassUnlikely     = "UNLIKELY"
+	PathClassInsufficient = "INSUFFICIENT"
+)
+
+// SupportedPathClasses enumerates the path reliability class labels that users can filter on.
+var SupportedPathClasses = []string{
+	PathClassHigh,
+	PathClassMedium,
+	PathClassLow,
+	PathClassUnlikely,
+	PathClassInsufficient,
+}
+
+var supportedPathClassSet = func() map[string]bool {
+	m := make(map[string]bool, len(SupportedPathClasses))
+	for _, class := range SupportedPathClasses {
+		key := strings.ToUpper(strings.TrimSpace(class))
+		if key == "" {
+			continue
+		}
+		m[key] = true
+	}
+	return m
+}()
 
 // Purpose: Check whether a mode is supported for filtering.
 // Key aspects: Normalizes the input before lookup.
@@ -310,14 +340,16 @@ func EnsureUserDataDir() error {
 //  2. Mode filters: Which operating modes to accept (CW, USB, JS8, SSTV, FT8, etc.)
 //  3. Callsign patterns: Allow/block DX/DE callsigns (W1*, LZ5VV, etc.)
 //  4. Confidence glyphs: Which consensus indicators (?, S, C, P, V, B) to accept.
-//  5. Beacon inclusion: Whether DX calls ending in /B (beacons) should be delivered.
-//  6. Source category: Whether to deliver HUMAN spots, SKIMMER (automated) spots, or both.
+//  5. Path reliability class: Which prediction classes (HIGH/MEDIUM/LOW/UNLIKELY/INSUFFICIENT) to accept.
+//  6. Beacon inclusion: Whether DX calls ending in /B (beacons) should be delivered.
+//  7. Source category: Whether to deliver HUMAN spots, SKIMMER (automated) spots, or both.
 //
 // Default Behavior:
 //   - AllBands=true: accept every band
 //   - AllModes=false with the curated default mode list pre-enabled
 //   - Callsign patterns: Allowlist applies only if non-empty; blocklist always denies
 //   - AllConfidence=true: accept every consensus glyph until specific ones are enabled
+//   - AllPathClasses=true: accept every path class until specific ones are enabled
 //   - IncludeBeacons=true: beacon spots are delivered unless explicitly disabled
 //   - AllSources=true: accept both HUMAN and SKIMMER spots (unless overridden for new users)
 //
@@ -331,7 +363,7 @@ type Filter struct {
 	BlockModes           map[string]bool // Blocked modes
 	Sources              map[string]bool // Allowed source categories (HUMAN/SKIMMER)
 	BlockSources         map[string]bool // Blocked source categories
-	DXCallsigns          []string        `yaml:"callsigns,omitempty"`   // DX callsign patterns (e.g., ["W1*", "LZ5VV"])
+	DXCallsigns          []string        `yaml:"callsigns,omitempty"` // DX callsign patterns (e.g., ["W1*", "LZ5VV"])
 	BlockDXCallsigns     []string        `yaml:"block_callsigns,omitempty"`
 	DECallsigns          []string        `yaml:"decallsigns,omitempty"` // DE callsign patterns
 	BlockDECallsigns     []string        `yaml:"block_decallsigns,omitempty"`
@@ -345,6 +377,10 @@ type Filter struct {
 	BlockConfidence      map[string]bool // Blocked confidence glyphs
 	AllConfidence        bool            // If true, accept all confidence glyphs (except blocked)
 	BlockAllConfidence   bool            // If true, reject all confidence glyphs (except exempt modes)
+	PathClasses          map[string]bool // Allowed path reliability classes
+	BlockPathClasses     map[string]bool // Blocked path reliability classes
+	AllPathClasses       bool            // If true, accept all path classes (except blocked)
+	BlockAllPathClasses  bool            // If true, reject all path classes
 	IncludeBeacons       *bool           `yaml:"include_beacons,omitempty"` // nil/true delivers beacons; false suppresses
 	AllowWWV             *bool           `yaml:"allow_wwv,omitempty"`       // nil/true delivers WWV bulletins; false suppresses
 	AllowWCY             *bool           `yaml:"allow_wcy,omitempty"`       // nil/true delivers WCY bulletins; false suppresses
@@ -406,6 +442,8 @@ func NewFilter() *Filter {
 		BlockDECallsigns:     make([]string, 0),
 		Confidence:           make(map[string]bool),
 		BlockConfidence:      make(map[string]bool),
+		PathClasses:          make(map[string]bool),
+		BlockPathClasses:     make(map[string]bool),
 		DXContinents:         make(map[string]bool),
 		BlockDXContinents:    make(map[string]bool),
 		DEContinents:         make(map[string]bool),
@@ -434,6 +472,8 @@ func NewFilter() *Filter {
 		AllowSelf:            boolPtr(true),
 		AllConfidence:        true, // Accept every confidence glyph until user sets one
 		BlockAllConfidence:   false,
+		AllPathClasses:       true, // Accept every path class until user sets one
+		BlockAllPathClasses:  false,
 		AllDXContinents:      true,
 		BlockAllDXContinents: false,
 		AllDEContinents:      true,
@@ -875,6 +915,48 @@ func (f *Filter) ResetConfidence() {
 	f.LegacyMinConfidence = 0
 }
 
+// Purpose: Allow or block a path reliability class.
+// Key aspects: Normalizes tokens; updates allow/block lists and flags.
+// Upstream: Telnet PASS/REJECT PATH commands.
+// Downstream: normalizePathClass.
+func (f *Filter) SetPathClass(class string, enabled bool) {
+	if f == nil {
+		return
+	}
+	canonical := normalizePathClass(class)
+	if canonical == "" {
+		return
+	}
+	if f.PathClasses == nil {
+		f.PathClasses = make(map[string]bool)
+	}
+	if f.BlockPathClasses == nil {
+		f.BlockPathClasses = make(map[string]bool)
+	}
+	if enabled {
+		f.PathClasses[canonical] = true
+		delete(f.BlockPathClasses, canonical)
+		f.BlockAllPathClasses = false
+		f.AllPathClasses = len(f.PathClasses) == 0
+		return
+	}
+	delete(f.PathClasses, canonical)
+	f.BlockPathClasses[canonical] = true
+	f.BlockAllPathClasses = false
+	f.AllPathClasses = len(f.PathClasses) == 0
+}
+
+// Purpose: Clear path class filters and allow all classes.
+// Key aspects: Resets allow/block maps and flags.
+// Upstream: Telnet PASS/REJECT PATH ALL and RESET FILTER flows.
+// Downstream: None.
+func (f *Filter) ResetPathClasses() {
+	f.PathClasses = make(map[string]bool)
+	f.BlockPathClasses = make(map[string]bool)
+	f.AllPathClasses = true
+	f.BlockAllPathClasses = false
+}
+
 // Purpose: Set whether beacon spots are delivered.
 // Key aspects: Stores an explicit bool pointer to preserve tri-state.
 // Upstream: Telnet PASS/REJECT BEACON commands.
@@ -1046,6 +1128,7 @@ func (f *Filter) Reset() {
 	f.ResetSources()
 	f.ClearCallsignPatterns()
 	f.ResetConfidence()
+	f.ResetPathClasses()
 	f.ResetDXContinents()
 	f.ResetDEContinents()
 	f.ResetDXZones()
@@ -1142,7 +1225,7 @@ func (f *Filter) ResetDEDXCC() {
 
 // Purpose: Evaluate whether a spot passes all active filters.
 // Key aspects: Applies deny-first allow/block logic across bands, modes, sources,
-// geography, grids, confidence, and callsign patterns.
+// geography, grids, confidence, path classes, and callsign patterns.
 // Upstream: Telnet broadcast workers.
 // Downstream: passesStringFilter, passesIntFilter, matchesCallsignPattern.
 // Matches returns true if the spot passes all active filters.
@@ -1166,6 +1249,16 @@ func (f *Filter) ResetDEDXCC() {
 //	filter.Matches(spot_40m_CW)   → false (wrong band)
 //	filter.Matches(spot_20m_USB)  → false (wrong mode)
 func (f *Filter) Matches(s *spot.Spot) bool {
+	return f.matchesWithPath(s, PathClassInsufficient)
+}
+
+// MatchesWithPath evaluates filters that depend on a precomputed path class.
+// Callers should pass INSUFFICIENT when prediction data is unavailable.
+func (f *Filter) MatchesWithPath(s *spot.Spot, pathClass string) bool {
+	return f.matchesWithPath(s, pathClass)
+}
+
+func (f *Filter) matchesWithPath(s *spot.Spot, pathClass string) bool {
 	// Spot must be normalized upstream; this function treats the spot as immutable.
 	if s != nil && s.IsBeacon && !f.BeaconsEnabled() {
 		return false
@@ -1303,6 +1396,14 @@ func (f *Filter) Matches(s *spot.Spot) bool {
 		if !passesStringFilter(symbol, f.Confidence, f.BlockConfidence, f.AllConfidence, f.BlockAllConfidence) {
 			return false
 		}
+	}
+
+	pathClass = normalizePathClass(pathClass)
+	if pathClass == "" {
+		pathClass = PathClassInsufficient
+	}
+	if !passesStringFilter(pathClass, f.PathClasses, f.BlockPathClasses, f.AllPathClasses, f.BlockAllPathClasses) {
+		return false
 	}
 
 	return true // Passed all filters
@@ -1569,6 +1670,13 @@ func (f *Filter) String() string {
 		}
 	}
 
+	// Describe path reliability class filter.
+	if f.AllPathClasses || len(f.PathClasses) == 0 {
+		parts = append(parts, "Path: ALL")
+	} else {
+		parts = append(parts, "Path: "+strings.Join(enabledPathClasses(f.PathClasses), ", "))
+	}
+
 	if f.BeaconsEnabled() {
 		parts = append(parts, "Beacons: ON")
 	} else {
@@ -1716,6 +1824,22 @@ func enabledZones(m map[int]bool) []string {
 	return strs
 }
 
+// Purpose: Return sorted path class labels.
+// Key aspects: Returns "NONE" when the map is empty.
+// Upstream: Filter.String.
+// Downstream: sort.Strings.
+func enabledPathClasses(m map[string]bool) []string {
+	if len(m) == 0 {
+		return []string{"NONE"}
+	}
+	out := make([]string, 0, len(m))
+	for class := range m {
+		out = append(out, class)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Purpose: Return sorted 2-character grid prefixes.
 // Key aspects: Returns "NONE" when the map is empty.
 // Upstream: Filter.String.
@@ -1764,6 +1888,18 @@ func IsSupportedConfidenceSymbol(symbol string) bool {
 	return supportedConfidenceSymbolSet[normalized]
 }
 
+// Purpose: Check whether a path class label is supported.
+// Key aspects: Normalizes the input before lookup.
+// Upstream: Telnet PATH filter parsing and validation.
+// Downstream: supportedPathClassSet.
+func IsSupportedPathClass(class string) bool {
+	normalized := normalizePathClass(class)
+	if normalized == "" {
+		return false
+	}
+	return supportedPathClassSet[normalized]
+}
+
 // Purpose: Normalize confidence inputs (glyphs or percentages) to glyphs.
 // Key aspects: Accepts '?/S/P/V/B/C' or numeric percentages.
 // Upstream: Filter.SetConfidenceSymbol, ConfidenceSymbolEnabled.
@@ -1795,6 +1931,18 @@ func normalizeConfidenceSymbol(label string) string {
 	}
 }
 
+// normalizePathClass trims and uppercases a path class token, returning empty when unsupported.
+func normalizePathClass(label string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(label))
+	if normalized == "" {
+		return ""
+	}
+	if supportedPathClassSet[normalized] {
+		return normalized
+	}
+	return ""
+}
+
 // Purpose: Convert a numeric threshold into allowed confidence glyphs.
 // Key aspects: Clamps range 0..100 and includes glyphs >= threshold score.
 // Upstream: Filter.migrateLegacyConfidence.
@@ -1814,6 +1962,23 @@ func confidenceSymbolsForThreshold(threshold int) []string {
 		}
 	}
 	return result
+}
+
+// Purpose: Report whether PATH filtering requires a classification lookup.
+// Key aspects: Returns true when allow/block lists are active or block-all is set.
+// Upstream: Telnet broadcast filters and history queries.
+// Downstream: None.
+func (f *Filter) PathFilterActive() bool {
+	if f == nil {
+		return false
+	}
+	if f.BlockAllPathClasses {
+		return true
+	}
+	if !f.AllPathClasses {
+		return true
+	}
+	return len(f.PathClasses) > 0 || len(f.BlockPathClasses) > 0
 }
 
 // Purpose: Migrate legacy percentage-based confidence to glyph-based filters.
@@ -1838,6 +2003,9 @@ func (f *Filter) migrateLegacyConfidence() {
 	}
 	if len(f.Confidence) == 0 {
 		f.AllConfidence = true
+	}
+	if len(f.PathClasses) == 0 {
+		f.AllPathClasses = true
 	}
 }
 
@@ -1914,6 +2082,12 @@ func (f *Filter) normalizeDefaults() {
 	if f.BlockConfidence == nil {
 		f.BlockConfidence = make(map[string]bool)
 	}
+	if f.PathClasses == nil {
+		f.PathClasses = make(map[string]bool)
+	}
+	if f.BlockPathClasses == nil {
+		f.BlockPathClasses = make(map[string]bool)
+	}
 	f.migratePSKModes()
 	if f.DXContinents == nil {
 		f.DXContinents = make(map[string]bool)
@@ -1987,6 +2161,9 @@ func (f *Filter) normalizeDefaults() {
 	}
 	if len(f.Confidence) == 0 {
 		f.AllConfidence = true
+	}
+	if len(f.PathClasses) == 0 {
+		f.AllPathClasses = true
 	}
 	if len(f.DXContinents) == 0 {
 		f.AllDXContinents = true

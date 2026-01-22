@@ -50,6 +50,28 @@ func GlyphForDB(ft8dB float64, mode string, cfg Config) string {
 	}
 }
 
+const (
+	classHigh     = "HIGH"
+	classMedium   = "MEDIUM"
+	classLow      = "LOW"
+	classUnlikely = "UNLIKELY"
+)
+
+// ClassForDB maps FT8-equiv dB to the threshold class name for filtering.
+func ClassForDB(ft8dB float64, mode string, cfg Config) string {
+	thresholds := thresholdsForMode(mode, cfg)
+	switch {
+	case ft8dB >= thresholds.High:
+		return classHigh
+	case ft8dB >= thresholds.Medium:
+		return classMedium
+	case ft8dB >= thresholds.Low:
+		return classLow
+	default:
+		return classUnlikely
+	}
+}
+
 func thresholdsForMode(mode string, cfg Config) GlyphThresholds {
 	key := normalizeMode(mode)
 	if cfg.ModeThresholds != nil {

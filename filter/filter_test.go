@@ -296,8 +296,8 @@ func TestDXCCFilters(t *testing.T) {
 func TestNormalizeDefaultsRestoresPermissiveFilters(t *testing.T) {
 	var f Filter
 	f.normalizeDefaults()
-	if !f.AllSources || !f.AllDXContinents || !f.AllDEContinents || !f.AllDXZones || !f.AllDEZones {
-		t.Fatalf("expected normalizeDefaults to restore permissive continent/zone flags")
+	if !f.AllSources || !f.AllPathClasses || !f.AllDXContinents || !f.AllDEContinents || !f.AllDXZones || !f.AllDEZones {
+		t.Fatalf("expected normalizeDefaults to restore permissive flags")
 	}
 }
 
@@ -554,5 +554,41 @@ func TestPSKVariantsMatchCanonicalModeFilter(t *testing.T) {
 
 	if !f.Matches(psk31) {
 		t.Fatalf("expected PSK31 variant to pass when PSK is allowed")
+	}
+}
+
+func TestPathFilterWhitelist(t *testing.T) {
+	f := NewFilter()
+	f.SetPathClass(PathClassHigh, true)
+
+	s := &spot.Spot{Mode: "CW", Band: "20m"}
+	if !f.MatchesWithPath(s, PathClassHigh) {
+		t.Fatalf("expected HIGH path class to pass when whitelisted")
+	}
+	if f.MatchesWithPath(s, PathClassLow) {
+		t.Fatalf("expected LOW path class to be rejected when only HIGH is allowed")
+	}
+}
+
+func TestPathFilterBlocklist(t *testing.T) {
+	f := NewFilter()
+	f.SetPathClass(PathClassHigh, false)
+
+	s := &spot.Spot{Mode: "CW", Band: "20m"}
+	if f.MatchesWithPath(s, PathClassHigh) {
+		t.Fatalf("expected HIGH path class to be rejected when blocked")
+	}
+	if !f.MatchesWithPath(s, PathClassLow) {
+		t.Fatalf("expected LOW path class to pass when only HIGH is blocked")
+	}
+}
+
+func TestMatchesDefaultsToInsufficientPathClass(t *testing.T) {
+	f := NewFilter()
+	f.SetPathClass(PathClassHigh, true)
+
+	s := &spot.Spot{Mode: "CW", Band: "20m"}
+	if f.Matches(s) {
+		t.Fatalf("expected default path class to be insufficient and fail HIGH-only filter")
 	}
 }

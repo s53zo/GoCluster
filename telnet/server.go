@@ -193,8 +193,10 @@ type Client struct {
 	// Without this lock, Go's runtime can terminate the process with:
 	// "fatal error: concurrent map read and map write"
 	// because Filter contains many maps.
-	filterMu          sync.RWMutex
-	filter            *filter.Filter // Personal spot filter (band, mode, callsign)
+	filterMu sync.RWMutex
+	filter   *filter.Filter // Personal spot filter (band, mode, callsign)
+	// pathMu guards grid/noise settings shared across goroutines.
+	pathMu            sync.RWMutex
 	dropCount         uint64         // Count of spots dropped for this client due to backpressure
 	pendingDeliveries sync.WaitGroup // Outstanding broadcast jobs referencing this client
 }
@@ -228,6 +230,7 @@ func (c *Client) saveFilter() error {
 	if callsign == "" {
 		return nil
 	}
+	state := c.pathSnapshot()
 	// Persisting the filter marshals multiple maps; guard with a read lock so it
 	// cannot run concurrently with PASS/REJECT updates. Broadcast workers also
 	// hold read locks while matching, so persistence does not stall spot delivery.
@@ -238,8 +241,8 @@ func (c *Client) saveFilter() error {
 		RecentIPs:    c.recentIPs,
 		Dialect:      string(c.dialect),
 		DedupePolicy: c.getDedupePolicy().label(),
-		Grid:         strings.ToUpper(strings.TrimSpace(c.grid)),
-		NoiseClass:   strings.ToUpper(strings.TrimSpace(c.noiseClass)),
+		Grid:         strings.ToUpper(strings.TrimSpace(state.grid)),
+		NoiseClass:   strings.ToUpper(strings.TrimSpace(state.noiseClass)),
 	}
 	if existing, err := filter.LoadUserRecord(callsign); err == nil {
 		record.RecentIPs = filter.MergeRecentIPs(record.RecentIPs, existing.RecentIPs)
@@ -275,6 +278,30 @@ func (c *Client) updateFilter(fn func(f *filter.Filter)) {
 	c.filterMu.Lock()
 	fn(c.filter)
 	c.filterMu.Unlock()
+}
+
+type pathState struct {
+	grid         string
+	gridDerived  bool
+	gridCell     pathreliability.CellID
+	noiseClass   string
+	noisePenalty float64
+}
+
+func (c *Client) pathSnapshot() pathState {
+	if c == nil {
+		return pathState{}
+	}
+	c.pathMu.RLock()
+	state := pathState{
+		grid:         c.grid,
+		gridDerived:  c.gridDerived,
+		gridCell:     c.gridCell,
+		noiseClass:   c.noiseClass,
+		noisePenalty: c.noisePenalty,
+	}
+	c.pathMu.RUnlock()
+	return state
 }
 
 type broadcastPayload struct {
@@ -403,8 +430,9 @@ func (s *Server) formatPathStatusMessage(client *Client) string {
 	if strings.TrimSpace(template) == "" {
 		return ""
 	}
-	grid := displayGrid(client.grid, client.gridDerived)
-	noise := strings.TrimSpace(client.noiseClass)
+	state := client.pathSnapshot()
+	grid := displayGrid(state.grid, state.gridDerived)
+	noise := strings.TrimSpace(state.noiseClass)
 	replacer := strings.NewReplacer(
 		"<GRID>", grid,
 		"<NOISE>", noise,
@@ -434,9 +462,11 @@ func (s *Server) handlePathSettingsCommand(client *Client, line string) (string,
 		if cell == pathreliability.InvalidCell {
 			return "Invalid grid. Please provide a 4-6 character Maidenhead locator.\n", true
 		}
+		client.pathMu.Lock()
 		client.grid = grid
 		client.gridDerived = false
 		client.gridCell = cell
+		client.pathMu.Unlock()
 		if err := client.saveFilter(); err != nil {
 			return fmt.Sprintf("Grid set to %s (warning: failed to persist: %v)\n", grid, err), true
 		}
@@ -450,8 +480,10 @@ func (s *Server) handlePathSettingsCommand(client *Client, line string) (string,
 		if class == "" || (penalty == 0 && class != "QUIET" && class != "RURAL" && class != "SUBURBAN" && class != "URBAN") {
 			return "Unknown noise class. Use QUIET, RURAL, SUBURBAN, or URBAN.\n", true
 		}
+		client.pathMu.Lock()
 		client.noiseClass = class
 		client.noisePenalty = penalty
+		client.pathMu.Unlock()
 		if err := client.saveFilter(); err != nil {
 			return fmt.Sprintf("Noise class set to %s (warning: failed to persist: %v)\n", class, err), true
 		}
@@ -611,10 +643,10 @@ const (
 )
 
 const (
-	passFilterUsageMsg      = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern>[,<pattern>...] | PASS DECALL <pattern>[,<pattern>...] | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; removes from block list; ALL allows all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
-	rejectFilterUsageMsg    = "Usage: REJECT <type> ...\nREJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER|ALL> | REJECT DXCALL <pattern>[,<pattern>...] | REJECT DECALL <pattern>[,<pattern>...] | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; removes from allow list; ALL blocks all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
-	unknownPassTypeMsg      = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
-	unknownRejectTypeMsg    = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
+	passFilterUsageMsg      = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern>[,<pattern>...] | PASS DECALL <pattern>[,<pattern>...] | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS PATH <class>[,<class>...] (classes: HIGH,MEDIUM,LOW,UNLIKELY,INSUFFICIENT or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; removes from block list; ALL allows all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
+	rejectFilterUsageMsg    = "Usage: REJECT <type> ...\nREJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER|ALL> | REJECT DXCALL <pattern>[,<pattern>...] | REJECT DECALL <pattern>[,<pattern>...] | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT PATH <class>[,<class>...] (classes: HIGH,MEDIUM,LOW,UNLIKELY,INSUFFICIENT or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; removes from allow list; ALL blocks all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
+	unknownPassTypeMsg      = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, PATH, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
+	unknownRejectTypeMsg    = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, PATH, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 	invalidFilterCommandMsg = "Invalid filter command. Type HELP for usage.\n"
 )
 
@@ -1192,8 +1224,17 @@ func (s *Server) deliverJob(job *broadcastJob) {
 					continue
 				}
 			} else {
+				pathClass := filter.PathClassInsufficient
 				client.filterMu.RLock()
-				matches := client.filter.Matches(job.spot)
+				f := client.filter
+				pathActive := f != nil && f.PathFilterActive()
+				pathBlockAll := f != nil && f.BlockAllPathClasses
+				client.filterMu.RUnlock()
+				if pathActive && !pathBlockAll {
+					pathClass = s.pathClassForClient(client, job.spot)
+				}
+				client.filterMu.RLock()
+				matches := f != nil && f.MatchesWithPath(job.spot, pathClass)
 				client.filterMu.RUnlock()
 				if !matches {
 					continue
@@ -1505,16 +1546,24 @@ func (s *Server) handleClient(conn net.Conn) {
 		}
 
 		// Process other commands
-		filterFn := func(s *spot.Spot) bool {
-			if s == nil {
+		filterFn := func(spotEntry *spot.Spot) bool {
+			if spotEntry == nil {
 				return false
 			}
-			if strings.EqualFold(s.DXCall, client.callsign) {
+			if strings.EqualFold(spotEntry.DXCall, client.callsign) {
 				return true
 			}
+			pathClass := filter.PathClassInsufficient
 			client.filterMu.RLock()
 			f := client.filter
-			matches := f != nil && f.Matches(s)
+			pathActive := f != nil && f.PathFilterActive()
+			pathBlockAll := f != nil && f.BlockAllPathClasses
+			client.filterMu.RUnlock()
+			if pathActive && !pathBlockAll {
+				pathClass = s.pathClassForClient(client, spotEntry)
+			}
+			client.filterMu.RLock()
+			matches := f != nil && f.MatchesWithPath(spotEntry, pathClass)
 			client.filterMu.RUnlock()
 			return matches
 		}
@@ -1659,10 +1708,20 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 	if !cfg.Enabled {
 		return ""
 	}
-	userCell := client.gridCell
-	if userCell == pathreliability.InvalidCell && strings.TrimSpace(client.grid) != "" {
-		userCell = pathreliability.EncodeCell(client.grid)
-		client.gridCell = userCell
+	state := client.pathSnapshot()
+	userCell := state.gridCell
+	grid := strings.TrimSpace(state.grid)
+	noisePenalty := state.noisePenalty
+	if userCell == pathreliability.InvalidCell && grid != "" {
+		cell := pathreliability.EncodeCell(grid)
+		if cell != pathreliability.InvalidCell {
+			client.pathMu.Lock()
+			if client.gridCell == pathreliability.InvalidCell && strings.EqualFold(strings.TrimSpace(client.grid), grid) {
+				client.gridCell = cell
+			}
+			userCell = client.gridCell
+			client.pathMu.Unlock()
+		}
 	}
 	if userCell == pathreliability.InvalidCell {
 		return ""
@@ -1677,7 +1736,7 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 	if dxCell == pathreliability.InvalidCell {
 		return ""
 	}
-	userGrid2 := pathreliability.EncodeGrid2(client.grid)
+	userGrid2 := pathreliability.EncodeGrid2(grid)
 	dxGrid2 := pathreliability.EncodeGrid2(sp.DXMetadata.Grid)
 
 	band := sp.BandNorm
@@ -1689,9 +1748,72 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 		mode = sp.Mode
 	}
 	now := time.Now().UTC()
-	res := s.pathPredictor.Predict(userCell, dxCell, userGrid2, dxGrid2, band, mode, client.noisePenalty, now)
+	res := s.pathPredictor.Predict(userCell, dxCell, userGrid2, dxGrid2, band, mode, noisePenalty, now)
 	g := res.Glyph
 	return g
+}
+
+func (s *Server) pathClassForClient(client *Client, sp *spot.Spot) string {
+	if s == nil || client == nil || sp == nil {
+		return filter.PathClassInsufficient
+	}
+	if s.pathPredictor == nil {
+		return filter.PathClassInsufficient
+	}
+	cfg := s.pathPredictor.Config()
+	if !cfg.Enabled {
+		return filter.PathClassInsufficient
+	}
+	state := client.pathSnapshot()
+	userCell := state.gridCell
+	grid := strings.TrimSpace(state.grid)
+	noisePenalty := state.noisePenalty
+	if userCell == pathreliability.InvalidCell && grid != "" {
+		cell := pathreliability.EncodeCell(grid)
+		if cell != pathreliability.InvalidCell {
+			client.pathMu.Lock()
+			if client.gridCell == pathreliability.InvalidCell && strings.EqualFold(strings.TrimSpace(client.grid), grid) {
+				client.gridCell = cell
+			}
+			userCell = client.gridCell
+			client.pathMu.Unlock()
+		}
+	}
+	if userCell == pathreliability.InvalidCell {
+		return filter.PathClassInsufficient
+	}
+	dxCell := pathreliability.InvalidCell
+	if sp.DXCellID != 0 && sp.DXCellID != 0xffff {
+		dxCell = pathreliability.CellID(sp.DXCellID)
+	}
+	if dxCell == pathreliability.InvalidCell {
+		dxCell = pathreliability.EncodeCell(sp.DXMetadata.Grid)
+	}
+	if dxCell == pathreliability.InvalidCell {
+		return filter.PathClassInsufficient
+	}
+	userGrid2 := pathreliability.EncodeGrid2(grid)
+	dxGrid2 := pathreliability.EncodeGrid2(sp.DXMetadata.Grid)
+
+	band := strings.TrimSpace(sp.BandNorm)
+	if band == "" {
+		band = strings.TrimSpace(sp.Band)
+	}
+	if band == "" {
+		band = spot.FreqToBand(sp.Frequency)
+	}
+	band = strings.TrimSpace(spot.NormalizeBand(band))
+
+	mode := strings.TrimSpace(sp.ModeNorm)
+	if mode == "" {
+		mode = strings.TrimSpace(sp.Mode)
+	}
+	now := time.Now().UTC()
+	res := s.pathPredictor.Predict(userCell, dxCell, userGrid2, dxGrid2, band, mode, noisePenalty, now)
+	if res.Weight < cfg.MinEffectiveWeight {
+		return filter.PathClassInsufficient
+	}
+	return pathreliability.ClassForDB(res.Value, mode, cfg)
 }
 
 func diagTagForSpot(client *Client, sp *spot.Spot) string {
@@ -1990,11 +2112,12 @@ func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin 
 	dedupePolicy := filter.DedupePolicyFast
 	if client != nil {
 		callsign = client.callsign
-		grid = displayGrid(client.grid, client.gridDerived)
+		state := client.pathSnapshot()
+		grid = displayGrid(state.grid, state.gridDerived)
 		if grid == "" {
 			grid = "unset"
 		}
-		noise = strings.TrimSpace(client.noiseClass)
+		noise = strings.TrimSpace(state.noiseClass)
 		dialect = strings.ToUpper(string(client.dialect))
 		dedupePolicy = client.getDedupePolicy().label()
 	}

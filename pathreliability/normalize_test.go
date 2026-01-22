@@ -25,6 +25,22 @@ func TestGlyphForDB(t *testing.T) {
 	}
 }
 
+func TestClassForDB(t *testing.T) {
+	cfg := DefaultConfig()
+	if got := ClassForDB(-12, "FT8", cfg); got != "HIGH" {
+		t.Fatalf("expected HIGH for -12 dB, got %q", got)
+	}
+	if got := ClassForDB(-16, "FT8", cfg); got != "MEDIUM" {
+		t.Fatalf("expected MEDIUM for -16 dB, got %q", got)
+	}
+	if got := ClassForDB(-20, "FT8", cfg); got != "LOW" {
+		t.Fatalf("expected LOW for -20 dB, got %q", got)
+	}
+	if got := ClassForDB(-30, "FT8", cfg); got != "UNLIKELY" {
+		t.Fatalf("expected UNLIKELY for -30 dB, got %q", got)
+	}
+}
+
 func TestGlyphForDBUsesCustomSymbols(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.GlyphSymbols = GlyphSymbols{

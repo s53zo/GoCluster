@@ -182,7 +182,7 @@ Filter management commands use a table-driven engine in `telnet/server.go` with 
 
 - Operator note: `RESET FILTER` re-applies the configured defaults from `data/config/runtime.yaml` (`filter.default_modes` and `filter.default_sources`). `SET/NOFILTER` is CC-only and resets to a fully permissive "all pass" state; it does not use configured defaults.
 
-- `SHOW FILTER` - prints a full snapshot of filter state (allow/block + effective) for bands, modes, sources, continents, zones, DXCC, grids, confidence, callsigns, and toggles.
+- `SHOW FILTER` - prints a full snapshot of filter state (allow/block + effective) for bands, modes, sources, continents, zones, DXCC, grids, confidence, path classes, callsigns, and toggles.
 
 Tokenized `SHOW FILTER <type>` / `SHOW/FILTER <type>` forms are deprecated; they return the full snapshot with a warning.
 Effective labels in the snapshot use a fixed vocabulary: `all pass`, `all except: <items>`, `only: <items>`, `none pass`, `all blocked`.
@@ -196,6 +196,7 @@ Effective labels in the snapshot use a fixed vocabulary: `all pass`, `all except
 - `PASS DXCALL <pattern>[,<pattern>...]` - begins delivering only spots with DX calls matching the supplied patterns.
 - `PASS DECALL <pattern>[,<pattern>...]` - begins delivering only spots with DE/spotter calls matching the supplied patterns.
 - `PASS CONFIDENCE <symbol>[,<symbol>...]` - enables the comma- or space-separated list of consensus glyphs (valid symbols: `?`, `S`, `C`, `P`, `V`, `B`; use `ALL` to accept every glyph).
+- `PASS PATH <class>[,<class>...]` - enables the comma- or space-separated list of path prediction classes (HIGH/MEDIUM/LOW/UNLIKELY/INSUFFICIENT; use `ALL` to accept every class). When the path predictor is disabled, PATH commands are ignored with a warning.
 - `PASS BEACON` - explicitly enable delivery of beacon spots (DX calls ending `/B`; enabled by default).
 - `PASS SELF` - always deliver spots where the DX callsign matches your normalized callsign (even if filters would normally block).
 - `REJECT BAND <band>[,<band>...]` - disables only the comma- or space-separated list of bands provided (use `ALL` to block every band).
@@ -207,12 +208,13 @@ Effective labels in the snapshot use a fixed vocabulary: `all pass`, `all except
 - `REJECT DXCALL <pattern>[,<pattern>...]` - blocks the supplied DX callsign patterns.
 - `REJECT DECALL <pattern>[,<pattern>...]` - blocks the supplied DE callsign patterns.
 - `REJECT CONFIDENCE <symbol>[,<symbol>...]` - disables only the comma- or space-separated list of glyphs provided (use `ALL` to block every glyph).
+- `REJECT PATH <class>[,<class>...]` - disables the comma- or space-separated list of path prediction classes (use `ALL` to block every class).
 - `REJECT BEACON` - drop beacon spots entirely (they remain tagged internally for future processing).
 - `REJECT SELF` - suppress all spots where the DX callsign matches your normalized callsign.
 
 Confidence glyphs are only emitted for modes that run consensus-based correction (CW/RTTY/USB/LSB voice modes). FT8/FT4 spots carry no confidence glyphs, so confidence filters do not affect them. After correction assigns `P`/`V`/`C`/`?`, any remaining `?` is upgraded to `S` when the DX call is present in `MASTER.SCP`.
 
-Band, mode, confidence, and DXGRID2/DEGRID2 commands share identical semantics: they accept comma- or space-separated lists, ignore duplicates/case, and treat the literal `ALL` as a shorthand to allow or block everything for that type. PASS/REJECT add to allow/block lists and remove the same items from the opposite list. DXGRID2 applies only to the DX grid when it is exactly two characters long; DEGRID2 applies only to the DE grid when it is exactly two characters long. 4/6-character or empty grids are unaffected, and longer tokens provided by the user are truncated to their first two characters before validation.
+Band, mode, confidence, PATH, and DXGRID2/DEGRID2 commands share identical semantics: they accept comma- or space-separated lists, ignore duplicates/case, and treat the literal `ALL` as a shorthand to allow or block everything for that type. PASS/REJECT add to allow/block lists and remove the same items from the opposite list. DXGRID2 applies only to the DX grid when it is exactly two characters long; DEGRID2 applies only to the DE grid when it is exactly two characters long. 4/6-character or empty grids are unaffected, and longer tokens provided by the user are truncated to their first two characters before validation.
 SELF matches the normalized DX callsign only; when a spot is suppressed by secondary dedupe, a matching client still receives it if SELF is enabled. This delivery is per-client and does not bypass secondary dedupe for the global broadcast stream.
 
 Confidence indicator legend in telnet output:

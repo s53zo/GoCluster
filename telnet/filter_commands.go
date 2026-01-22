@@ -103,6 +103,7 @@ func (e *filterCommandEngine) registerDomains() {
 		newCallPatternHandler("DXCALL"),
 		newCallPatternHandler("DECALL"),
 		newConfidenceHandler(),
+		newPathHandler(),
 		newContinentHandler("DXCONT", func(f *filter.Filter, value string, allowed bool) { f.SetDXContinent(value, allowed) },
 			func(f *filter.Filter) (bool, bool, map[string]bool, map[string]bool) {
 				return f.AllDXContinents, f.BlockAllDXContinents, f.DXContinents, f.BlockDXContinents
@@ -782,6 +783,78 @@ func newConfidenceHandler() *domainHandler {
 	}
 }
 
+func pathFilteringAvailable(c *Client) bool {
+	if c == nil || c.server == nil || c.server.pathPredictor == nil {
+		return false
+	}
+	cfg := c.server.pathPredictor.Config()
+	return cfg.Enabled
+}
+
+func newPathHandler() *domainHandler {
+	return &domainHandler{
+		name: "PATH",
+		apply: func(c *Client, action filterAction, args []string) (string, bool) {
+			if !pathFilteringAvailable(c) {
+				return "PATH filtering unavailable (path predictor disabled). Command ignored.\n", false
+			}
+			value := strings.TrimSpace(strings.Join(args, " "))
+			switch action {
+			case actionAllow:
+				if value == "" {
+					return "Usage: PASS PATH <class>[,<class>...] (HIGH, MEDIUM, LOW, UNLIKELY, INSUFFICIENT, or ALL)\nType HELP for usage.\n", false
+				}
+				if strings.EqualFold(value, "ALL") {
+					c.updateFilter(func(f *filter.Filter) { f.ResetPathClasses() })
+					return "All path classes enabled\n", true
+				}
+				classes := parsePathClassList(value)
+				if len(classes) == 0 {
+					return "Usage: PASS PATH <class>[,<class>...] (HIGH, MEDIUM, LOW, UNLIKELY, INSUFFICIENT, or ALL)\nType HELP for usage.\n", false
+				}
+				invalid := collectInvalidPathClasses(classes)
+				if len(invalid) > 0 {
+					return fmt.Sprintf("Unknown path class: %s\nSupported classes: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedPathClasses, ", ")), false
+				}
+				c.updateFilter(func(f *filter.Filter) {
+					for _, class := range classes {
+						f.SetPathClass(class, true)
+					}
+				})
+				return fmt.Sprintf("Path classes enabled: %s\n", strings.Join(classes, ", ")), true
+			case actionBlock:
+				if value == "" {
+					return "Usage: REJECT PATH <class>[,<class>...] (comma or space separated, or ALL)\nType HELP for usage.\n", false
+				}
+				if strings.EqualFold(value, "ALL") {
+					c.updateFilter(func(f *filter.Filter) {
+						f.ResetPathClasses()
+						f.BlockAllPathClasses = true
+						f.AllPathClasses = false
+					})
+					return "All path classes blocked\n", true
+				}
+				classes := parsePathClassList(value)
+				if len(classes) == 0 {
+					return "Usage: REJECT PATH <class>[,<class>...] (comma or space separated, or ALL)\nType HELP for usage.\n", false
+				}
+				invalid := collectInvalidPathClasses(classes)
+				if len(invalid) > 0 {
+					return fmt.Sprintf("Unknown path class: %s\nSupported classes: %s\n", strings.Join(invalid, ", "), strings.Join(filter.SupportedPathClasses, ", ")), false
+				}
+				c.updateFilter(func(f *filter.Filter) {
+					for _, class := range classes {
+						f.SetPathClass(class, false)
+					}
+				})
+				return fmt.Sprintf("Path classes disabled: %s\n", strings.Join(classes, ", ")), true
+			default:
+				return invalidFilterCommandMsg, false
+			}
+		},
+	}
+}
+
 func newContinentHandler(name string, setter func(*filter.Filter, string, bool), snapshot func(*filter.Filter) (bool, bool, map[string]bool, map[string]bool)) *domainHandler {
 	return &domainHandler{
 		name: name,
@@ -1241,6 +1314,7 @@ func formatFilterSnapshot(f *filter.Filter, ctyLookup func() *cty.CTYDatabase) s
 	modes := snapshotAllowBlockStrings(f.AllModes, f.BlockAllModes, f.Modes, f.BlockModes, filter.SupportedModes)
 	sources := snapshotAllowBlockStrings(f.AllSources, f.BlockAllSources, f.Sources, f.BlockSources, filter.SupportedSources)
 	confidence := snapshotAllowBlockStrings(f.AllConfidence, f.BlockAllConfidence, f.Confidence, f.BlockConfidence, filter.SupportedConfidenceSymbols)
+	pathClasses := snapshotAllowBlockStrings(f.AllPathClasses, f.BlockAllPathClasses, f.PathClasses, f.BlockPathClasses, filter.SupportedPathClasses)
 	dxCont := snapshotAllowBlockStrings(f.AllDXContinents, f.BlockAllDXContinents, f.DXContinents, f.BlockDXContinents, filter.SupportedContinents)
 	deCont := snapshotAllowBlockStrings(f.AllDEContinents, f.BlockAllDEContinents, f.DEContinents, f.BlockDEContinents, filter.SupportedContinents)
 	dxZone := snapshotAllowBlockIntsRange(f.AllDXZones, f.BlockAllDXZones, f.DXZones, f.BlockDXZones, filter.MinCQZone(), filter.MaxCQZone())
@@ -1274,6 +1348,7 @@ func formatFilterSnapshot(f *filter.Filter, ctyLookup func() *cty.CTYDatabase) s
 		clampSummaryField(dxCallSummary, maxFieldLen),
 		clampSummaryField(deCallSummary, maxFieldLen),
 		summaryAllowBlockField("CONFIDENCE", confidence, maxFieldLen),
+		summaryAllowBlockField("PATH", pathClasses, maxFieldLen),
 		summaryAllowBlockField("DXCONT", dxCont, maxFieldLen),
 		summaryAllowBlockField("DECONT", deCont, maxFieldLen),
 		summaryAllowBlockField("DXZONE", dxZone, maxFieldLen),
@@ -1298,6 +1373,7 @@ func formatFilterSnapshot(f *filter.Filter, ctyLookup func() *cty.CTYDatabase) s
 	b.WriteString(dxCallLine)
 	b.WriteString(deCallLine)
 	b.WriteString(formatAllowBlockLine("CONFIDENCE", confidence))
+	b.WriteString(formatAllowBlockLine("PATH", pathClasses))
 	b.WriteString(formatAllowBlockLine("DXCONT", dxCont))
 	b.WriteString(formatAllowBlockLine("DECONT", deCont))
 	b.WriteString(formatAllowBlockLine("DXZONE", dxZone))
@@ -1680,6 +1756,24 @@ func parseConfidenceList(arg string) []string {
 	return symbols
 }
 
+func parsePathClassList(arg string) []string {
+	values := splitListValues(arg)
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	classes := make([]string, 0, len(values))
+	for _, value := range values {
+		class := strings.ToUpper(strings.TrimSpace(value))
+		if class == "" || seen[class] {
+			continue
+		}
+		classes = append(classes, class)
+		seen[class] = true
+	}
+	return classes
+}
+
 func parseContinentList(arg string) []string {
 	values := splitListValues(arg)
 	if len(values) == 0 {
@@ -1791,6 +1885,16 @@ func collectInvalidConfidenceSymbols(symbols []string) []string {
 	for _, symbol := range symbols {
 		if !filter.IsSupportedConfidenceSymbol(symbol) {
 			invalid = append(invalid, symbol)
+		}
+	}
+	return invalid
+}
+
+func collectInvalidPathClasses(classes []string) []string {
+	invalid := make([]string, 0)
+	for _, class := range classes {
+		if !filter.IsSupportedPathClass(class) {
+			invalid = append(invalid, class)
 		}
 	}
 	return invalid
