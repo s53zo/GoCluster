@@ -35,7 +35,8 @@ func TestGridLookupSyncUsesBaseIdentity(t *testing.T) {
 	}
 
 	cache := newCallMetaCache(64, 0)
-	_, _, _, stop, gridLookup, gridLookupSync := startGridWriter(store, 50*time.Millisecond, cache, 0, true, nil)
+	storeHandle := newGridStoreHandle(store)
+	_, _, _, stop, gridLookup, gridLookupSync := startGridWriter(storeHandle, 50*time.Millisecond, cache, 0, true, nil)
 	defer store.Close()
 	if stop != nil {
 		defer stop()
@@ -112,7 +113,8 @@ func TestGridLookupDerivesWhenRecordMissingGrid(t *testing.T) {
 
 	cache := newCallMetaCache(64, 0)
 	ctyLookup := func() *cty.CTYDatabase { return db }
-	_, _, _, stop, gridLookup, gridLookupSync := startGridWriter(store, 50*time.Millisecond, cache, 0, true, ctyLookup)
+	storeHandle := newGridStoreHandle(store)
+	_, _, _, stop, gridLookup, gridLookupSync := startGridWriter(storeHandle, 50*time.Millisecond, cache, 0, true, ctyLookup)
 	defer store.Close()
 	if stop != nil {
 		defer stop()

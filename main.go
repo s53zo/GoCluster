@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"math"
 	"net/http"
@@ -47,6 +49,7 @@ import (
 	"dxcluster/telnet"
 	"dxcluster/uls"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/dustin/go-humanize"
 	"golang.org/x/term"
 )
@@ -196,6 +199,58 @@ const (
 	gridSyncLookupQueueDepth = 512
 	gridSyncLookupTimeout    = 8 * time.Millisecond
 )
+
+const (
+	gridCheckpointDirName       = "checkpoint"
+	gridCheckpointInterval      = time.Hour
+	gridCheckpointRetention     = 24 * time.Hour
+	gridCheckpointVerifyTimeout = 30 * time.Second
+	gridIntegrityScanTimeout    = 5 * time.Minute
+	gridIntegrityScanUTC        = "05:00"
+	gridRestoreWarnAfter        = 60 * time.Second
+	gridCheckpointNameLayoutUTC = "2006-01-02T15-04-05Z"
+)
+
+type gridStoreHandle struct {
+	store atomic.Pointer[gridstore.Store]
+}
+
+func newGridStoreHandle(store *gridstore.Store) *gridStoreHandle {
+	handle := &gridStoreHandle{}
+	if store != nil {
+		handle.store.Store(store)
+	}
+	return handle
+}
+
+func (h *gridStoreHandle) Store() *gridstore.Store {
+	if h == nil {
+		return nil
+	}
+	return h.store.Load()
+}
+
+func (h *gridStoreHandle) Available() bool {
+	return h.Store() != nil
+}
+
+func (h *gridStoreHandle) Set(store *gridstore.Store) {
+	if h == nil {
+		return
+	}
+	h.store.Store(store)
+}
+
+func (h *gridStoreHandle) Close() error {
+	if h == nil {
+		return nil
+	}
+	store := h.Store()
+	if store == nil {
+		return nil
+	}
+	return store.Close()
+}
 
 type gridLookupRequest struct {
 	baseCall string
@@ -561,31 +616,41 @@ func main() {
 		L0StopWritesThreshold: cfg.GridL0StopWrites,
 		WriteQueueDepth:       cfg.GridWriteQueueDepth,
 	}
+	gridStoreHandle := newGridStoreHandle(nil)
 	gridStore, err := gridstore.Open(cfg.GridDBPath, gridOpts)
 	if err != nil {
-		log.Fatalf("Failed to open grid database: %v", err)
-	}
-	defer gridStore.Close()
-	if known := knownCalls.Load(); known != nil {
-		if err := seedKnownCalls(gridStore, known); err != nil {
-			log.Printf("Warning: failed to seed known calls into grid database: %v", err)
+		if pebble.IsCorruptionError(err) {
+			log.Printf("Gridstore: corruption detected on open (%v); starting checkpoint restore", err)
+			startGridStoreRecovery(ctx, gridStoreHandle, cfg.GridDBPath, gridOpts, &knownCalls, metaCache)
+		} else {
+			log.Fatalf("Failed to open grid database: %v", err)
+		}
+	} else {
+		gridStoreHandle.Set(gridStore)
+		if known := knownCalls.Load(); known != nil {
+			if err := seedKnownCalls(gridStore, known); err != nil {
+				log.Printf("Warning: failed to seed known calls into grid database: %v", err)
+			}
 		}
 	}
+	defer gridStoreHandle.Close()
 
 	gridDBCheckOnMiss, gridDBCheckSource := gridDBCheckOnMissEnabled(cfg)
 	log.Printf("Gridstore: db_check_on_miss=%v (source=%s)", gridDBCheckOnMiss, gridDBCheckSource)
 
 	gridTTL := time.Duration(cfg.GridTTLDays) * 24 * time.Hour
-	gridUpdater, ctyUpdater, gridUpdateState, stopGridWriter, gridLookup, gridLookupSync := startGridWriter(gridStore, time.Duration(cfg.GridFlushSec)*time.Second, metaCache, gridTTL, gridDBCheckOnMiss, ctyLookup)
+	gridUpdater, ctyUpdater, gridUpdateState, stopGridWriter, gridLookup, gridLookupSync := startGridWriter(gridStoreHandle, time.Duration(cfg.GridFlushSec)*time.Second, metaCache, gridTTL, gridDBCheckOnMiss, ctyLookup)
 	defer func() {
 		if stopGridWriter != nil {
 			stopGridWriter()
 		}
 	}()
+	startGridCheckpointScheduler(ctx, gridStoreHandle, cfg.GridDBPath)
+	startGridIntegrityScheduler(ctx, gridStoreHandle)
 
 	if cfg.KnownCalls.Enabled && knownCallsURL != "" && knownCallsPath != "" {
 		if knownCalls.Load() != nil {
-			startKnownCallScheduler(ctx, cfg.KnownCalls, &knownCalls, gridStore, metaCache)
+			startKnownCallScheduler(ctx, cfg.KnownCalls, &knownCalls, gridStoreHandle, metaCache)
 		} else {
 			log.Printf("Warning: known calls scheduler disabled (no initial data); ensure %s is reachable", cfg.KnownCalls.URL)
 		}
@@ -915,7 +980,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStore, cfg.FCCULS.DBPath, pathPredictor)
+	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -1200,7 +1265,7 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridstore.Store, fccDBPath string, pathPredictor *pathreliability.Predictor) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -2591,7 +2656,7 @@ func skewRefreshHourMinute(cfg config.SkewConfig) (int, int) {
 // Downstream: refreshKnownCallsigns, seedKnownCalls, and time.NewTimer.
 // startKnownCallScheduler downloads the known-calls file at the configured UTC
 // time every day and updates the in-memory cache pointer after each refresh.
-func startKnownCallScheduler(ctx context.Context, cfg config.KnownCallsConfig, knownPtr *atomic.Pointer[spot.KnownCallsigns], store *gridstore.Store, metaCache *callMetaCache) {
+func startKnownCallScheduler(ctx context.Context, cfg config.KnownCallsConfig, knownPtr *atomic.Pointer[spot.KnownCallsigns], store *gridStoreHandle, metaCache *callMetaCache) {
 	if knownPtr == nil {
 		return
 	}
@@ -2615,8 +2680,10 @@ func startKnownCallScheduler(ctx context.Context, cfg config.KnownCallsConfig, k
 				knownPtr.Store(fresh)
 				log.Printf("Scheduled known calls download complete (%d entries)", fresh.Count())
 				if store != nil {
-					if err := seedKnownCalls(store, fresh); err != nil {
-						log.Printf("Warning: failed to reseed known calls into grid database: %v", err)
+					if db := store.Store(); db != nil {
+						if err := seedKnownCalls(db, fresh); err != nil {
+							log.Printf("Warning: failed to reseed known calls into grid database: %v", err)
+						}
 					}
 				}
 				if metaCache != nil {
@@ -2838,8 +2905,8 @@ func ctyRefreshHourMinute(cfg config.CTYConfig) (int, int) {
 // Purpose: Format the grid database status line for stats output.
 // Key aspects: Uses cache hit rate, lookup rate, and drop counts when available.
 // Upstream: displayStatsWithFCC.
-// Downstream: gridstore.Store.Count and humanize.Comma.
-func formatGridLine(metrics *gridMetrics, store *gridstore.Store, predictor *pathreliability.Predictor) string {
+// Downstream: gridStoreHandle.Store().Count and humanize.Comma.
+func formatGridLine(metrics *gridMetrics, store *gridStoreHandle, predictor *pathreliability.Predictor) string {
 	updatesSinceStart := metrics.learnedTotal.Load()
 	cacheLookups := metrics.cacheLookups.Load()
 	cacheHits := metrics.cacheHits.Load()
@@ -2848,10 +2915,12 @@ func formatGridLine(metrics *gridMetrics, store *gridstore.Store, predictor *pat
 
 	dbTotal := int64(-1)
 	if store != nil {
-		if count, err := store.Count(); err == nil {
-			dbTotal = count
-		} else {
-			log.Printf("Warning: gridstore count failed: %v", err)
+		if db := store.Store(); db != nil {
+			if count, err := db.Count(); err == nil {
+				dbTotal = count
+			} else {
+				log.Printf("Warning: gridstore count failed: %v", err)
+			}
 		}
 	}
 	hitRate := 0.0
@@ -2992,7 +3061,7 @@ func formatFCCLine(fcc *fccSnapshot) string {
 // Key aspects: Falls back to a placeholder when metrics/store missing.
 // Upstream: displayStatsWithFCC.
 // Downstream: formatGridLine.
-func formatGridLineOrPlaceholder(metrics *gridMetrics, store *gridstore.Store, predictor *pathreliability.Predictor) string {
+func formatGridLineOrPlaceholder(metrics *gridMetrics, store *gridStoreHandle, predictor *pathreliability.Predictor) string {
 	if metrics == nil {
 		return "Grids: (not available)"
 	}
@@ -3065,9 +3134,12 @@ func seedKnownCalls(store *gridstore.Store, known *spot.KnownCallsigns) error {
 // Key aspects: Provides enqueue, metrics, stop, lookup functions, and CTY-derived grids on misses.
 // Upstream: main grid store setup.
 // Downstream: gridstore.Store and callMetaCache methods.
-func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache *callMetaCache, ttl time.Duration, dbCheckOnMiss bool, ctyLookup func() *cty.CTYDatabase) (func(call, grid string), func(call string, info *cty.PrefixInfo), *gridMetrics, func(), func(call string) (string, bool, bool), func(call string) (string, bool, bool)) {
-	if store == nil {
-		return nil, nil, nil, nil, nil, nil
+func startGridWriter(storeHandle *gridStoreHandle, flushInterval time.Duration, cache *callMetaCache, ttl time.Duration, dbCheckOnMiss bool, ctyLookup func() *cty.CTYDatabase) (func(call, grid string), func(call string, info *cty.PrefixInfo), *gridMetrics, func(), func(call string) (string, bool, bool), func(call string) (string, bool, bool)) {
+	if storeHandle == nil {
+		noop := func(string, string) {}
+		noopCTY := func(string, *cty.PrefixInfo) {}
+		noopLookup := func(string) (string, bool, bool) { return "", false, false }
+		return noop, noopCTY, &gridMetrics{}, func() {}, noopLookup, noopLookup
 	}
 	if flushInterval <= 0 {
 		flushInterval = 60 * time.Second
@@ -3077,6 +3149,12 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 	// Sync lookups are opt-in per caller so the main hot path stays non-blocking.
 	asyncLookupEnabled := dbCheckOnMiss
 	syncLookupEnabled := dbCheckOnMiss && gridSyncLookupWorkers > 0 && gridSyncLookupQueueDepth > 0 && gridSyncLookupTimeout > 0
+	getStore := func() *gridstore.Store {
+		return storeHandle.Store()
+	}
+	storeAvailable := func() bool {
+		return storeHandle.Available()
+	}
 	updates := make(chan gridstore.Record, 8192)
 	done := make(chan struct{})
 	lookupQueue := make(chan gridLookupRequest, 4096)
@@ -3129,18 +3207,9 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 			return nil, nil
 		}
 		var baseRec *gridstore.Record
-		rec, err := store.Get(baseCall)
-		if err != nil {
-			return nil, err
-		}
-		if rec != nil {
-			if rec.Grid.Valid {
-				return rec, nil
-			}
-			baseRec = rec
-		}
-		if rawCall != "" && rawCall != baseCall {
-			rec, err = store.Get(rawCall)
+		store := getStore()
+		if store != nil {
+			rec, err := store.Get(baseCall)
 			if err != nil {
 				return nil, err
 			}
@@ -3148,8 +3217,20 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 				if rec.Grid.Valid {
 					return rec, nil
 				}
-				if baseRec == nil {
-					baseRec = rec
+				baseRec = rec
+			}
+			if rawCall != "" && rawCall != baseCall {
+				rec, err = store.Get(rawCall)
+				if err != nil {
+					return nil, err
+				}
+				if rec != nil {
+					if rec.Grid.Valid {
+						return rec, nil
+					}
+					if baseRec == nil {
+						baseRec = rec
+					}
 				}
 			}
 		}
@@ -3200,10 +3281,12 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 				derivedRec.CTYCountry = baseRec.CTYCountry
 			}
 		}
-		select {
-		case updates <- derivedRec:
-		default:
-			// Drop silently to avoid backpressure on the lookup pipeline.
+		if storeAvailable() {
+			select {
+			case updates <- derivedRec:
+			default:
+				// Drop silently to avoid backpressure on the lookup pipeline.
+			}
 		}
 		return &derivedRec, nil
 	}
@@ -3231,6 +3314,11 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		// Downstream: store.UpsertBatch, metrics.learnedTotal.
 		flush := func() {
 			if len(pending) == 0 {
+				return
+			}
+			store := getStore()
+			if store == nil {
+				clear(pending)
 				return
 			}
 			batch := make([]gridstore.Record, 0, len(pending))
@@ -3284,6 +3372,10 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 			case <-ticker.C:
 				flush()
 			case <-ttlCh:
+				store := getStore()
+				if store == nil {
+					continue
+				}
 				cutoff := time.Now().UTC().Add(-ttl)
 				if removed, err := store.PurgeOlderThan(cutoff); err != nil {
 					log.Printf("Warning: gridstore TTL purge failed: %v", err)
@@ -3305,6 +3397,9 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 			return
 		}
 		if cache != nil && !cache.UpdateGrid(call, grid, false) {
+			return
+		}
+		if !storeAvailable() {
 			return
 		}
 		now := time.Now().UTC()
@@ -3332,6 +3427,9 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 		}
 		call = normalizeCallForMetadata(call)
 		if call == "" {
+			return
+		}
+		if !storeAvailable() {
 			return
 		}
 		now := time.Now().UTC()
@@ -3386,7 +3484,7 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 			}
 		}
 		// Cache miss: enqueue async lookup to avoid blocking output.
-		if asyncLookupEnabled {
+		if asyncLookupEnabled && storeAvailable() {
 			lookupPendingMu.Lock()
 			if _, exists := lookupPending[baseCall]; !exists {
 				lookupPending[baseCall] = struct{}{}
@@ -3487,6 +3585,9 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 					return grid, derived, true
 				}
 			}
+			if !storeAvailable() {
+				return "", false, false
+			}
 			resp := make(chan gridLookupResult, 1)
 			req := gridLookupRequest{baseCall: baseCall, rawCall: rawCall, resp: resp}
 			deadline := time.Now().Add(gridSyncLookupTimeout)
@@ -3522,6 +3623,415 @@ func startGridWriter(store *gridstore.Store, flushInterval time.Duration, cache 
 	}
 
 	return gridUpdateFn, ctyUpdateFn, metrics, stopFn, lookupFn, lookupSyncFn
+}
+
+func startGridCheckpointScheduler(ctx context.Context, storeHandle *gridStoreHandle, dbPath string) {
+	if storeHandle == nil || strings.TrimSpace(dbPath) == "" {
+		return
+	}
+	go func() {
+		for {
+			delay := nextGridCheckpointDelay(time.Now().UTC())
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			store := storeHandle.Store()
+			if store == nil {
+				log.Printf("Gridstore: checkpoint skipped (store unavailable)")
+				continue
+			}
+			root := gridCheckpointRoot(dbPath)
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				log.Printf("Gridstore: checkpoint mkdir failed: %v", err)
+				continue
+			}
+			ts := time.Now().UTC().Format(gridCheckpointNameLayoutUTC)
+			tmp := filepath.Join(root, ".tmp-"+ts)
+			dest := filepath.Join(root, ts)
+			if err := store.Checkpoint(tmp); err != nil {
+				log.Printf("Gridstore: checkpoint failed: %v", err)
+				_ = os.RemoveAll(tmp)
+				continue
+			}
+			if err := os.Rename(tmp, dest); err != nil {
+				log.Printf("Gridstore: checkpoint rename failed: %v", err)
+				_ = os.RemoveAll(tmp)
+				continue
+			}
+			log.Printf("Gridstore: checkpoint created at %s", dest)
+			if removed, err := cleanupGridCheckpoints(root, time.Now().UTC()); err != nil {
+				log.Printf("Gridstore: checkpoint cleanup failed: %v", err)
+			} else if removed > 0 {
+				log.Printf("Gridstore: checkpoint cleanup removed %d old checkpoint(s)", removed)
+			}
+		}
+	}()
+}
+
+func startGridIntegrityScheduler(ctx context.Context, storeHandle *gridStoreHandle) {
+	if storeHandle == nil {
+		return
+	}
+	go func() {
+		for {
+			delay := nextDailyUTC(gridIntegrityScanUTC, time.Now().UTC(), 5, 0)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			store := storeHandle.Store()
+			if store == nil {
+				log.Printf("Gridstore: integrity scan skipped (store unavailable)")
+				continue
+			}
+			scanCtx, cancel := context.WithTimeout(ctx, gridIntegrityScanTimeout)
+			stats, err := store.Verify(scanCtx, gridIntegrityScanTimeout)
+			cancel()
+			if err != nil {
+				log.Printf("Gridstore: integrity scan failed: %v", err)
+				continue
+			}
+			countNote := "count_meta=missing"
+			if stats.CountMetaValid {
+				countNote = fmt.Sprintf("count_meta=%d", stats.CountMeta)
+			} else if stats.CountMetaErr != nil {
+				countNote = fmt.Sprintf("count_meta_err=%v", stats.CountMetaErr)
+			}
+			log.Printf("Gridstore: integrity scan ok (records=%d duration=%s %s)", stats.Records, stats.Duration, countNote)
+		}
+	}()
+}
+
+func startGridStoreRecovery(ctx context.Context, storeHandle *gridStoreHandle, dbPath string, opts gridstore.Options, knownPtr *atomic.Pointer[spot.KnownCallsigns], metaCache *callMetaCache) {
+	if storeHandle == nil {
+		return
+	}
+	storeHandle.Set(nil)
+	log.Printf("Gridstore: running without persistence during checkpoint restore (updates dropped)")
+	go func() {
+		start := time.Now()
+		timer := time.NewTimer(gridRestoreWarnAfter)
+		defer timer.Stop()
+		restoreDone := make(chan struct{})
+		defer close(restoreDone)
+		go func() {
+			select {
+			case <-timer.C:
+				log.Printf("Gridstore: restore still in progress after %s", gridRestoreWarnAfter)
+			case <-restoreDone:
+			}
+		}()
+
+		store, checkpointPath, err := restoreGridStoreFromCheckpoint(ctx, dbPath, opts)
+		if err != nil {
+			log.Printf("Gridstore: checkpoint restore failed: %v", err)
+			return
+		}
+		if ctx.Err() != nil {
+			_ = store.Close()
+			return
+		}
+		storeHandle.Set(store)
+		elapsed := time.Since(start)
+		log.Printf("Gridstore: restored from %s in %s", checkpointPath, elapsed)
+		if knownPtr != nil {
+			if known := knownPtr.Load(); known != nil {
+				if err := seedKnownCalls(store, known); err != nil {
+					log.Printf("Warning: failed to seed known calls after restore: %v", err)
+				}
+			}
+		}
+		if metaCache != nil {
+			metaCache.Clear()
+		}
+	}()
+}
+
+type gridCheckpointEntry struct {
+	path string
+	at   time.Time
+}
+
+func gridCheckpointRoot(dbPath string) string {
+	return filepath.Join(dbPath, gridCheckpointDirName)
+}
+
+func listGridCheckpoints(root string) ([]gridCheckpointEntry, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var checkpoints []gridCheckpointEntry
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, ".tmp-") {
+			continue
+		}
+		at, err := time.Parse(gridCheckpointNameLayoutUTC, name)
+		if err != nil {
+			continue
+		}
+		checkpoints = append(checkpoints, gridCheckpointEntry{
+			path: filepath.Join(root, name),
+			at:   at,
+		})
+	}
+	sort.Slice(checkpoints, func(i, j int) bool {
+		return checkpoints[i].at.After(checkpoints[j].at)
+	})
+	return checkpoints, nil
+}
+
+func cleanupGridCheckpoints(root string, now time.Time) (int, error) {
+	if root == "" {
+		return 0, nil
+	}
+	checkpoints, err := listGridCheckpoints(root)
+	if err != nil {
+		return 0, err
+	}
+	cutoff := now.Add(-gridCheckpointRetention)
+	removed := 0
+	for _, checkpoint := range checkpoints {
+		if checkpoint.at.Before(cutoff) {
+			if err := os.RemoveAll(checkpoint.path); err != nil {
+				return removed, err
+			}
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+func nextGridCheckpointDelay(now time.Time) time.Duration {
+	target := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, time.UTC).Add(gridCheckpointInterval)
+	if !target.After(now) {
+		target = target.Add(gridCheckpointInterval)
+	}
+	return target.Sub(now)
+}
+
+func parseUTCHourMinute(value string, fallbackHour int, fallbackMinute int) (int, int) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallbackHour, fallbackMinute
+	}
+	parsed, err := time.Parse("15:04", trimmed)
+	if err != nil {
+		return fallbackHour, fallbackMinute
+	}
+	return parsed.Hour(), parsed.Minute()
+}
+
+func nextDailyUTC(refreshUTC string, now time.Time, fallbackHour int, fallbackMinute int) time.Duration {
+	hour, minute := parseUTCHourMinute(refreshUTC, fallbackHour, fallbackMinute)
+	target := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, time.UTC)
+	if !target.After(now) {
+		target = target.Add(24 * time.Hour)
+	}
+	return target.Sub(now)
+}
+
+func restoreGridStoreFromCheckpoint(ctx context.Context, dbPath string, opts gridstore.Options) (*gridstore.Store, string, error) {
+	root := gridCheckpointRoot(dbPath)
+	checkpoints, err := listGridCheckpoints(root)
+	if err != nil {
+		return nil, "", fmt.Errorf("gridstore: list checkpoints: %w", err)
+	}
+	if len(checkpoints) == 0 {
+		return nil, "", errors.New("gridstore: no checkpoints available")
+	}
+	for _, checkpoint := range checkpoints {
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
+		stats, err := gridstore.VerifyCheckpoint(ctx, checkpoint.path, gridCheckpointVerifyTimeout)
+		if err != nil {
+			log.Printf("Gridstore: checkpoint verify failed (%s): %v", checkpoint.path, err)
+			continue
+		}
+		if stats.CountMetaErr != nil && !stats.CountMetaValid {
+			log.Printf("Gridstore: checkpoint %s count metadata warning: %v", checkpoint.path, stats.CountMetaErr)
+		}
+		if err := restoreGridStoreFromPath(ctx, dbPath, checkpoint.path); err != nil {
+			log.Printf("Gridstore: checkpoint restore failed (%s): %v", checkpoint.path, err)
+			continue
+		}
+		store, err := gridstore.Open(dbPath, opts)
+		if err != nil {
+			log.Printf("Gridstore: open after restore failed (%s): %v", checkpoint.path, err)
+			continue
+		}
+		return store, checkpoint.path, nil
+	}
+	return nil, "", errors.New("gridstore: no valid checkpoints")
+}
+
+func restoreGridStoreFromPath(ctx context.Context, dbPath string, checkpointPath string) error {
+	if strings.TrimSpace(dbPath) == "" {
+		return errors.New("gridstore: db path is empty")
+	}
+	if strings.TrimSpace(checkpointPath) == "" {
+		return errors.New("gridstore: checkpoint path is empty")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	parent := filepath.Dir(dbPath)
+	base := filepath.Base(dbPath)
+	if strings.TrimSpace(base) == "" || strings.TrimSpace(parent) == "" {
+		return fmt.Errorf("gridstore: invalid db path %q", dbPath)
+	}
+	ts := time.Now().UTC().Format(gridCheckpointNameLayoutUTC)
+	tempDir := filepath.Join(parent, base+".restore-"+ts)
+	backupDir := filepath.Join(parent, base+".backup-"+ts)
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		return fmt.Errorf("gridstore: create restore dir: %w", err)
+	}
+	if err := copyDirCtx(ctx, checkpointPath, tempDir); err != nil {
+		_ = os.RemoveAll(tempDir)
+		return err
+	}
+	if ctx.Err() != nil {
+		_ = os.RemoveAll(tempDir)
+		return ctx.Err()
+	}
+
+	hadExisting := false
+	if info, err := os.Stat(dbPath); err == nil {
+		if !info.IsDir() {
+			_ = os.RemoveAll(tempDir)
+			return fmt.Errorf("gridstore: db path %s is not a directory", dbPath)
+		}
+		hadExisting = true
+	} else if !os.IsNotExist(err) {
+		_ = os.RemoveAll(tempDir)
+		return fmt.Errorf("gridstore: stat db path: %w", err)
+	}
+
+	if hadExisting {
+		if err := os.Rename(dbPath, backupDir); err != nil {
+			_ = os.RemoveAll(tempDir)
+			return fmt.Errorf("gridstore: backup existing db: %w", err)
+		}
+	}
+	if err := os.Rename(tempDir, dbPath); err != nil {
+		if hadExisting {
+			_ = os.Rename(backupDir, dbPath)
+		}
+		_ = os.RemoveAll(tempDir)
+		return fmt.Errorf("gridstore: finalize restore dir: %w", err)
+	}
+
+	if hadExisting {
+		backupCheckpoint := filepath.Join(backupDir, gridCheckpointDirName)
+		newCheckpoint := filepath.Join(dbPath, gridCheckpointDirName)
+		if _, err := os.Stat(backupCheckpoint); err == nil {
+			if _, err := os.Stat(newCheckpoint); os.IsNotExist(err) {
+				if err := os.Rename(backupCheckpoint, newCheckpoint); err != nil {
+					log.Printf("Gridstore: checkpoint carry-forward failed: %v", err)
+				}
+			}
+		}
+		if err := os.RemoveAll(backupDir); err != nil {
+			log.Printf("Gridstore: cleanup backup dir failed: %v", err)
+		}
+	}
+	return nil
+}
+
+func copyDirCtx(ctx context.Context, src string, dst string) error {
+	return filepath.WalkDir(src, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		return copyFileCtx(ctx, path, target, info.Mode())
+	})
+}
+
+func copyFileCtx(ctx context.Context, src string, dst string, mode os.FileMode) (err error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		closeErr := out.Close()
+		if err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = os.Remove(dst)
+		}
+	}()
+	buf := make([]byte, 128*1024)
+	for {
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+		n, readErr := in.Read(buf)
+		if n > 0 {
+			if _, err = out.Write(buf[:n]); err != nil {
+				return err
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return readErr
+		}
+	}
+	if err = out.Sync(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Purpose: Load FCC ULS database stats for dashboard display.

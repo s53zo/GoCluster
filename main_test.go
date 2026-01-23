@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -295,6 +296,62 @@ func TestFormatGridLineIncludesLookupRateAndDrops(t *testing.T) {
 	}
 	if !strings.Contains(line, " / 60 | Drop a12 s3") {
 		t.Fatalf("expected lookup rate and drop counts, got %q", line)
+	}
+}
+
+func TestRestoreGridStoreFromPathReplacesDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "pebble")
+	if err := os.MkdirAll(dbPath, 0o755); err != nil {
+		t.Fatalf("mkdir db: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dbPath, "old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatalf("write old: %v", err)
+	}
+	checkpointPath := filepath.Join(dir, "checkpoint")
+	if err := os.MkdirAll(checkpointPath, 0o755); err != nil {
+		t.Fatalf("mkdir checkpoint: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(checkpointPath, "new.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatalf("write new: %v", err)
+	}
+	if err := restoreGridStoreFromPath(context.Background(), dbPath, checkpointPath); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dbPath, "new.txt")); err != nil {
+		t.Fatalf("expected restored file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dbPath, "old.txt")); err == nil {
+		t.Fatalf("expected old file to be removed")
+	}
+}
+
+func TestRestoreGridStoreFromPathCancelLeavesDBIntact(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "pebble")
+	if err := os.MkdirAll(dbPath, 0o755); err != nil {
+		t.Fatalf("mkdir db: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dbPath, "old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatalf("write old: %v", err)
+	}
+	checkpointPath := filepath.Join(dir, "checkpoint")
+	if err := os.MkdirAll(checkpointPath, 0o755); err != nil {
+		t.Fatalf("mkdir checkpoint: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(checkpointPath, "new.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatalf("write new: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := restoreGridStoreFromPath(ctx, dbPath, checkpointPath); err == nil {
+		t.Fatalf("expected cancel error")
+	}
+	if _, err := os.Stat(filepath.Join(dbPath, "old.txt")); err != nil {
+		t.Fatalf("expected old file to remain: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dbPath, "new.txt")); err == nil {
+		t.Fatalf("did not expect new file to appear")
 	}
 }
 

@@ -334,6 +334,7 @@ fcc_uls:
 ## Grid Persistence and Caching
 
 - Grids, known-call flags, and CTY metadata (ADIF/CQ/ITU/continent/country) are stored in Pebble at `grid_db` (default `data/grids/pebble`, a directory). Each batch is committed with `Sync` for durability; the in-memory cache continues serving while backfills rebuild on new spots.
+- Gridstore checkpoints are created hourly under `grid_db/checkpoint` and retained for 24 hours. On startup, corruption triggers an automatic restore from the newest verified checkpoint; the cluster continues running while the restore rebuilds the Pebble directory. A daily integrity scan runs at 05:00 UTC and logs the result.
 - When a call lacks a stored grid, the CTY prefix latitude/longitude is used to derive a 4-character Maidenhead grid and persist it as "derived"; derived grids never overwrite non-derived entries. Telnet output renders derived grids in lowercase while internal storage and computations remain uppercase.
 - Writes are batched by `grid_flush_seconds` (default `60s`); a final flush runs during shutdown.
 - The unified call metadata cache is a bounded LRU of size `grid_cache_size` (default `100000`). It caches grid/CTY/known lookups and only applies the TTL (`grid_cache_ttl_seconds`) to grid entries; CTY/SCP refreshes clear the cache. Cache misses fall back to Pebble via the async backfill path when `grid_db_check_on_miss` is true; RBN grid misses also attempt a tight-timeout sync lookup to seed the cache before secondary dedupe/path reliability.
