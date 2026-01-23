@@ -14,6 +14,8 @@ Before capturing profiles, configure the environment:
 ```bash
 # Environment variables
 set DXC_PPROF_ADDR=localhost:6061
+set DXC_BLOCK_PROFILE_RATE=10ms      # Enable block profile sampling
+set DXC_MUTEX_PROFILE_FRACTION=10    # Sample 1/N mutex events (0 disables)
 
 # Config settings (data/config/app.yaml)
 ui:
@@ -35,6 +37,17 @@ curl "http://localhost:6061/debug/pprof/profile?seconds=120" -o logs/cpu-$(date 
 **Heap Snapshot**
 ```bash
 curl "http://localhost:6061/debug/pprof/heap" -o logs/heap-$(date +%Y%m%d-%H%M%S).pprof
+```
+
+**Contention Profiles (requires DXC_BLOCK_PROFILE_RATE / DXC_MUTEX_PROFILE_FRACTION)**
+```bash
+curl "http://localhost:6061/debug/pprof/block" -o logs/block-$(date +%Y%m%d-%H%M%S).pprof
+curl "http://localhost:6061/debug/pprof/mutex" -o logs/mutex-$(date +%Y%m%d-%H%M%S).pprof
+```
+
+**Goroutine Snapshot**
+```bash
+curl "http://localhost:6061/debug/pprof/goroutine?debug=1" -o logs/goroutine-$(date +%Y%m%d-%H%M%S).txt
 ```
 
 ### Storage Convention
@@ -129,6 +142,9 @@ These areas typically dominate profiles under high PSKReporter load:
 |------|---------|
 | Capture CPU | `curl "http://localhost:6061/debug/pprof/profile?seconds=120" -o logs/cpu.pprof` |
 | Capture heap | `curl "http://localhost:6061/debug/pprof/heap" -o logs/heap.pprof` |
+| Capture block | `curl "http://localhost:6061/debug/pprof/block" -o logs/block.pprof` |
+| Capture mutex | `curl "http://localhost:6061/debug/pprof/mutex" -o logs/mutex.pprof` |
+| Capture goroutines | `curl "http://localhost:6061/debug/pprof/goroutine?debug=1" -o logs/goroutine.txt` |
 | View top CPU | `go tool pprof -top logs/cpu.pprof` |
 | View cumulative | `go tool pprof -cum logs/cpu.pprof` |
 | Generate PGO | `go tool pprof -proto logs/*.cpu.pprof > default.pgo` |

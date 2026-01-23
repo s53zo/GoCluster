@@ -68,6 +68,7 @@ type Config struct {
 	Server              ServerConfig         `yaml:"server"`
 	Telnet              TelnetConfig         `yaml:"telnet"`
 	UI                  UIConfig             `yaml:"ui"`
+	Logging             LoggingConfig        `yaml:"logging"`
 	RBN                 RBNConfig            `yaml:"rbn"`
 	RBNDigital          RBNConfig            `yaml:"rbn_digital"`
 	HumanTelnet         RBNConfig            `yaml:"human_telnet"`
@@ -263,6 +264,13 @@ type UIConfig struct {
 	ClearScreen bool `yaml:"clear_screen"`
 	// PaneLines sets tview pane heights (ANSI uses a fixed layout).
 	PaneLines UIPaneLines `yaml:"pane_lines"`
+}
+
+// LoggingConfig controls optional system log duplication to disk.
+type LoggingConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	Dir           string `yaml:"dir"`
+	RetentionDays int    `yaml:"retention_days"`
 }
 
 // UIPaneLines bounds history depth for ANSI and visible pane heights for tview.
@@ -810,6 +818,17 @@ func Load(path string) (*Config, error) {
 	}
 	if !yamlKeyPresent(raw, "ui", "clear_screen") {
 		cfg.UI.ClearScreen = true
+	}
+	cfg.Logging.Dir = strings.TrimSpace(cfg.Logging.Dir)
+	if cfg.Logging.Enabled {
+		if cfg.Logging.Dir == "" {
+			cfg.Logging.Dir = "data/logs"
+		}
+		if cfg.Logging.RetentionDays <= 0 {
+			cfg.Logging.RetentionDays = 7
+		}
+	} else if cfg.Logging.RetentionDays < 0 {
+		cfg.Logging.RetentionDays = 0
 	}
 
 	// RBN ingest buffers should be sized to absorb decode bursts; fall back to
@@ -1718,6 +1737,11 @@ func (c *Config) Print() {
 		c.UI.PaneLines.Unlicensed,
 		c.UI.PaneLines.Harmonics,
 		c.UI.PaneLines.System)
+	if c.Logging.Enabled {
+		fmt.Printf("Logging: enabled (dir=%s retention_days=%d)\n", c.Logging.Dir, c.Logging.RetentionDays)
+	} else {
+		fmt.Printf("Logging: disabled\n")
+	}
 	if c.RBN.Enabled {
 		fmt.Printf("RBN CW/RTTY: %s:%d (as %s, transport=%s slot_buffer=%d keepalive=%ds)\n",
 			c.RBN.Host,

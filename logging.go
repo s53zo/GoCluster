@@ -1,0 +1,347 @@
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"dxcluster/config"
+)
+
+const (
+	logTimestampLayout = "2006/01/02 15:04:05"
+	logFileDateLayout  = "02-Jan-2006"
+	maxLogBufferBytes  = 16 * 1024
+)
+
+type lineSink interface {
+	WriteLine(line string, now time.Time)
+	Close() error
+}
+
+type ioLineSink struct {
+	w             io.Writer
+	withTimestamp bool
+}
+
+// Purpose: Write log lines to an io.Writer with optional timestamp prefix.
+// Key aspects: Adds local time prefix and always terminates with newline.
+// Upstream: logFanout line dispatch.
+// Downstream: io.Writer.Write.
+func (s *ioLineSink) WriteLine(line string, now time.Time) {
+	if s == nil || s.w == nil {
+		return
+	}
+	if s.withTimestamp {
+		line = formatLogTimestamp(now) + " " + line
+	}
+	_, _ = io.WriteString(s.w, line+"\n")
+}
+
+func (s *ioLineSink) Close() error {
+	return nil
+}
+
+type dailyFileSink struct {
+	dir           string
+	retentionDays int
+	currentDate   string
+	file          *os.File
+	lastErrorAt   time.Time
+	mu            sync.Mutex
+}
+
+// Purpose: Initialize a daily file sink with directory creation and cleanup.
+// Key aspects: Ensures directory exists and bounds retention by date-based cleanup.
+// Upstream: setupLogging.
+// Downstream: os.MkdirAll and cleanupOldLogs.
+func newDailyFileSink(dir string, retentionDays int) (*dailyFileSink, error) {
+	trimmed := strings.TrimSpace(dir)
+	if trimmed == "" {
+		return nil, fmt.Errorf("log directory is empty")
+	}
+	if retentionDays <= 0 {
+		retentionDays = 7
+	}
+	if err := os.MkdirAll(trimmed, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create log directory %q: %w", trimmed, err)
+	}
+	if err := cleanupOldLogs(trimmed, time.Now(), retentionDays); err != nil {
+		fmt.Fprintf(os.Stderr, "Logging: cleanup failed for %s: %v\n", trimmed, err)
+	}
+	return &dailyFileSink{
+		dir:           trimmed,
+		retentionDays: retentionDays,
+	}, nil
+}
+
+// Purpose: Append a timestamped line to the current daily log file.
+// Key aspects: Rotates on day change and logs file errors to stderr (rate-limited).
+// Upstream: logFanout line dispatch.
+// Downstream: os.OpenFile and file.WriteString.
+func (s *dailyFileSink) WriteLine(line string, now time.Time) {
+	if s == nil {
+		return
+	}
+	now = now.In(time.Local)
+	date := now.Format(logFileDateLayout)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.file == nil || s.currentDate != date {
+		s.rotateLocked(date, now)
+	}
+	if s.file == nil {
+		return
+	}
+	if _, err := s.file.WriteString(formatLogTimestamp(now) + " " + line + "\n"); err != nil {
+		s.reportErrorLocked(now, fmt.Errorf("write failed: %w", err))
+	}
+}
+
+// Purpose: Close the currently open log file (if any).
+// Key aspects: Safe for repeated calls and nil receivers.
+// Upstream: main shutdown path.
+// Downstream: os.File.Close.
+func (s *dailyFileSink) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file == nil {
+		return nil
+	}
+	err := s.file.Close()
+	s.file = nil
+	s.currentDate = ""
+	return err
+}
+
+func (s *dailyFileSink) rotateLocked(date string, now time.Time) {
+	if s.file != nil {
+		_ = s.file.Close()
+		s.file = nil
+	}
+	if err := os.MkdirAll(s.dir, 0755); err != nil {
+		s.reportErrorLocked(now, fmt.Errorf("failed to create log directory %q: %w", s.dir, err))
+		return
+	}
+	path := filepath.Join(s.dir, logFileNameForDate(now))
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		s.reportErrorLocked(now, fmt.Errorf("open failed for %s: %w", path, err))
+		return
+	}
+	s.file = file
+	s.currentDate = date
+	if err := cleanupOldLogs(s.dir, now, s.retentionDays); err != nil {
+		s.reportErrorLocked(now, fmt.Errorf("cleanup failed: %w", err))
+	}
+}
+
+func (s *dailyFileSink) reportErrorLocked(now time.Time, err error) {
+	if err == nil {
+		return
+	}
+	if !s.lastErrorAt.IsZero() && now.Sub(s.lastErrorAt) < time.Minute {
+		return
+	}
+	s.lastErrorAt = now
+	fmt.Fprintf(os.Stderr, "Logging: %v\n", err)
+}
+
+type logFanout struct {
+	mu      sync.Mutex
+	buf     []byte
+	console lineSink
+	file    lineSink
+}
+
+// Purpose: Create the log fanout writer for console/file duplication.
+// Key aspects: Caller decides which sinks are active.
+// Upstream: setupLogging.
+// Downstream: log.SetOutput.
+func newLogFanout(console lineSink, file lineSink) *logFanout {
+	return &logFanout{
+		console: console,
+		file:    file,
+	}
+}
+
+// Purpose: Wire logging based on config without blocking startup.
+// Key aspects: Returns a fanout writer even when file logging fails.
+// Upstream: main startup.
+// Downstream: newDailyFileSink and log.SetOutput.
+func setupLogging(cfg config.LoggingConfig, console io.Writer) (*logFanout, error) {
+	fanout := newLogFanout(&ioLineSink{w: console, withTimestamp: true}, nil)
+	if !cfg.Enabled {
+		return fanout, nil
+	}
+	fileSink, err := newDailyFileSink(cfg.Dir, cfg.RetentionDays)
+	if err != nil {
+		return fanout, err
+	}
+	fanout.SetFileSink(fileSink)
+	return fanout, nil
+}
+
+// Purpose: Swap the console sink (e.g., to a UI writer).
+// Key aspects: Updates the sink atomically with the line buffer.
+// Upstream: main after UI initialization.
+// Downstream: None.
+func (f *logFanout) SetConsoleSink(writer io.Writer, withTimestamp bool) {
+	if f == nil {
+		return
+	}
+	var sink lineSink
+	if writer != nil {
+		sink = &ioLineSink{w: writer, withTimestamp: withTimestamp}
+	}
+	f.mu.Lock()
+	f.console = sink
+	f.mu.Unlock()
+}
+
+// Purpose: Attach or replace the file sink.
+// Key aspects: Allows setupLogging to install a daily sink after creation.
+// Upstream: setupLogging.
+// Downstream: None.
+func (f *logFanout) SetFileSink(sink lineSink) {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	f.file = sink
+	f.mu.Unlock()
+}
+
+// Purpose: Fan out log output to console/UI and file sinks.
+// Key aspects: Line-buffered with bounded internal storage.
+// Upstream: log.Logger output.
+// Downstream: lineSink.WriteLine.
+func (f *logFanout) Write(p []byte) (int, error) {
+	if f == nil {
+		return len(p), nil
+	}
+	f.mu.Lock()
+	f.buf = append(f.buf, p...)
+	data := f.buf
+	var lines []string
+	for {
+		idx := bytes.IndexByte(data, '\n')
+		if idx == -1 {
+			break
+		}
+		line := string(bytes.TrimRight(data[:idx], "\r"))
+		lines = append(lines, line)
+		data = data[idx+1:]
+	}
+	if len(data) > maxLogBufferBytes {
+		trimmed := string(bytes.TrimRight(data, "\r"))
+		if trimmed != "" {
+			lines = append(lines, trimmed)
+		}
+		data = data[:0]
+	}
+	f.buf = data
+	console := f.console
+	file := f.file
+	f.mu.Unlock()
+
+	if len(lines) == 0 {
+		return len(p), nil
+	}
+	now := time.Now()
+	for _, line := range lines {
+		if console != nil {
+			console.WriteLine(line, now)
+		}
+		if file != nil {
+			file.WriteLine(line, now)
+		}
+	}
+	return len(p), nil
+}
+
+// Purpose: Close all sinks owned by the fanout writer.
+// Key aspects: Best-effort cleanup for process shutdown.
+// Upstream: main shutdown.
+// Downstream: lineSink.Close.
+func (f *logFanout) Close() error {
+	if f == nil {
+		return nil
+	}
+	f.mu.Lock()
+	console := f.console
+	file := f.file
+	f.mu.Unlock()
+
+	var firstErr error
+	if console != nil {
+		if err := console.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if file != nil {
+		if err := file.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func formatLogTimestamp(now time.Time) string {
+	return now.In(time.Local).Format(logTimestampLayout)
+}
+
+func logFileNameForDate(now time.Time) string {
+	return now.In(time.Local).Format(logFileDateLayout) + ".log"
+}
+
+func parseLogFileDate(name string) (time.Time, bool) {
+	if filepath.Ext(name) != ".log" {
+		return time.Time{}, false
+	}
+	base := strings.TrimSuffix(name, ".log")
+	parsed, err := time.ParseInLocation(logFileDateLayout, base, time.Local)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed, true
+}
+
+func cleanupOldLogs(dir string, now time.Time, retentionDays int) error {
+	if retentionDays <= 0 {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	cutoff := dateOnly(now.In(time.Local)).AddDate(0, 0, -(retentionDays - 1))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		date, ok := parseLogFileDate(entry.Name())
+		if !ok {
+			continue
+		}
+		if date.Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
+	return nil
+}
+
+func dateOnly(t time.Time) time.Time {
+	year, month, day := t.Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, t.Location())
+}

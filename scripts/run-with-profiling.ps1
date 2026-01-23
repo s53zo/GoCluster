@@ -1,5 +1,5 @@
 # Launch gocluster with pprof enabled and capture 1m CPU profiles every 15m.
-# Captures heap (inuse) and allocs (alloc_space) profiles as well.
+# Captures heap (inuse), allocs (alloc_space), block, mutex, and goroutine profiles as well.
 # Usage: run this script from PowerShell; it will start the cluster in a new window
 # and keep collecting profiles until the process exits.
 
@@ -10,6 +10,8 @@ $pprofAddr       = "localhost:6061"
 $profileSeconds  = 60      # duration of each CPU profile
 $intervalSeconds = 900     # time between captures
 $logsDir         = Join-Path $repoRoot "logs"
+$blockProfileRate = "10ms" # block profile sampling threshold
+$mutexProfileFraction = "10" # 1/N mutex events sampled
 
 # Ensure logs directory exists
 New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
@@ -20,6 +22,9 @@ $envVars = @{
     DXC_PPROF_ADDR  = $pprofAddr
     # Enable periodic heap logging to match the CPU profiling cadence:
     DXC_HEAP_LOG_INTERVAL = "60s"
+    DXC_BLOCK_PROFILE_RATE = $blockProfileRate
+    DXC_MUTEX_PROFILE_FRACTION = $mutexProfileFraction
+    DXC_PSKR_MQTT_DEBUG = "false"
 }
 
 # Start the cluster in a new window so the console UI stays visible.
@@ -65,6 +70,24 @@ function Get-AllocsProfile {
     Invoke-WebRequest -Uri $url -OutFile $destPath -TimeoutSec 30 -UseBasicParsing
 }
 
+function Get-BlockProfile {
+    param($destPath, $addr)
+    $url = "http://$addr/debug/pprof/block"
+    Invoke-WebRequest -Uri $url -OutFile $destPath -TimeoutSec 30 -UseBasicParsing
+}
+
+function Get-MutexProfile {
+    param($destPath, $addr)
+    $url = "http://$addr/debug/pprof/mutex"
+    Invoke-WebRequest -Uri $url -OutFile $destPath -TimeoutSec 30 -UseBasicParsing
+}
+
+function Get-GoroutineProfile {
+    param($destPath, $addr, $debugLevel)
+    $url = "http://$addr/debug/pprof/goroutine?debug=$debugLevel"
+    Invoke-WebRequest -Uri $url -OutFile $destPath -TimeoutSec 30 -UseBasicParsing
+}
+
 # Periodic capture loop (stops when the process exits)
 while (-not $proc.HasExited) {
     $ts = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -90,6 +113,35 @@ while (-not $proc.HasExited) {
         Write-Host "Captured allocs profile -> $allocsDest"
     } catch {
         Write-Warning "Allocs profile capture failed at ${ts}: $($_)"
+    }
+
+    $blockDest = Join-Path $logsDir ("block-$ts.pprof")
+    try {
+        Get-BlockProfile -destPath $blockDest -addr $pprofAddr
+        Write-Host "Captured block profile -> $blockDest"
+    } catch {
+        Write-Warning "Block profile capture failed at ${ts}: $($_)"
+    }
+
+    $mutexDest = Join-Path $logsDir ("mutex-$ts.pprof")
+    try {
+        Get-MutexProfile -destPath $mutexDest -addr $pprofAddr
+        Write-Host "Captured mutex profile -> $mutexDest"
+    } catch {
+        Write-Warning "Mutex profile capture failed at ${ts}: $($_)"
+    }
+
+    $gorDest = Join-Path $logsDir ("goroutine-$ts.txt")
+    try {
+        Get-GoroutineProfile -destPath $gorDest -addr $pprofAddr -debugLevel 1
+        $firstLine = Get-Content -Path $gorDest -TotalCount 1
+        if ($firstLine -match "total\\s+(\\d+)") {
+            Write-Host "Captured goroutine dump -> $gorDest (total=$($matches[1]))"
+        } else {
+            Write-Host "Captured goroutine dump -> $gorDest"
+        }
+    } catch {
+        Write-Warning "Goroutine capture failed at ${ts}: $($_)"
     }
 
     # Sleep, but break early if the process exits

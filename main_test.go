@@ -163,6 +163,81 @@ func TestGridDBCheckOnMissEnabled_UsesLoadedFromWhenSet(t *testing.T) {
 	}
 }
 
+// Purpose: Verify block profile rate parsing accepts duration strings.
+// Key aspects: Uses Go-style duration values and validates nanoseconds conversion.
+// Upstream: go test execution.
+// Downstream: parseBlockProfileRate.
+func TestParseBlockProfileRateDuration(t *testing.T) {
+	got, err := parseBlockProfileRate("10ms")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 10*time.Millisecond {
+		t.Fatalf("expected 10ms, got %s", got)
+	}
+	got, err = parseBlockProfileRate("10 ms")
+	if err != nil {
+		t.Fatalf("unexpected error for spaced duration: %v", err)
+	}
+	if got != 10*time.Millisecond {
+		t.Fatalf("expected 10ms for spaced duration, got %s", got)
+	}
+}
+
+// Purpose: Verify block profile rate parsing accepts integer nanoseconds.
+// Key aspects: Uses an integer string to represent nanoseconds.
+// Upstream: go test execution.
+// Downstream: parseBlockProfileRate.
+func TestParseBlockProfileRateNanos(t *testing.T) {
+	got, err := parseBlockProfileRate("10000000")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 10*time.Millisecond {
+		t.Fatalf("expected 10ms, got %s", got)
+	}
+}
+
+// Purpose: Verify invalid block profile rates are rejected.
+// Key aspects: Covers negative and non-duration values.
+// Upstream: go test execution.
+// Downstream: parseBlockProfileRate.
+func TestParseBlockProfileRateInvalid(t *testing.T) {
+	if _, err := parseBlockProfileRate("-1ms"); err == nil {
+		t.Fatalf("expected error for negative duration")
+	}
+	if _, err := parseBlockProfileRate("notaduration"); err == nil {
+		t.Fatalf("expected error for invalid duration")
+	}
+}
+
+// Purpose: Verify mutex profile fraction parsing.
+// Key aspects: Accepts integer values and rejects negatives.
+// Upstream: go test execution.
+// Downstream: parseMutexProfileFraction.
+func TestParseMutexProfileFraction(t *testing.T) {
+	got, err := parseMutexProfileFraction("10")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 10 {
+		t.Fatalf("expected 10, got %d", got)
+	}
+	got, err = parseMutexProfileFraction("0")
+	if err != nil {
+		t.Fatalf("unexpected error for zero: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("expected 0, got %d", got)
+	}
+	if _, err := parseMutexProfileFraction("-1"); err == nil {
+		t.Fatalf("expected error for negative fraction")
+	}
+	if _, err := parseMutexProfileFraction("notanint"); err == nil {
+		t.Fatalf("expected error for invalid fraction")
+	}
+}
+
 func TestLookupGridUnifiedUsesSyncThenAsync(t *testing.T) {
 	syncCalls := 0
 	asyncCalls := 0

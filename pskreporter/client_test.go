@@ -78,7 +78,9 @@ func (m testMessage) Ack()            {}
 
 func TestMessageHandlerDropsOversizePayload(t *testing.T) {
 	client := NewClient("localhost", 1883, nil, nil, "", 1, nil, false, 16, 4)
+	client.processingMu.Lock()
 	client.processing = make(chan []byte, 1)
+	client.processingMu.Unlock()
 
 	client.messageHandler(nil, testMessage{payload: make([]byte, 10)})
 

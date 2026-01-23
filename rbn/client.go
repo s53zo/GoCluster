@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"dxcluster/skew"
@@ -39,13 +40,16 @@ type Client struct {
 	conn      net.Conn
 	reader    *bufio.Reader
 	writer    *bufio.Writer
-	connected bool
+	connected atomic.Bool
 	shutdown  chan struct{}
 	spotChan  chan *spot.Spot
 	skewStore *skew.Store
 	reconnect chan struct{}
 	stopOnce  sync.Once
 	writeMu   sync.Mutex
+	lastLineAt atomic.Int64
+	lastSpotAt atomic.Int64
+	spotDrops  atomic.Uint64
 	keepSSID  bool
 
 	bufferSize int
@@ -292,7 +296,7 @@ func (c *Client) establishConnection() error {
 	c.conn = conn
 	c.reader = bufio.NewReader(readerConn)
 	c.writer = bufio.NewWriter(writerConn)
-	c.connected = true
+	c.connected.Store(true)
 	c.keepaliveDone = make(chan struct{})
 
 	log.Printf("%s: connection established", c.displayName())
@@ -385,7 +389,7 @@ func (c *Client) readLoop() {
 		}
 	}()
 	defer func() {
-		c.connected = false
+		c.connected.Store(false)
 		if c.keepaliveDone != nil {
 			close(c.keepaliveDone)
 		}
@@ -413,12 +417,14 @@ func (c *Client) readLoop() {
 				return
 			}
 
+			now := time.Now()
 			line = strings.TrimSpace(line)
 
 			// Skip empty lines
 			if line == "" {
 				continue
 			}
+			c.lastLineAt.Store(now.UnixNano())
 
 			// Log and parse DX spots
 			if strings.HasPrefix(line, "DX de") {
@@ -716,9 +722,11 @@ func (c *Client) parseSpot(line string) {
 	s.RefreshBeaconFlag()
 	s.EnsureNormalized()
 
+	c.lastSpotAt.Store(time.Now().UnixNano())
 	select {
 	case c.spotChan <- s:
 	default:
+		c.spotDrops.Add(1)
 		log.Printf("%s: Spot channel full (capacity=%d), dropping spot", c.displayName(), cap(c.spotChan))
 	}
 }
@@ -736,7 +744,43 @@ func (c *Client) GetSpotChannel() <-chan *spot.Spot {
 // Upstream: Diagnostics/health checks.
 // Downstream: None.
 func (c *Client) IsConnected() bool {
-	return c.connected
+	if c == nil {
+		return false
+	}
+	return c.connected.Load()
+}
+
+// HealthSnapshot reports recent activity and queue state for diagnostics.
+type HealthSnapshot struct {
+	Connected    bool
+	LastLineAt   time.Time
+	LastSpotAt   time.Time
+	SpotQueueLen int
+	SpotQueueCap int
+	SpotDrops    uint64
+}
+
+// Purpose: Provide a consistent ingest health snapshot.
+// Key aspects: Uses atomics for timestamps and drop counts.
+// Upstream: ingest health monitor.
+// Downstream: None.
+func (c *Client) HealthSnapshot() HealthSnapshot {
+	if c == nil {
+		return HealthSnapshot{}
+	}
+	snap := HealthSnapshot{
+		Connected:    c.connected.Load(),
+		SpotQueueLen: len(c.spotChan),
+		SpotQueueCap: cap(c.spotChan),
+		SpotDrops:    c.spotDrops.Load(),
+	}
+	if ns := c.lastLineAt.Load(); ns > 0 {
+		snap.LastLineAt = time.Unix(0, ns)
+	}
+	if ns := c.lastSpotAt.Load(); ns > 0 {
+		snap.LastSpotAt = time.Unix(0, ns)
+	}
+	return snap
 }
 
 // Purpose: Stop the RBN client and close connections.

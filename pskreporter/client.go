@@ -5,7 +5,9 @@ package pskreporter
 import (
 	"fmt"
 	"log"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,12 +43,17 @@ type Client struct {
 	shutdown     chan struct{}
 	workers      int
 	processing   chan []byte
+	processingMu sync.RWMutex
 	workerWg     sync.WaitGroup
 	skewStore    *skew.Store
 	appendSSID   bool
 	spotterCache *spot.CallCache
 
 	maxPayloadBytes int
+
+	lastPayloadAt  atomic.Int64
+	lastSpotAt     atomic.Int64
+	lastParseErrAt atomic.Int64
 
 	payloadDropCounter     rateCounter
 	payloadTooLargeCounter rateCounter
@@ -83,11 +90,13 @@ const (
 	defaultSpotBuffer         = 25000
 	defaultMaxPayloadBytes    = 4096
 	defaultDropLogInterval    = 10 * time.Second
+	envPSKReporterMQTTDebug   = "DXC_PSKR_MQTT_DEBUG"
 )
 
 var (
 	callCacheSize = 4096
 	callCacheTTL  = 10 * time.Minute
+	pahoDebugOnce sync.Once
 )
 
 // Purpose: Configure the callsign normalization cache for PSKReporter.
@@ -148,11 +157,39 @@ func NewClient(broker string, port int, topics []string, allowedModes []string, 
 	}
 }
 
+// Purpose: Enable Paho MQTT debug logging when the env flag is set.
+// Key aspects: Validates the env var and installs loggers once.
+// Upstream: Connect.
+// Downstream: mqtt.* logger globals.
+func enablePahoDebugLogging() {
+	raw := strings.TrimSpace(os.Getenv(envPSKReporterMQTTDebug))
+	if raw == "" {
+		return
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		log.Printf("PSKReporter: ignoring invalid %s=%q", envPSKReporterMQTTDebug, raw)
+		return
+	}
+	if !enabled {
+		return
+	}
+	pahoDebugOnce.Do(func() {
+		writer := log.Writer()
+		mqtt.DEBUG = log.New(writer, "PSKReporter MQTT DEBUG: ", 0)
+		mqtt.WARN = log.New(writer, "PSKReporter MQTT WARN: ", 0)
+		mqtt.ERROR = log.New(writer, "PSKReporter MQTT ERROR: ", 0)
+		mqtt.CRITICAL = log.New(writer, "PSKReporter MQTT CRITICAL: ", 0)
+		log.Printf("PSKReporter: Paho MQTT debug logging enabled via %s", envPSKReporterMQTTDebug)
+	})
+}
+
 // Purpose: Connect to the PSKReporter MQTT broker and start workers.
 // Key aspects: Configures reconnect/keepalive and sets handlers.
 // Upstream: main.go startup or reconnect flows.
 // Downstream: startWorkerPool, mqtt.Client.Connect.
 func (c *Client) Connect() error {
+	enablePahoDebugLogging()
 	c.startWorkerPool()
 	// Create MQTT client options
 	opts := mqtt.NewClientOptions()
@@ -224,7 +261,21 @@ func (c *Client) onConnect(client mqtt.Client) {
 // Upstream: MQTT connection-lost callback.
 // Downstream: None.
 func (c *Client) onConnectionLost(client mqtt.Client, err error) {
-	log.Printf("PSKReporter: Connection lost: %v", err)
+	snap := c.HealthSnapshot()
+	now := time.Now()
+	log.Printf("PSKReporter: Connection lost: %v (last_payload=%s last_spot=%s last_parse_err=%s processing=%d/%d spot_queue=%d/%d drops payload=%d oversize=%d spot=%d parse=%d)",
+		err,
+		formatAge(now, snap.LastPayloadAt),
+		formatAge(now, snap.LastSpotAt),
+		formatAge(now, snap.LastParseErrAt),
+		snap.ProcessingQueueLen,
+		snap.ProcessingQueueCap,
+		snap.SpotQueueLen,
+		snap.SpotQueueCap,
+		snap.PayloadDrops,
+		snap.PayloadTooLarge,
+		snap.SpotDrops,
+		snap.ParseErrors)
 	log.Println("PSKReporter: Will attempt to reconnect...")
 }
 
@@ -244,6 +295,8 @@ func (c *Client) messageHandler(client mqtt.Client, msg mqtt.Message) {
 	default:
 	}
 	raw := msg.Payload()
+	now := time.Now()
+	c.lastPayloadAt.Store(now.UnixNano())
 	if c.maxPayloadBytes > 0 && len(raw) > c.maxPayloadBytes {
 		if count, ok := c.payloadTooLargeCounter.Inc(); ok {
 			log.Printf("PSKReporter: payload %d bytes exceeds limit %d, dropped (total=%d)", len(raw), c.maxPayloadBytes, count)
@@ -252,10 +305,19 @@ func (c *Client) messageHandler(client mqtt.Client, msg mqtt.Message) {
 	}
 	payload := make([]byte, len(raw))
 	copy(payload, raw)
+	c.processingMu.RLock()
+	processing := c.processing
+	c.processingMu.RUnlock()
+	if processing == nil {
+		if count, ok := c.payloadDropCounter.Inc(); ok {
+			log.Printf("PSKReporter: Processing queue unavailable, dropped %d payload(s) total", count)
+		}
+		return
+	}
 	select {
 	case <-c.shutdown:
 		return
-	case c.processing <- payload:
+	case processing <- payload:
 		// payload enqueued for workers
 	default:
 		if count, ok := c.payloadDropCounter.Inc(); ok {
@@ -272,18 +334,22 @@ func (c *Client) startWorkerPool() {
 	if c.workers <= 0 {
 		c.workers = defaultPSKReporterWorkers()
 	}
+	c.processingMu.Lock()
 	if c.processing != nil {
+		c.processingMu.Unlock()
 		return
 	}
 	capacity := c.workers * pskReporterQueuePerWorker
 	if capacity < 256 {
 		capacity = 256
 	}
-	c.processing = make(chan []byte, capacity)
+	processing := make(chan []byte, capacity)
+	c.processing = processing
+	c.processingMu.Unlock()
 	c.workerWg.Add(c.workers)
 	for i := 0; i < c.workers; i++ {
 		// Goroutine: worker loop parses payloads into spots.
-		go c.workerLoop(i)
+		go c.workerLoop(i, processing)
 	}
 }
 
@@ -291,7 +357,7 @@ func (c *Client) startWorkerPool() {
 // Key aspects: Stops on shutdown; recovers from panics to avoid worker loss.
 // Upstream: startWorkerPool goroutine.
 // Downstream: handlePayload.
-func (c *Client) workerLoop(id int) {
+func (c *Client) workerLoop(id int, processing <-chan []byte) {
 	log.Printf("PSKReporter worker %d started", id)
 	defer c.workerWg.Done()
 	defer func() {
@@ -303,7 +369,7 @@ func (c *Client) workerLoop(id int) {
 		select {
 		case <-c.shutdown:
 			return
-		case payload := <-c.processing:
+		case payload := <-processing:
 			c.handlePayload(payload)
 		}
 	}
@@ -322,6 +388,7 @@ func (c *Client) handlePayload(payload []byte) {
 	var pskrMsg PSKRMessage
 	if err := jsonFast.Unmarshal(payload, &pskrMsg); err != nil {
 		if errCompat := jsonCompat.Unmarshal(payload, &pskrMsg); errCompat != nil {
+			c.lastParseErrAt.Store(time.Now().UnixNano())
 			if count, ok := c.parseErrorCounter.Inc(); ok {
 				log.Printf("PSKReporter: Failed to parse message (total=%d): %v", count, errCompat)
 			}
@@ -351,6 +418,7 @@ func (c *Client) handlePayload(payload []byte) {
 	if s == nil {
 		return
 	}
+	c.lastSpotAt.Store(time.Now().UnixNano())
 	select {
 	case c.spotChan <- s:
 	default:
@@ -576,7 +644,9 @@ func (c *rateCounter) Inc() (uint64, bool) {
 // Downstream: workerWg.Wait.
 func (c *Client) stopWorkerPool() {
 	c.workerWg.Wait()
+	c.processingMu.Lock()
 	c.processing = nil
+	c.processingMu.Unlock()
 }
 
 // Purpose: Choose a default worker count for PSKReporter ingest.
@@ -606,6 +676,72 @@ func (c *Client) GetSpotChannel() <-chan *spot.Spot {
 // Downstream: mqtt.Client.IsConnected.
 func (c *Client) IsConnected() bool {
 	return c.client != nil && c.client.IsConnected()
+}
+
+// HealthSnapshot reports recent activity and queue state for diagnostics.
+type HealthSnapshot struct {
+	Connected           bool
+	LastPayloadAt       time.Time
+	LastSpotAt          time.Time
+	LastParseErrAt      time.Time
+	ProcessingQueueLen  int
+	ProcessingQueueCap  int
+	SpotQueueLen        int
+	SpotQueueCap        int
+	PayloadDrops        uint64
+	PayloadTooLarge     uint64
+	SpotDrops           uint64
+	ParseErrors         uint64
+}
+
+// Purpose: Provide a consistent ingest health snapshot.
+// Key aspects: Uses atomics for timestamps and counters; locks to read queue state.
+// Upstream: ingest health monitor.
+// Downstream: None.
+func (c *Client) HealthSnapshot() HealthSnapshot {
+	if c == nil {
+		return HealthSnapshot{}
+	}
+	snap := HealthSnapshot{
+		Connected:       c.IsConnected(),
+		SpotQueueLen:    len(c.spotChan),
+		SpotQueueCap:    cap(c.spotChan),
+		PayloadDrops:    c.payloadDropCounter.count.Load(),
+		PayloadTooLarge: c.payloadTooLargeCounter.count.Load(),
+		SpotDrops:       c.spotDropCounter.count.Load(),
+		ParseErrors:     c.parseErrorCounter.count.Load(),
+	}
+	if ns := c.lastPayloadAt.Load(); ns > 0 {
+		snap.LastPayloadAt = time.Unix(0, ns)
+	}
+	if ns := c.lastSpotAt.Load(); ns > 0 {
+		snap.LastSpotAt = time.Unix(0, ns)
+	}
+	if ns := c.lastParseErrAt.Load(); ns > 0 {
+		snap.LastParseErrAt = time.Unix(0, ns)
+	}
+	c.processingMu.RLock()
+	processing := c.processing
+	c.processingMu.RUnlock()
+	if processing != nil {
+		snap.ProcessingQueueLen = len(processing)
+		snap.ProcessingQueueCap = cap(processing)
+	}
+	return snap
+}
+
+func formatAge(now time.Time, at time.Time) string {
+	if at.IsZero() {
+		return "never"
+	}
+	age := now.Sub(at)
+	if age < 0 {
+		age = 0
+	}
+	if age < time.Second {
+		return "0s"
+	}
+	return age.Truncate(time.Second).String()
 }
 
 // Purpose: Stop the PSKReporter client and worker pool.

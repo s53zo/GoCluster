@@ -60,6 +60,7 @@ High-level flow:
 - `ui.mode: tview` enables the framed tview dashboard (requires an interactive console).
 - `ui.mode: headless` disables the local console; logs continue to stdout/stderr.
 - `ui.pane_lines` controls the visible heights of tview panes; ANSI uses a fixed 12/10-line layout and ignores pane_lines.
+- `logging.enabled` in `app.yaml` duplicates system logs to daily files in `logging.dir` (local time, `logging.retention_days` controls retention).
 - Config block (excerpt):
   ```yaml
   ui:

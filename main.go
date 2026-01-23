@@ -65,6 +65,10 @@ const (
 	// redundant writes. When false, the hot path never blocks on that read and may
 	// perform extra batched writes instead.
 	envGridDBCheckOnMiss = "DXC_GRID_DB_CHECK_ON_MISS"
+	// envBlockProfileRate enables block profiling when set to a Go duration or integer nanoseconds.
+	envBlockProfileRate = "DXC_BLOCK_PROFILE_RATE"
+	// envMutexProfileFraction enables mutex profiling when set to an integer fraction (1/N).
+	envMutexProfileFraction = "DXC_MUTEX_PROFILE_FRACTION"
 )
 
 var licCache = newLicenseCache(5 * time.Minute)
@@ -281,6 +285,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error loading config: %v", err)
 	}
+	logMux, logErr := setupLogging(cfg.Logging, os.Stdout)
+	// logFanout handles timestamp formatting for each sink.
+	log.SetFlags(0)
+	log.SetOutput(logMux)
+	if logMux != nil {
+		defer logMux.Close()
+	}
+	if logErr != nil {
+		log.Printf("Logging: %v", logErr)
+	}
 	log.Printf("Loaded configuration from %s", configSource)
 	if err := spot.SetDXClusterLineLength(cfg.Telnet.OutputLineLength); err != nil {
 		log.Fatalf("Invalid telnet output line length: %v", err)
@@ -327,12 +341,15 @@ func main() {
 	if ui != nil {
 		ui.WaitReady()
 		defer ui.Stop()
-		// Dashboard handles its own timestamp formatting; disable the default log prefixes.
-		log.SetFlags(0)
-		log.SetOutput(ui.SystemWriter())
+		if logMux != nil {
+			// UI surfaces render their own timestamps; keep log lines raw.
+			logMux.SetConsoleSink(ui.SystemWriter(), false)
+		}
 		ui.SetStats([]string{"Initializing..."})
 	} else {
-		log.SetOutput(os.Stdout)
+		if logMux != nil {
+			logMux.SetConsoleSink(os.Stdout, true)
+		}
 	}
 
 	log.Printf("DX Cluster Server v%s starting...", Version)
@@ -877,6 +894,21 @@ func main() {
 		}
 	}
 
+	ingestSources := make([]ingestHealthSource, 0, 4)
+	if rbnClient != nil {
+		ingestSources = append(ingestSources, rbnHealthSource(ingestSourceName(cfg.RBN.Name, "RBN"), rbnClient))
+	}
+	if rbnDigitalClient != nil {
+		ingestSources = append(ingestSources, rbnHealthSource(ingestSourceName(cfg.RBNDigital.Name, "RBN Digital"), rbnDigitalClient))
+	}
+	if humanTelnetClient != nil {
+		ingestSources = append(ingestSources, rbnHealthSource(ingestSourceName(cfg.HumanTelnet.Name, "Human Telnet"), humanTelnetClient))
+	}
+	if pskrClient != nil {
+		ingestSources = append(ingestSources, pskReporterHealthSource(ingestSourceName(cfg.PSKReporter.Name, "PSKReporter"), pskrClient))
+	}
+	startIngestHealthMonitor(ctx, ingestSources)
+
 	// Start stats display goroutine
 	statsInterval := time.Duration(cfg.Stats.DisplayIntervalSeconds) * time.Second
 	// Purpose: Periodically emit stats to UI or logs.
@@ -915,6 +947,7 @@ func main() {
 	log.Println("Architecture: ALL sources -> Dedup Engine -> Ring Buffer -> Clients")
 	log.Printf("Statistics will be displayed every %d seconds...", cfg.Stats.DisplayIntervalSeconds)
 	log.Println("---")
+	maybeStartContentionProfiling()
 	maybeStartHeapLogger()
 	maybeStartDiagServer()
 
@@ -3729,6 +3762,92 @@ func sourceModeKey(source, mode string) string {
 // Downstream: float math.
 func bytesToMB(b uint64) float64 {
 	return float64(b) / (1024.0 * 1024.0)
+}
+
+// Purpose: Parse the block profiling rate from an env string.
+// Key aspects: Accepts Go duration (e.g., "10ms") or integer nanoseconds; rejects negatives.
+// Upstream: maybeStartContentionProfiling.
+// Downstream: runtime.SetBlockProfileRate.
+func parseBlockProfileRate(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, fmt.Errorf("empty value")
+	}
+	raw = strings.Join(strings.Fields(raw), "")
+	if dur, err := time.ParseDuration(raw); err == nil {
+		if dur < 0 {
+			return 0, fmt.Errorf("must be >= 0")
+		}
+		return dur, nil
+	}
+	nanos, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration (use Go duration like 10ms or integer nanoseconds)")
+	}
+	if nanos < 0 {
+		return 0, fmt.Errorf("must be >= 0")
+	}
+	return time.Duration(nanos), nil
+}
+
+// Purpose: Parse the mutex profiling fraction from an env string.
+// Key aspects: Accepts integer fraction (1/N) and allows 0 to disable.
+// Upstream: maybeStartContentionProfiling.
+// Downstream: runtime.SetMutexProfileFraction.
+func parseMutexProfileFraction(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, fmt.Errorf("empty value")
+	}
+	fraction, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid fraction (use integer >= 0)")
+	}
+	if fraction < 0 {
+		return 0, fmt.Errorf("must be >= 0")
+	}
+	return fraction, nil
+}
+
+// maybeStartContentionProfiling enables block/mutex profiling when env vars are set.
+// Purpose: Allow opt-in contention profiling without recompiling.
+// Key aspects: Logs effective settings and keeps defaults when env vars are empty/invalid.
+// Upstream: main startup.
+// Downstream: runtime.SetBlockProfileRate and runtime.SetMutexProfileFraction.
+func maybeStartContentionProfiling() {
+	blockRaw := strings.TrimSpace(os.Getenv(envBlockProfileRate))
+	mutexRaw := strings.TrimSpace(os.Getenv(envMutexProfileFraction))
+	if blockRaw == "" && mutexRaw == "" {
+		return
+	}
+
+	if blockRaw != "" {
+		rate, err := parseBlockProfileRate(blockRaw)
+		if err != nil {
+			log.Printf("Contention profiling: ignoring invalid %s=%q: %v", envBlockProfileRate, blockRaw, err)
+		} else {
+			runtime.SetBlockProfileRate(int(rate.Nanoseconds()))
+			if rate <= 0 {
+				log.Printf("Contention profiling: block profile disabled (%s=%q)", envBlockProfileRate, blockRaw)
+			} else {
+				log.Printf("Contention profiling: block profile enabled (rate=%s)", rate)
+			}
+		}
+	}
+
+	if mutexRaw != "" {
+		fraction, err := parseMutexProfileFraction(mutexRaw)
+		if err != nil {
+			log.Printf("Contention profiling: ignoring invalid %s=%q: %v", envMutexProfileFraction, mutexRaw, err)
+		} else {
+			runtime.SetMutexProfileFraction(fraction)
+			if fraction <= 0 {
+				log.Printf("Contention profiling: mutex profile disabled (%s=%q)", envMutexProfileFraction, mutexRaw)
+			} else {
+				log.Printf("Contention profiling: mutex profile enabled (fraction=1/%d)", fraction)
+			}
+		}
+	}
 }
 
 // maybeStartHeapLogger starts periodic heap logging when DXC_HEAP_LOG_INTERVAL is set
