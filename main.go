@@ -714,8 +714,10 @@ func main() {
 	ingestInput := ingestValidator.Input()
 
 	secondaryFastWindow := time.Duration(cfg.Dedup.SecondaryFastWindowSeconds) * time.Second
+	secondaryMedWindow := time.Duration(cfg.Dedup.SecondaryMedWindowSeconds) * time.Second
 	secondarySlowWindow := time.Duration(cfg.Dedup.SecondarySlowWindowSeconds) * time.Second
 	var secondaryFast *dedup.SecondaryDeduper
+	var secondaryMed *dedup.SecondaryDeduper
 	var secondarySlow *dedup.SecondaryDeduper
 	if secondaryFastWindow > 0 {
 		secondaryFast = dedup.NewSecondaryDeduper(secondaryFastWindow, cfg.Dedup.SecondaryFastPreferStrong)
@@ -724,15 +726,22 @@ func main() {
 	} else {
 		log.Println("Secondary dedupe (fast) disabled")
 	}
+	if secondaryMedWindow > 0 {
+		secondaryMed = dedup.NewSecondaryDeduper(secondaryMedWindow, cfg.Dedup.SecondaryMedPreferStrong)
+		secondaryMed.Start()
+		log.Printf("Secondary dedupe (med) active with %v window", secondaryMedWindow)
+	} else {
+		log.Println("Secondary dedupe (med) disabled")
+	}
 	if secondarySlowWindow > 0 {
-		secondarySlow = dedup.NewSecondaryDeduper(secondarySlowWindow, cfg.Dedup.SecondarySlowPreferStrong)
+		secondarySlow = dedup.NewSecondaryDeduperWithKey(secondarySlowWindow, cfg.Dedup.SecondarySlowPreferStrong, dedup.SecondaryKeyCQZone)
 		secondarySlow.Start()
 		log.Printf("Secondary dedupe (slow) active with %v window", secondarySlowWindow)
 	} else {
 		log.Println("Secondary dedupe (slow) disabled")
 	}
-	if secondaryFastWindow <= 0 && secondarySlowWindow <= 0 {
-		log.Println("Warning: secondary dedupe disabled (fast+slow=0); spots broadcast without secondary suppression")
+	if secondaryFastWindow <= 0 && secondaryMedWindow <= 0 && secondarySlowWindow <= 0 {
+		log.Println("Warning: secondary dedupe disabled (fast+med+slow=0); spots broadcast without secondary suppression")
 	}
 
 	modeSeeds := make([]spot.ModeSeed, 0, len(cfg.ModeInference.DigitalSeeds))
@@ -823,6 +832,7 @@ func main() {
 		GridLookup:              gridLookup,
 		CTYLookup:               ctyLookup,
 		DedupeFastEnabled:       secondaryFastWindow > 0,
+		DedupeMedEnabled:        secondaryMedWindow > 0,
 		DedupeSlowEnabled:       secondarySlowWindow > 0,
 	}, processor)
 
@@ -846,7 +856,7 @@ func main() {
 	// Key aspects: Handles corrections, licensing, secondary dedupe, and fan-out.
 	// Upstream: main startup after wiring dependencies.
 	// Downstream: processOutputSpots.
-	go processOutputSpots(deduplicator, secondaryFast, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor)
+	go processOutputSpots(deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor)
 	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
@@ -980,7 +990,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor)
+	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -1041,6 +1051,9 @@ func main() {
 	}
 	if secondaryFast != nil {
 		secondaryFast.Stop()
+	}
+	if secondaryMed != nil {
+		secondaryMed.Stop()
 	}
 	if secondarySlow != nil {
 		secondarySlow.Stop()
@@ -1265,7 +1278,7 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -1323,6 +1336,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 			}
 
 			fastForwarded := secondaryStageCount
+			medForwarded := secondaryStageCount
 			slowForwarded := secondaryStageCount
 			if secondaryFast != nil {
 				secProcessed, secDupes, _ := secondaryFast.GetStats()
@@ -1330,6 +1344,14 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 					fastForwarded = secProcessed - secDupes
 				} else {
 					fastForwarded = 0
+				}
+			}
+			if secondaryMed != nil {
+				secProcessed, secDupes, _ := secondaryMed.GetStats()
+				if secDupes < secProcessed {
+					medForwarded = secProcessed - secDupes
+				} else {
+					medForwarded = 0
 				}
 			}
 			if secondarySlow != nil {
@@ -1340,24 +1362,36 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 					slowForwarded = 0
 				}
 			}
-			if secondaryFast == nil && secondarySlow != nil {
-				fastForwarded = slowForwarded
+			fallbackForwarded := fastForwarded
+			if secondaryFast == nil {
+				if secondaryMed != nil {
+					fallbackForwarded = medForwarded
+				} else if secondarySlow != nil {
+					fallbackForwarded = slowForwarded
+				}
 			}
-			if secondarySlow == nil && secondaryFast != nil {
-				slowForwarded = fastForwarded
+			if secondaryMed == nil {
+				medForwarded = fallbackForwarded
+			}
+			if secondarySlow == nil {
+				slowForwarded = fallbackForwarded
 			}
 
 			fastPercent := 0
+			medPercent := 0
 			slowPercent := 0
 			if ingestTotal > 0 {
 				fastPercent = int((fastForwarded * 100) / ingestTotal)
+				medPercent = int((medForwarded * 100) / ingestTotal)
 				slowPercent = int((slowForwarded * 100) / ingestTotal)
 			}
-			pipelineLine = fmt.Sprintf("Pipeline: %s | %s | %s/%d%% (F) / %s/%d%% (S)",
+			pipelineLine = fmt.Sprintf("Pipeline: %s | %s | %s/%d%% (F) / %s/%d%% (M) / %s/%d%% (S)",
 				humanize.Comma(int64(ingestTotal)),
 				humanize.Comma(int64(primaryProcessed)),
 				humanize.Comma(int64(fastForwarded)),
 				fastPercent,
+				humanize.Comma(int64(medForwarded)),
+				medPercent,
 				humanize.Comma(int64(slowForwarded)),
 				slowPercent)
 		}
@@ -1371,7 +1405,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 
 		combinedRBN := rbnTotal + rbnFTTotal
 		lines := []string{
-			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, secondaryFast, secondarySlow, metaCache, knownPtr)), // 1
+			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, secondaryFast, secondaryMed, secondarySlow, metaCache, knownPtr)), // 1
 			formatGridLineOrPlaceholder(gridStats, gridDB, pathPredictor),                                                                                  // 2
 			formatCTYLineOrPlaceholder(ctyLookup, ctyState),                                                                                                // 3
 			formatFCCLineOrPlaceholder(fccSnap),                                                                                                            // 4
@@ -1519,6 +1553,7 @@ func isStale(s *spot.Spot, policy config.SpotPolicy) bool {
 func processOutputSpots(
 	deduplicator *dedup.Deduplicator,
 	secondaryFast *dedup.SecondaryDeduper,
+	secondaryMed *dedup.SecondaryDeduper,
 	secondarySlow *dedup.SecondaryDeduper,
 	secondaryStage *atomic.Uint64,
 	modeAssigner *spot.ModeAssigner,
@@ -1551,7 +1586,7 @@ func processOutputSpots(
 	pathPredictor *pathreliability.Predictor,
 ) {
 	outputChan := deduplicator.GetOutputChannel()
-	secondaryActive := secondaryFast != nil || secondarySlow != nil
+	secondaryActive := secondaryFast != nil || secondaryMed != nil || secondarySlow != nil
 
 	for s := range outputChan {
 		func() {
@@ -1809,18 +1844,39 @@ func processOutputSpots(
 			if secondaryStage != nil {
 				secondaryStage.Add(1)
 			}
-			// Evaluate secondary dedupe per policy; slow falls back to fast when disabled.
+			// Evaluate secondary dedupe per policy; disabled policies fall back to FAST when available.
 			allowFast := true
 			if secondaryFast != nil {
 				allowFast = secondaryFast.ShouldForward(s)
 			}
-			allowSlow := allowFast
+			allowMed := true
+			if secondaryMed != nil {
+				allowMed = secondaryMed.ShouldForward(s)
+			}
+			allowSlow := true
 			if secondarySlow != nil {
 				allowSlow = secondarySlow.ShouldForward(s)
 			}
+			fallbackAllowed := allowFast
+			if secondaryFast == nil {
+				if secondaryMed != nil {
+					fallbackAllowed = allowMed
+				} else if secondarySlow != nil {
+					fallbackAllowed = allowSlow
+				}
+			}
+			if secondaryFast == nil {
+				allowFast = fallbackAllowed
+			}
+			if secondaryMed == nil {
+				allowMed = fallbackAllowed
+			}
+			if secondarySlow == nil {
+				allowSlow = fallbackAllowed
+			}
 
 			// Broadcast-only dedupe: ring/history already updated above for non-test spots.
-			if !allowFast && !allowSlow {
+			if !allowFast && !allowMed && !allowSlow {
 				if telnet != nil {
 					telnet.DeliverSelfSpot(s)
 				}
@@ -1848,14 +1904,14 @@ func processOutputSpots(
 				lastOutput.Store(time.Now().UTC().UnixNano())
 			}
 
-			if archiveWriter != nil && allowSlow && shouldArchiveSpot(s) {
+			if archiveWriter != nil && allowMed && shouldArchiveSpot(s) {
 				archiveWriter.Enqueue(s)
 			}
 
 			if telnet != nil {
-				telnet.BroadcastSpot(s, allowFast, allowSlow)
+				telnet.BroadcastSpot(s, allowFast, allowMed, allowSlow)
 			}
-			if peerManager != nil && allowSlow && shouldPublishToPeers(s) {
+			if peerManager != nil && allowMed && shouldPublishToPeers(s) {
 				peerSpot := cloneSpotForPeerPublish(s)
 				peerManager.PublishDX(peerSpot)
 			}
@@ -4085,12 +4141,12 @@ func sqlNullString(v string) sql.NullString {
 }
 
 // formatMemoryLine reports memory-ish metrics in order:
-// exec alloc / ring buffer / primary dedup (dup%) / secondary dedup (fast+slow) / call meta cache (hit%) / known calls (hit%).
+// exec alloc / ring buffer / primary dedup (dup%) / secondary dedup (fast+med+slow) / call meta cache (hit%) / known calls (hit%).
 // Purpose: Format the memory/status line for the stats pane.
 // Key aspects: Reports ring buffer occupancy and cache hit stats.
 // Upstream: displayStatsWithFCC.
 // Downstream: buffer.RingBuffer stats and cache lookups.
-func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, metaCache *callMetaCache, knownPtr *atomic.Pointer[spot.KnownCallsigns]) string {
+func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, metaCache *callMetaCache, knownPtr *atomic.Pointer[spot.KnownCallsigns]) string {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	execMB := bytesToMB(mem.Alloc)
@@ -4112,6 +4168,10 @@ func formatMemoryLine(buf *buffer.RingBuffer, dedup *dedup.Deduplicator, seconda
 	}
 	if secondaryFast != nil {
 		_, _, cacheSize := secondaryFast.GetStats()
+		secondaryMB += bytesToMB(uint64(cacheSize * dedupeEntryBytes))
+	}
+	if secondaryMed != nil {
+		_, _, cacheSize := secondaryMed.GetStats()
 		secondaryMB += bytesToMB(uint64(cacheSize * dedupeEntryBytes))
 	}
 	if secondarySlow != nil {

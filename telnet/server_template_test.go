@@ -21,7 +21,7 @@ func TestApplyTemplateTokens_ReplacesAll(t *testing.T) {
 		dialect:        "GO",
 		dialectSource:  "default",
 		dialectDefault: "GO",
-		dedupePolicy:   "SLOW",
+		dedupePolicy:   "MED",
 		grid:           "FN31",
 		noiseClass:     "QUIET",
 	}
@@ -33,7 +33,7 @@ func TestApplyTemplateTokens_ReplacesAll(t *testing.T) {
 		"Last login: 05-Jan-2026 18:00:11 UTC from 203.0.113.9",
 		"N2WQ-2 de LZ13ZZ 06-Jan-2026 20:12:18 UTC>",
 		"Uptime: 3d 04:18:22 | Users: 12",
-		"Dialect: GO (default/GO) Dedupe: SLOW Grid: FN31 Noise: QUIET",
+		"Dialect: GO (default/GO) Dedupe: MED Grid: FN31 Noise: QUIET",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)

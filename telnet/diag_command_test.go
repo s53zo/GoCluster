@@ -47,6 +47,7 @@ func TestFormatSpotForClientDiagComment(t *testing.T) {
 	sp.Time = time.Date(2025, time.January, 7, 4, 9, 0, 0, time.UTC)
 	sp.SourceType = spot.SourceRBN
 	sp.DEMetadata.ADIF = 291
+	sp.DEMetadata.CQZone = 5
 	sp.DEMetadata.Grid = "KN33"
 	sp.DXMetadata.Grid = "KN33"
 	sp.Confidence = "S"
@@ -56,7 +57,7 @@ func TestFormatSpotForClientDiagComment(t *testing.T) {
 	if strings.Contains(line, "ORIG") {
 		t.Fatalf("expected diagnostic comment to replace original, got %q", line)
 	}
-	if !strings.Contains(line, "R291KN80S") {
+	if !strings.Contains(line, "R2910580S") {
 		t.Fatalf("expected diagnostic tag in output, got %q", line)
 	}
 	if !strings.HasSuffix(strings.TrimRight(line, "\r\n "), "KN33 S 0409Z") {

@@ -65,7 +65,7 @@ func TouchUserRecordIP(callsign, ip string) (*UserRecord, bool, error) {
 	created := false
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			record = &UserRecord{Filter: *NewFilter(), Dialect: "go", DedupePolicy: DedupePolicyFast}
+			record = &UserRecord{Filter: *NewFilter(), Dialect: "go", DedupePolicy: DedupePolicyMed}
 			created = true
 		} else {
 			return nil, false, err
@@ -90,7 +90,7 @@ func TouchUserRecordLogin(callsign, ip string, loginTime time.Time) (record *Use
 	record, err = LoadUserRecord(callsign)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			record = &UserRecord{Filter: *NewFilter(), Dialect: "go", DedupePolicy: DedupePolicyFast}
+			record = &UserRecord{Filter: *NewFilter(), Dialect: "go", DedupePolicy: DedupePolicyMed}
 			created = true
 		} else {
 			return nil, false, time.Time{}, "", err

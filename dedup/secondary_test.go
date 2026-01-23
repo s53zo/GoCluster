@@ -71,3 +71,30 @@ func TestSecondaryDeduperWithMissingDEGrid2(t *testing.T) {
 		t.Fatal("expected duplicate to be suppressed even without DE grid2")
 	}
 }
+
+// Purpose: Verify CQ zone hashing splits secondary buckets by zone.
+// Key aspects: Different CQ zones should not collide under CQ mode.
+// Upstream: go test execution.
+// Downstream: NewSecondaryDeduperWithKey and ShouldForward.
+func TestSecondaryDeduperWithCQZoneKey(t *testing.T) {
+	d := NewSecondaryDeduperWithKey(5*time.Minute, false, SecondaryKeyCQZone)
+	now := time.Unix(1_700_000_200, 0).UTC()
+
+	makeSpot := func(zone int, at time.Time) *spot.Spot {
+		s := spot.NewSpot("K1ABC", "W1XYZ", 14074.0, "FT8")
+		s.Time = at
+		s.DEMetadata.ADIF = 291
+		s.DEMetadata.CQZone = zone
+		return s
+	}
+
+	if !d.ShouldForward(makeSpot(5, now)) {
+		t.Fatal("expected first spot to pass secondary dedupe")
+	}
+	if !d.ShouldForward(makeSpot(6, now.Add(10*time.Second))) {
+		t.Fatal("expected different CQ zone to pass")
+	}
+	if d.ShouldForward(makeSpot(5, now.Add(20*time.Second))) {
+		t.Fatal("expected duplicate CQ zone to be suppressed within window")
+	}
+}

@@ -57,11 +57,14 @@ type dedupePolicy uint8
 
 const (
 	dedupePolicyFast dedupePolicy = iota
+	dedupePolicyMed
 	dedupePolicySlow
 )
 
 func parseDedupePolicy(value string) dedupePolicy {
 	switch filter.NormalizeDedupePolicy(value) {
+	case filter.DedupePolicyMed:
+		return dedupePolicyMed
 	case filter.DedupePolicySlow:
 		return dedupePolicySlow
 	default:
@@ -74,6 +77,8 @@ func parseDedupePolicyToken(value string) (dedupePolicy, bool) {
 	switch trimmed {
 	case filter.DedupePolicyFast:
 		return dedupePolicyFast, true
+	case filter.DedupePolicyMed:
+		return dedupePolicyMed, true
 	case filter.DedupePolicySlow:
 		return dedupePolicySlow, true
 	default:
@@ -82,10 +87,21 @@ func parseDedupePolicyToken(value string) (dedupePolicy, bool) {
 }
 
 func (p dedupePolicy) label() string {
-	if p == dedupePolicySlow {
+	switch p {
+	case dedupePolicyMed:
+		return filter.DedupePolicyMed
+	case dedupePolicySlow:
 		return filter.DedupePolicySlow
+	default:
+		return filter.DedupePolicyFast
 	}
-	return filter.DedupePolicyFast
+}
+
+func dedupeKeyLabel(policy dedupePolicy) string {
+	if policy == dedupePolicySlow {
+		return "cqzone"
+	}
+	return "grid2"
 }
 
 // Server represents a multi-client telnet server for DX Cluster connections.
@@ -154,6 +170,7 @@ type Server struct {
 	noiseOffsets      map[string]float64                // Noise class lookup
 	gridLookup        func(string) (string, bool, bool) // Optional grid lookup from store
 	dedupeFastEnabled bool                              // Fast secondary dedupe policy enabled
+	dedupeMedEnabled  bool                              // Med secondary dedupe policy enabled
 	dedupeSlowEnabled bool                              // Slow secondary dedupe policy enabled
 }
 
@@ -185,7 +202,7 @@ type Client struct {
 	noiseClass   string                 // Noise class token (e.g., QUIET, URBAN)
 	noisePenalty float64                // dB penalty applied DX->user
 	skipNextEOL  bool                   // Consume a single LF/NUL after CR (RFC 854 compliance)
-	dedupePolicy atomic.Uint32          // Secondary dedupe policy (fast/slow)
+	dedupePolicy atomic.Uint32          // Secondary dedupe policy (fast/med/slow)
 	diagEnabled  atomic.Bool            // Diagnostic comment override enabled
 
 	// filterMu guards filter, which is read by telnet broadcast workers while the
@@ -307,12 +324,14 @@ func (c *Client) pathSnapshot() pathState {
 type broadcastPayload struct {
 	spot      *spot.Spot
 	allowFast bool
+	allowMed  bool
 	allowSlow bool
 }
 
 type broadcastJob struct {
 	spot      *spot.Spot
 	allowFast bool
+	allowMed  bool
 	allowSlow bool
 	clients   []*Client
 }
@@ -497,11 +516,25 @@ func (s *Server) resolveDedupePolicy(requested dedupePolicy) dedupePolicy {
 	if s == nil {
 		return requested
 	}
-	if requested == dedupePolicySlow && s.dedupeSlowEnabled {
-		return dedupePolicySlow
+	switch requested {
+	case dedupePolicyFast:
+		if s.dedupeFastEnabled {
+			return dedupePolicyFast
+		}
+	case dedupePolicyMed:
+		if s.dedupeMedEnabled {
+			return dedupePolicyMed
+		}
+	case dedupePolicySlow:
+		if s.dedupeSlowEnabled {
+			return dedupePolicySlow
+		}
 	}
 	if s.dedupeFastEnabled {
 		return dedupePolicyFast
+	}
+	if s.dedupeMedEnabled {
+		return dedupePolicyMed
 	}
 	if s.dedupeSlowEnabled {
 		return dedupePolicySlow
@@ -514,18 +547,23 @@ func (s *Server) formatDedupeStatus(client *Client) string {
 		return ""
 	}
 	policy := client.getDedupePolicy().label()
-	if !s.dedupeFastEnabled && !s.dedupeSlowEnabled {
-		return fmt.Sprintf("Dedupe: %s (secondary disabled)\n", policy)
+	keyLabel := dedupeKeyLabel(client.getDedupePolicy())
+	if !s.dedupeFastEnabled && !s.dedupeMedEnabled && !s.dedupeSlowEnabled {
+		return fmt.Sprintf("Dedupe: %s (%s) (secondary disabled)\n", policy, keyLabel)
 	}
 	fastLabel := "off"
 	if s.dedupeFastEnabled {
 		fastLabel = "on"
 	}
+	medLabel := "off"
+	if s.dedupeMedEnabled {
+		medLabel = "on"
+	}
 	slowLabel := "off"
 	if s.dedupeSlowEnabled {
 		slowLabel = "on"
 	}
-	return fmt.Sprintf("Dedupe: %s (fast=%s slow=%s)\n", policy, fastLabel, slowLabel)
+	return fmt.Sprintf("Dedupe: %s (%s) (fast=%s med=%s slow=%s)\n", policy, keyLabel, fastLabel, medLabel, slowLabel)
 }
 
 func (s *Server) handleDiagCommand(client *Client, line string) (string, bool) {
@@ -571,17 +609,17 @@ func (s *Server) handleDedupeCommand(client *Client, line string) (string, bool)
 			return "", false
 		}
 		if len(upper) < 3 {
-			return "Usage: SET DEDUPE <FAST|SLOW>\n", true
+			return "Usage: SET DEDUPE <FAST|MED|SLOW>\n", true
 		}
 		requested, ok := parseDedupePolicyToken(upper[2])
 		if !ok {
-			return "Usage: SET DEDUPE <FAST|SLOW>\n", true
+			return "Usage: SET DEDUPE <FAST|MED|SLOW>\n", true
 		}
 		effective := s.resolveDedupePolicy(requested)
 		client.setDedupePolicy(effective)
 		saveErr := client.saveFilter()
 
-		if !s.dedupeFastEnabled && !s.dedupeSlowEnabled {
+		if !s.dedupeFastEnabled && !s.dedupeMedEnabled && !s.dedupeSlowEnabled {
 			if saveErr != nil {
 				return fmt.Sprintf("Dedupe policy set to %s (secondary disabled; warning: failed to persist: %v)\n", effective.label(), saveErr), true
 			}
@@ -685,6 +723,7 @@ type ServerOptions struct {
 	GridLookup              func(string) (string, bool, bool)
 	CTYLookup               func() *cty.CTYDatabase
 	DedupeFastEnabled       bool
+	DedupeMedEnabled        bool
 	DedupeSlowEnabled       bool
 }
 
@@ -732,6 +771,7 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		noiseOffsets:      opts.NoiseOffsets,
 		gridLookup:        opts.GridLookup,
 		dedupeFastEnabled: config.DedupeFastEnabled,
+		dedupeMedEnabled:  config.DedupeMedEnabled,
 		dedupeSlowEnabled: config.DedupeSlowEnabled,
 	}
 }
@@ -862,11 +902,11 @@ func (s *Server) keepaliveLoop() {
 }
 
 // BroadcastSpot sends a spot to all connected clients with per-policy gates.
-func (s *Server) BroadcastSpot(spot *spot.Spot, allowFast, allowSlow bool) {
+func (s *Server) BroadcastSpot(spot *spot.Spot, allowFast, allowMed, allowSlow bool) {
 	if s == nil || spot == nil {
 		return
 	}
-	payload := &broadcastPayload{spot: spot, allowFast: allowFast, allowSlow: allowSlow}
+	payload := &broadcastPayload{spot: spot, allowFast: allowFast, allowMed: allowMed, allowSlow: allowSlow}
 	select {
 	case s.broadcast <- payload:
 	default:
@@ -1069,6 +1109,7 @@ func (s *Server) dispatchSpotToWorkers(payload *broadcastPayload, shards [][]*Cl
 		job := &broadcastJob{
 			spot:      payload.spot,
 			allowFast: payload.allowFast,
+			allowMed:  payload.allowMed,
 			allowSlow: payload.allowSlow,
 			clients:   clients,
 		}
@@ -1201,7 +1242,10 @@ func (s *Server) deliverJob(job *broadcastJob) {
 		}
 		client.pendingDeliveries.Done()
 		policyAllowed := job.allowFast
-		if client.getDedupePolicy() == dedupePolicySlow {
+		switch client.getDedupePolicy() {
+		case dedupePolicyMed:
+			policyAllowed = job.allowMed
+		case dedupePolicySlow:
 			policyAllowed = job.allowSlow
 		}
 		if !policyAllowed {
@@ -1431,7 +1475,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		client.filter = filter.NewFilter()
 		client.recentIPs = filter.UpdateRecentIPs(nil, spotterIP(client.address))
 		client.dialect = s.filterEngine.defaultDialect
-		client.setDedupePolicy(s.resolveDedupePolicy(dedupePolicyFast))
+		client.setDedupePolicy(s.resolveDedupePolicy(dedupePolicyMed))
 		client.gridCell = pathreliability.InvalidCell
 		client.gridDerived = false
 		client.noiseClass = "QUIET"
@@ -1825,9 +1869,9 @@ func diagTagForSpot(client *Client, sp *spot.Spot) string {
 	if sp.DEMetadata.ADIF > 0 {
 		dedxcc = strconv.Itoa(sp.DEMetadata.ADIF)
 	}
-	deGrid2 := diagDEGrid2(sp)
-	if deGrid2 == "" {
-		deGrid2 = " "
+	keyToken := diagDedupeKeyToken(client.getDedupePolicy(), sp)
+	if keyToken == "" {
+		keyToken = " "
 	}
 	band := diagBandToken(sp)
 	if band == "" {
@@ -1836,10 +1880,10 @@ func diagTagForSpot(client *Client, sp *spot.Spot) string {
 	policy := diagPolicyToken(client.getDedupePolicy())
 
 	var b strings.Builder
-	b.Grow(len(source) + len(dedxcc) + len(deGrid2) + len(band) + len(policy))
+	b.Grow(len(source) + len(dedxcc) + len(keyToken) + len(band) + len(policy))
 	b.WriteString(source)
 	b.WriteString(dedxcc)
-	b.WriteString(deGrid2)
+	b.WriteString(keyToken)
 	b.WriteString(band)
 	b.WriteString(policy)
 	return b.String()
@@ -1856,6 +1900,13 @@ func diagSourceToken(sp *spot.Spot) string {
 	default:
 		return "H"
 	}
+}
+
+func diagDedupeKeyToken(policy dedupePolicy, sp *spot.Spot) string {
+	if policy == dedupePolicySlow {
+		return diagDECQZone(sp)
+	}
+	return diagDEGrid2(sp)
 }
 
 func diagDEGrid2(sp *spot.Spot) string {
@@ -1879,6 +1930,17 @@ func diagDEGrid2(sp *spot.Spot) string {
 	return grid2
 }
 
+func diagDECQZone(sp *spot.Spot) string {
+	if sp == nil {
+		return ""
+	}
+	zone := sp.DEMetadata.CQZone
+	if zone <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%02d", zone)
+}
+
 func diagBandToken(sp *spot.Spot) string {
 	band := strings.TrimSpace(sp.BandNorm)
 	if band == "" {
@@ -1900,6 +1962,9 @@ func diagBandToken(sp *spot.Spot) string {
 func diagPolicyToken(policy dedupePolicy) string {
 	if policy == dedupePolicySlow {
 		return "S"
+	}
+	if policy == dedupePolicyMed {
+		return "M"
 	}
 	return "F"
 }
@@ -1954,7 +2019,7 @@ func applyWelcomeTokens(msg string, now time.Time) string {
 //	<USER_COUNT>  -> current connected user count
 //	<LAST_LOGIN>  -> previous login timestamp or "(first login)"
 //	<LAST_IP>     -> previous login IP or "(unknown)"
-//	<DEDUPE>      -> active dedupe policy (FAST/SLOW)
+//	<DEDUPE>      -> active dedupe policy (FAST/MED/SLOW)
 func applyTemplateTokens(msg string, data templateData) string {
 	if msg == "" {
 		return msg
@@ -2086,7 +2151,7 @@ func (s *Server) preLoginTemplateData(now time.Time) templateData {
 		dialect:        dialect,
 		dialectSource:  s.dialectSourceDef,
 		dialectDefault: defaultDialect,
-		dedupePolicy:   filter.DedupePolicyFast,
+		dedupePolicy:   filter.DedupePolicyMed,
 	}
 }
 
@@ -2109,7 +2174,7 @@ func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin 
 	grid := ""
 	noise := ""
 	dialect := ""
-	dedupePolicy := filter.DedupePolicyFast
+	dedupePolicy := filter.DedupePolicyMed
 	if client != nil {
 		callsign = client.callsign
 		state := client.pathSnapshot()

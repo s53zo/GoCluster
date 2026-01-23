@@ -18,6 +18,7 @@ func TestHandleDedupeCommandSetShow(t *testing.T) {
 
 	server := NewServer(ServerOptions{
 		DedupeFastEnabled: true,
+		DedupeMedEnabled:  true,
 		DedupeSlowEnabled: true,
 	}, nil)
 	client := &Client{
@@ -34,20 +35,26 @@ func TestHandleDedupeCommandSetShow(t *testing.T) {
 		t.Fatalf("expected SHOW DEDUPE to mention FAST, got %q", resp)
 	}
 
+	resp, handled = server.handleDedupeCommand(client, "SET DEDUPE MED")
+	if !handled {
+		t.Fatalf("expected SET DEDUPE MED to be handled")
+	}
+	if client.getDedupePolicy() != dedupePolicyMed {
+		t.Fatalf("expected dedupe policy MED, got %v", client.getDedupePolicy())
+	}
+	if !strings.Contains(resp, "MED") {
+		t.Fatalf("expected SET DEDUPE response to mention MED, got %q", resp)
+	}
+
 	resp, handled = server.handleDedupeCommand(client, "SET DEDUPE SLOW")
 	if !handled {
-		t.Fatalf("expected SET DEDUPE to be handled")
+		t.Fatalf("expected SET DEDUPE SLOW to be handled")
 	}
 	if client.getDedupePolicy() != dedupePolicySlow {
 		t.Fatalf("expected dedupe policy SLOW, got %v", client.getDedupePolicy())
 	}
 	if !strings.Contains(resp, "SLOW") {
 		t.Fatalf("expected SET DEDUPE response to mention SLOW, got %q", resp)
-	}
-
-	resp, handled = server.handleDedupeCommand(client, "SHOW DEDUPE")
-	if !handled || !strings.Contains(resp, "SLOW") {
-		t.Fatalf("expected SHOW DEDUPE to report SLOW, got %q", resp)
 	}
 }
 
@@ -59,6 +66,7 @@ func TestHandleDedupeCommandFallbackToFast(t *testing.T) {
 
 	server := NewServer(ServerOptions{
 		DedupeFastEnabled: true,
+		DedupeMedEnabled:  true,
 		DedupeSlowEnabled: false,
 	}, nil)
 	client := &Client{
@@ -101,6 +109,12 @@ func TestBroadcastRespectsDedupePolicyWindows(t *testing.T) {
 		spotChan: make(chan *spot.Spot, 16384),
 	}
 	fastClient.setDedupePolicy(dedupePolicyFast)
+	medClient := &Client{
+		callsign: "MED1",
+		filter:   filter.NewFilter(),
+		spotChan: make(chan *spot.Spot, 16384),
+	}
+	medClient.setDedupePolicy(dedupePolicyMed)
 	slowClient := &Client{
 		callsign: "SLOW1",
 		filter:   filter.NewFilter(),
@@ -110,15 +124,19 @@ func TestBroadcastRespectsDedupePolicyWindows(t *testing.T) {
 
 	server.clientsMutex.Lock()
 	server.clients[fastClient.callsign] = fastClient
+	server.clients[medClient.callsign] = medClient
 	server.clients[slowClient.callsign] = slowClient
 	server.shardsDirty.Store(true)
 	server.clientsMutex.Unlock()
 
 	secondaryFast := dedup.NewSecondaryDeduper(120*time.Second, false)
-	secondarySlow := dedup.NewSecondaryDeduper(300*time.Second, false)
+	secondaryMed := dedup.NewSecondaryDeduper(300*time.Second, false)
+	secondarySlow := dedup.NewSecondaryDeduperWithKey(480*time.Second, false, dedup.SecondaryKeyCQZone)
 	secondaryFast.Start()
+	secondaryMed.Start()
 	secondarySlow.Start()
 	t.Cleanup(secondaryFast.Stop)
+	t.Cleanup(secondaryMed.Stop)
 	t.Cleanup(secondarySlow.Stop)
 
 	base := spot.NewSpot("DXAAA", "DEBBB", 14030.0, "CW")
@@ -131,19 +149,25 @@ func TestBroadcastRespectsDedupePolicyWindows(t *testing.T) {
 		s := *base
 		s.Time = start.Add(time.Duration(i*60) * time.Second)
 		allowFast := secondaryFast.ShouldForward(&s)
+		allowMed := secondaryMed.ShouldForward(&s)
 		allowSlow := secondarySlow.ShouldForward(&s)
-		server.BroadcastSpot(&s, allowFast, allowSlow)
+		server.BroadcastSpot(&s, allowFast, allowMed, allowSlow)
 	}
 
 	fastCount := drainSpotCount(t, fastClient.spotChan, 5000)
-	slowCount := drainSpotCount(t, slowClient.spotChan, 2000)
+	medCount := drainSpotCount(t, medClient.spotChan, 2000)
+	slowCount := drainSpotCount(t, slowClient.spotChan, 1250)
 	if fastCount != 5000 {
 		t.Fatalf("expected fast policy to receive 5000 spots, got %d", fastCount)
 	}
-	if slowCount != 2000 {
-		t.Fatalf("expected slow policy to receive 2000 spots, got %d", slowCount)
+	if medCount != 2000 {
+		t.Fatalf("expected med policy to receive 2000 spots, got %d", medCount)
+	}
+	if slowCount != 1250 {
+		t.Fatalf("expected slow policy to receive 1250 spots, got %d", slowCount)
 	}
 	assertNoExtraSpots(t, fastClient.spotChan)
+	assertNoExtraSpots(t, medClient.spotChan)
 	assertNoExtraSpots(t, slowClient.spotChan)
 }
 

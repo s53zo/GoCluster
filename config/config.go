@@ -428,14 +428,16 @@ func (c *PSKReporterConfig) SubscriptionTopics() []string {
 //   - A positive window enables deduplication for that many seconds.
 //   - A zero or negative window effectively disables dedup (spots pass through immediately).
 //
-// Secondary dedupe has two policy windows (fast/slow) with independent SNR behavior.
+// Secondary dedupe has three policy windows (fast/med/slow) with independent SNR behavior.
 // When enabled, stronger SNR updates may replace the cached entry and be forwarded.
 type DedupConfig struct {
 	ClusterWindowSeconds       int  `yaml:"cluster_window_seconds"`             // <=0 disables primary dedup
 	SecondaryFastWindowSeconds int  `yaml:"secondary_fast_window_seconds"`      // <=0 disables fast secondary dedupe
+	SecondaryMedWindowSeconds  int  `yaml:"secondary_med_window_seconds"`       // <=0 disables med secondary dedupe
 	SecondarySlowWindowSeconds int  `yaml:"secondary_slow_window_seconds"`      // <=0 disables slow secondary dedupe
 	PreferStrongerSNR          bool `yaml:"prefer_stronger_snr"`                // keep max SNR when dropping duplicates
 	SecondaryFastPreferStrong  bool `yaml:"secondary_fast_prefer_stronger_snr"` // keep max SNR in fast secondary buckets
+	SecondaryMedPreferStrong   bool `yaml:"secondary_med_prefer_stronger_snr"`  // keep max SNR in med secondary buckets
 	SecondarySlowPreferStrong  bool `yaml:"secondary_slow_prefer_stronger_snr"` // keep max SNR in slow secondary buckets
 	OutputBufferSize           int  `yaml:"output_buffer_size"`                 // channel capacity for dedup output
 }
@@ -766,8 +768,10 @@ func Load(path string) (*Config, error) {
 
 	ctyEnabledSet := yamlKeyPresent(raw, "cty", "enabled")
 	hasSecondaryFastPrefer := yamlKeyPresent(raw, "dedup", "secondary_fast_prefer_stronger_snr")
+	hasSecondaryMedPrefer := yamlKeyPresent(raw, "dedup", "secondary_med_prefer_stronger_snr")
 	hasSecondarySlowPrefer := yamlKeyPresent(raw, "dedup", "secondary_slow_prefer_stronger_snr")
 	hasSecondaryFastWindow := yamlKeyPresent(raw, "dedup", "secondary_fast_window_seconds")
+	hasSecondaryMedWindow := yamlKeyPresent(raw, "dedup", "secondary_med_window_seconds")
 	hasSecondarySlowWindow := yamlKeyPresent(raw, "dedup", "secondary_slow_window_seconds")
 	legacySecondaryWindow := yamlKeyPresent(raw, "dedup", "secondary_window_seconds")
 	legacySecondaryPrefer := yamlKeyPresent(raw, "dedup", "secondary_prefer_stronger_snr")
@@ -775,7 +779,7 @@ func Load(path string) (*Config, error) {
 	hasArchiveCleanupYield := yamlKeyPresent(raw, "archive", "cleanup_batch_yield_ms")
 
 	if legacySecondaryWindow || legacySecondaryPrefer {
-		fmt.Printf("Warning: dedup.secondary_window_seconds and dedup.secondary_prefer_stronger_snr are deprecated and ignored; use secondary_fast_* and secondary_slow_* instead.\n")
+		fmt.Printf("Warning: dedup.secondary_window_seconds and dedup.secondary_prefer_stronger_snr are deprecated and ignored; use secondary_fast_* / secondary_med_* / secondary_slow_* instead.\n")
 	}
 
 	// UI defaults favor the lightweight ANSI renderer unless overridden. Mode
@@ -1436,17 +1440,26 @@ func Load(path string) (*Config, error) {
 	if cfg.Dedup.SecondaryFastWindowSeconds < 0 {
 		cfg.Dedup.SecondaryFastWindowSeconds = 0
 	}
+	if cfg.Dedup.SecondaryMedWindowSeconds < 0 {
+		cfg.Dedup.SecondaryMedWindowSeconds = 0
+	}
 	if cfg.Dedup.SecondarySlowWindowSeconds < 0 {
 		cfg.Dedup.SecondarySlowWindowSeconds = 0
 	}
 	if !hasSecondaryFastWindow && cfg.Dedup.SecondaryFastWindowSeconds == 0 {
 		cfg.Dedup.SecondaryFastWindowSeconds = 120
 	}
+	if !hasSecondaryMedWindow && cfg.Dedup.SecondaryMedWindowSeconds == 0 {
+		cfg.Dedup.SecondaryMedWindowSeconds = 300
+	}
 	if !hasSecondarySlowWindow && cfg.Dedup.SecondarySlowWindowSeconds == 0 {
-		cfg.Dedup.SecondarySlowWindowSeconds = 300
+		cfg.Dedup.SecondarySlowWindowSeconds = 480
 	}
 	if !cfg.Dedup.SecondaryFastPreferStrong && !hasSecondaryFastPrefer && cfg.Dedup.PreferStrongerSNR {
 		cfg.Dedup.SecondaryFastPreferStrong = cfg.Dedup.PreferStrongerSNR
+	}
+	if !cfg.Dedup.SecondaryMedPreferStrong && !hasSecondaryMedPrefer && cfg.Dedup.PreferStrongerSNR {
+		cfg.Dedup.SecondaryMedPreferStrong = cfg.Dedup.PreferStrongerSNR
 	}
 	if !cfg.Dedup.SecondarySlowPreferStrong && !hasSecondarySlowPrefer && cfg.Dedup.PreferStrongerSNR {
 		cfg.Dedup.SecondarySlowPreferStrong = cfg.Dedup.PreferStrongerSNR
@@ -1803,15 +1816,21 @@ func (c *Config) Print() {
 	if c.Dedup.SecondaryFastWindowSeconds > 0 {
 		secondaryFast = fmt.Sprintf("%ds", c.Dedup.SecondaryFastWindowSeconds)
 	}
+	secondaryMed := "disabled"
+	if c.Dedup.SecondaryMedWindowSeconds > 0 {
+		secondaryMed = fmt.Sprintf("%ds", c.Dedup.SecondaryMedWindowSeconds)
+	}
 	secondarySlow := "disabled"
 	if c.Dedup.SecondarySlowWindowSeconds > 0 {
 		secondarySlow = fmt.Sprintf("%ds", c.Dedup.SecondarySlowWindowSeconds)
 	}
-	fmt.Printf("Dedup: cluster=%s (prefer_stronger=%t) secondary_fast=%s (prefer_stronger=%t) secondary_slow=%s (prefer_stronger=%t)\n",
+	fmt.Printf("Dedup: cluster=%s (prefer_stronger=%t) secondary_fast=%s (prefer_stronger=%t) secondary_med=%s (prefer_stronger=%t) secondary_slow=%s (prefer_stronger=%t)\n",
 		clusterWindow,
 		c.Dedup.PreferStrongerSNR,
 		secondaryFast,
 		c.Dedup.SecondaryFastPreferStrong,
+		secondaryMed,
+		c.Dedup.SecondaryMedPreferStrong,
 		secondarySlow,
 		c.Dedup.SecondarySlowPreferStrong)
 	if len(c.Filter.DefaultModes) > 0 {

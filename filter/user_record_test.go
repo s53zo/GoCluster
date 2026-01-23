@@ -56,8 +56,8 @@ func TestTouchUserRecordIP(t *testing.T) {
 	if !created {
 		t.Fatalf("expected new record to be created")
 	}
-	if record.DedupePolicy != DedupePolicyFast {
-		t.Fatalf("expected default dedupe policy FAST, got %q", record.DedupePolicy)
+	if record.DedupePolicy != DedupePolicyMed {
+		t.Fatalf("expected default dedupe policy MED, got %q", record.DedupePolicy)
 	}
 	if len(record.RecentIPs) != 1 || record.RecentIPs[0] != "203.0.113.9" {
 		t.Fatalf("unexpected recent IPs: %v", record.RecentIPs)
@@ -90,8 +90,8 @@ func TestTouchUserRecordLogin(t *testing.T) {
 	if !created {
 		t.Fatalf("expected new record to be created")
 	}
-	if record.DedupePolicy != DedupePolicyFast {
-		t.Fatalf("expected default dedupe policy FAST, got %q", record.DedupePolicy)
+	if record.DedupePolicy != DedupePolicyMed {
+		t.Fatalf("expected default dedupe policy MED, got %q", record.DedupePolicy)
 	}
 	if !record.LastLoginUTC.Equal(firstLogin) {
 		t.Fatalf("expected last login %v, got %v", firstLogin, record.LastLoginUTC)
@@ -190,8 +190,8 @@ func TestLoadUserRecordLegacyFilter(t *testing.T) {
 	if !record.Bands["20m"] {
 		t.Fatalf("expected legacy band filter to load into user record")
 	}
-	if record.DedupePolicy != DedupePolicyFast {
-		t.Fatalf("expected legacy record to default dedupe policy FAST, got %q", record.DedupePolicy)
+	if record.DedupePolicy != DedupePolicyMed {
+		t.Fatalf("expected legacy record to default dedupe policy MED, got %q", record.DedupePolicy)
 	}
 }
 

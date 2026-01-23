@@ -18,11 +18,19 @@ import (
 // secondaryShardCount is kept small and power-of-two for fast masking.
 const secondaryShardCount = 64
 
+// SecondaryKeyMode selects which DE metadata dimension is hashed for secondary dedupe.
+type SecondaryKeyMode uint8
+
+const (
+	SecondaryKeyGrid2 SecondaryKeyMode = iota
+	SecondaryKeyCQZone
+)
+
 // SecondaryDeduper drops repeat spots within a time window using a metadata
 // key composed of:
 //   - Band (normalized string packed into 4 bytes)
 //   - DE ADIF (spotter DXCC)
-//   - DE grid2 prefix
+//   - DE grid2 prefix or CQ zone (policy-dependent)
 //   - Normalized DX call
 //   - Source class (human vs skimmer)
 //
@@ -32,6 +40,7 @@ const secondaryShardCount = 64
 type SecondaryDeduper struct {
 	window          time.Duration
 	preferStronger  bool
+	keyMode         SecondaryKeyMode
 	shards          []secondaryShard
 	cleanupInterval time.Duration
 	shutdown        chan struct{}
@@ -57,6 +66,15 @@ type secondaryEntry struct {
 // NewSecondaryDeduper builds a deduper. A non-positive window disables
 // suppression (ShouldForward always returns true).
 func NewSecondaryDeduper(window time.Duration, preferStronger bool) *SecondaryDeduper {
+	return NewSecondaryDeduperWithKey(window, preferStronger, SecondaryKeyGrid2)
+}
+
+// Purpose: Construct a secondary deduper with a specific hash mode.
+// Key aspects: Allows CQ zone hashing without changing existing callers.
+// Upstream: main startup when secondary dedupe is enabled.
+// Downstream: shard allocation and state init.
+// NewSecondaryDeduperWithKey builds a deduper with an explicit key mode.
+func NewSecondaryDeduperWithKey(window time.Duration, preferStronger bool, keyMode SecondaryKeyMode) *SecondaryDeduper {
 	shards := make([]secondaryShard, secondaryShardCount)
 	for i := range shards {
 		shards[i].cache = make(map[uint32]secondaryEntry)
@@ -64,6 +82,7 @@ func NewSecondaryDeduper(window time.Duration, preferStronger bool) *SecondaryDe
 	return &SecondaryDeduper{
 		window:          window,
 		preferStronger:  preferStronger,
+		keyMode:         keyMode,
 		shards:          shards,
 		cleanupInterval: 60 * time.Second,
 		shutdown:        make(chan struct{}),
@@ -109,7 +128,7 @@ func (d *SecondaryDeduper) ShouldForward(s *spot.Spot) bool {
 		return true
 	}
 
-	hash := secondaryHash(s, deDXCC)
+	hash := secondaryHash(s, deDXCC, d.keyMode)
 	shard := d.shardFor(hash)
 
 	shard.mu.Lock()
@@ -207,18 +226,18 @@ const (
 )
 
 // Purpose: Hash a spot into the secondary dedupe keyspace.
-// Key aspects: Includes band, DE DXCC/grid2, DX call, and source class.
+// Key aspects: Includes band, DE DXCC/grid2 or CQ zone, DX call, and source class.
 // Upstream: ShouldForward.
 // Downstream: writeFixedCallNormalized and secondarySourceClass.
 // secondaryHash mirrors the primary hash structure (minute + kHz + fixed DX
-// call) but keys on band + DE DXCC + DE grid2, appends a source class
+// call) but keys on band + DE DXCC + DE grid2 or CQ zone, appends a source class
 // discriminator, and omits the time. The time window is enforced by the cache
 // itself so the hash is stable across minute boundaries, collapsing within the
 // configured window. The source class split ensures a skimmer spot cannot
 // suppress a human spot (and vice versa) during broadcast-only dedupe. A
-// missing or malformed grid falls back to a zeroed grid2 bucket so behavior
+// missing or malformed grid/zone falls back to a zeroed bucket so behavior
 // remains deterministic.
-func secondaryHash(s *spot.Spot, deDXCC int) uint32 {
+func secondaryHash(s *spot.Spot, deDXCC int, keyMode SecondaryKeyMode) uint32 {
 	var buf [32]byte
 	if s != nil {
 		s.EnsureNormalized()
@@ -226,9 +245,14 @@ func secondaryHash(s *spot.Spot, deDXCC int) uint32 {
 	bandKey := bandKeyNumeric(s)
 	binary.LittleEndian.PutUint32(buf[0:4], bandKey)
 	binary.LittleEndian.PutUint16(buf[4:6], uint16(deDXCC))
-	grid2 := fixedGrid2(s)
-	buf[6] = grid2[0]
-	buf[7] = grid2[1]
+	switch keyMode {
+	case SecondaryKeyCQZone:
+		binary.LittleEndian.PutUint16(buf[6:8], fixedCQZone(s))
+	default:
+		grid2 := fixedGrid2(s)
+		buf[6] = grid2[0]
+		buf[7] = grid2[1]
+	}
 	writeFixedCallNormalized(buf[8:20], s.DXCallNorm)
 	buf[20] = secondarySourceClass(s)
 	return uint32(xxh3.Hash(buf[:]))
@@ -271,6 +295,18 @@ func fixedGrid2(s *spot.Spot) [2]byte {
 		out[1] = 0
 	}
 	return out
+}
+
+// fixedCQZone returns the CQ zone or zero when missing/invalid.
+func fixedCQZone(s *spot.Spot) uint16 {
+	if s == nil {
+		return 0
+	}
+	zone := s.DEMetadata.CQZone
+	if zone <= 0 || zone > 40 {
+		return 0
+	}
+	return uint16(zone)
 }
 
 func toUpperASCII(b byte) byte {

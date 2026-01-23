@@ -245,7 +245,8 @@ func buildHelpCatalog(dialect string) helpCatalog {
 		[]string{"SHOW DEDUPE"},
 		nil,
 		[]string{
-			"FAST = shorter window; SLOW = longer window.",
+			"FAST = short window; MED = medium window; SLOW = long window.",
+			"FAST/MED use 2-character grid squares; SLOW uses CQ zones.",
 			"Shows if a policy is disabled server-side.",
 		},
 	)
@@ -253,10 +254,11 @@ func buildHelpCatalog(dialect string) helpCatalog {
 
 	setDedupeLines := helpEntryLines(
 		"SET DEDUPE - Select broadcast dedupe policy.",
-		[]string{"SET DEDUPE <FAST|SLOW>"},
+		[]string{"SET DEDUPE <FAST|MED|SLOW>"},
 		nil,
 		[]string{
-			"FAST = shorter window; SLOW = longer window.",
+			"FAST = short window; MED = medium window; SLOW = long window.",
+			"FAST/MED use 2-character grid squares; SLOW uses CQ zones.",
 			"If a policy is disabled, the nearest available is chosen.",
 		},
 	)
