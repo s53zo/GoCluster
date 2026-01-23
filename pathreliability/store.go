@@ -29,11 +29,10 @@ type Store struct {
 	shards    []shard
 	cfg       Config
 	bandIndex BandIndex
-	neighbors map[string][]string
 }
 
 // NewStore constructs a path store with normalized config.
-func NewStore(cfg Config, bands []string, neighbors map[string][]string) *Store {
+func NewStore(cfg Config, bands []string) *Store {
 	cfg.normalize()
 	if len(bands) == 0 {
 		bands = []string{"160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m", "4m", "2m", "1m"}
@@ -43,7 +42,6 @@ func NewStore(cfg Config, bands []string, neighbors map[string][]string) *Store 
 		shards:    make([]shard, defaultShards),
 		cfg:       cfg,
 		bandIndex: idx,
-		neighbors: neighbors,
 	}
 	for i := range s.shards {
 		s.shards[i].buckets = make(map[uint64]*bucket)
@@ -113,8 +111,8 @@ type Sample struct {
 	AgeSec int64
 }
 
-// Lookup returns the decayed sample for the given key.
-func (s *Store) Lookup(receiverCell, senderCell CellID, receiverGrid2, senderGrid2 string, band string, now time.Time) (fine Sample, coarse Sample, neighbors []Sample, reverse Sample) {
+// Lookup returns the decayed samples for the given keys.
+func (s *Store) Lookup(receiverCell, senderCell CellID, receiverGrid2, senderGrid2 string, band string, now time.Time) (fine Sample, coarse Sample) {
 	if s == nil || !s.cfg.Enabled {
 		return
 	}
@@ -128,13 +126,6 @@ func (s *Store) Lookup(receiverCell, senderCell CellID, receiverGrid2, senderGri
 	}
 	if receiverGrid2 != "" && senderGrid2 != "" {
 		coarse = s.sample(packGrid2Key(receiverGrid2, senderGrid2, idx), halfLife, now)
-		if s.cfg.NeighborRadius > 0 {
-			for _, nbr := range s.neighbors[receiverGrid2] {
-				neighbors = append(neighbors, s.sample(packGrid2Key(nbr, senderGrid2, idx), halfLife, now))
-			}
-		}
-		// Reverse hint uses sender as receiver.
-		reverse = s.sample(packGrid2Key(senderGrid2, receiverGrid2, idx), halfLife, now)
 	}
 	return
 }

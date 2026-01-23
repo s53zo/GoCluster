@@ -83,14 +83,14 @@ func TestMergeSamplesWeighted(t *testing.T) {
 func TestSelectSampleMinFineWeight(t *testing.T) {
 	fine := Sample{Value: -20, Weight: 2, AgeSec: 12}
 	coarse := Sample{Value: -5, Weight: 10, AgeSec: 30}
-	got := SelectSample(fine, coarse, nil, 5)
+	got := SelectSample(fine, coarse, 5)
 	if got.Value != coarse.Value || got.Weight != coarse.Weight {
 		t.Fatalf("expected coarse when fine below min, got value=%v weight=%v", got.Value, got.Weight)
 	}
 
 	fine = Sample{Value: -10, Weight: 6, AgeSec: 10}
 	coarse = Sample{Value: -4, Weight: 10, AgeSec: 20}
-	got = SelectSample(fine, coarse, nil, 5)
+	got = SelectSample(fine, coarse, 5)
 	wantValue := (fine.Value*fine.Weight + coarse.Value*coarse.Weight) / (fine.Weight + coarse.Weight)
 	if math.Abs(got.Value-wantValue) > 0.0001 {
 		t.Fatalf("expected blended value %v, got %v", wantValue, got.Value)
@@ -100,10 +100,9 @@ func TestSelectSampleMinFineWeight(t *testing.T) {
 	}
 
 	fine = Sample{Value: -18, Weight: 2, AgeSec: 5}
-	neighbors := []Sample{{Value: -8, Weight: 4, AgeSec: 15}}
-	got = SelectSample(fine, Sample{}, neighbors, 5)
-	if got.Value != neighbors[0].Value || got.Weight != neighbors[0].Weight {
-		t.Fatalf("expected neighbor fallback when coarse missing and fine below min, got value=%v weight=%v", got.Value, got.Weight)
+	got = SelectSample(fine, Sample{}, 5)
+	if got.Value != fine.Value || got.Weight != fine.Weight {
+		t.Fatalf("expected fine sample when coarse missing, got value=%v weight=%v", got.Value, got.Weight)
 	}
 }
 

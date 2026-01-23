@@ -9,13 +9,12 @@ type Predictor struct {
 	cfg        Config
 }
 
-// NewPredictor builds a predictor with precomputed neighbors.
+// NewPredictor builds a predictor with normalized configuration.
 func NewPredictor(cfg Config, bands []string) *Predictor {
 	cfg.normalize()
-	neighbors := BuildNeighborTable()
 	return &Predictor{
-		baseline:   NewStore(cfg, bands, neighbors),
-		narrowband: NewStore(cfg, bands, neighbors),
+		baseline:   NewStore(cfg, bands),
+		narrowband: NewStore(cfg, bands),
 		cfg:        cfg,
 	}
 }
@@ -121,12 +120,12 @@ func (p *Predictor) mergeFromStore(store *Store, userCell, dxCell CellID, userGr
 		return 0, 0, false
 	}
 	// Receive (DX->user): receiver=user, sender=dx.
-	rFine, rCoarse, rNbr, _ := store.Lookup(userCell, dxCell, userGrid2, dxGrid2, band, now)
-	receive := SelectSample(rFine, rCoarse, rNbr, p.cfg.MinFineWeight)
+	rFine, rCoarse := store.Lookup(userCell, dxCell, userGrid2, dxGrid2, band, now)
+	receive := SelectSample(rFine, rCoarse, p.cfg.MinFineWeight)
 
 	// Transmit (user->DX): receiver=dx, sender=user.
-	tFine, tCoarse, tNbr, _ := store.Lookup(dxCell, userCell, dxGrid2, userGrid2, band, now)
-	transmit := SelectSample(tFine, tCoarse, tNbr, p.cfg.MinFineWeight)
+	tFine, tCoarse := store.Lookup(dxCell, userCell, dxGrid2, userGrid2, band, now)
+	transmit := SelectSample(tFine, tCoarse, p.cfg.MinFineWeight)
 
 	return mergeSamples(receive, transmit, p.cfg, noisePenalty)
 }

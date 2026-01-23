@@ -18,7 +18,7 @@ type Config struct {
 	StaleAfterSeconds   int                        `yaml:"stale_after_seconds"`       // purge when older than this
 	MinEffectiveWeight  float64                    `yaml:"min_effective_weight"`      // minimum decayed weight to report
 	MinFineWeight       float64                    `yaml:"min_fine_weight"`           // minimum fine weight to blend with coarse
-	NeighborRadius      int                        `yaml:"neighbor_radius"`           // 0 or 1 (N/S/E/W)
+	NeighborRadius      int                        `yaml:"neighbor_radius"`           // Deprecated: grid2 neighbor fallback removed (ignored).
 	ReverseHintDiscount float64                    `yaml:"reverse_hint_discount"`     // multiplier when using reverse direction
 	MergeReceiveWeight  float64                    `yaml:"merge_receive_weight"`      // merge weight for DX->user
 	MergeTransmitWeight float64                    `yaml:"merge_transmit_weight"`     // merge weight for user->DX
@@ -151,7 +151,7 @@ func DefaultConfig() Config {
 		StaleAfterSeconds:   1800,
 		MinEffectiveWeight:  1.0,
 		MinFineWeight:       5.0,
-		NeighborRadius:      1,
+		NeighborRadius:      0,
 		ReverseHintDiscount: 0.5,
 		MergeReceiveWeight:  0.6,
 		MergeTransmitWeight: 0.4,
