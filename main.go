@@ -955,7 +955,22 @@ func main() {
 	)
 	if cfg.PSKReporter.Enabled {
 		pskrTopics = cfg.PSKReporter.SubscriptionTopics()
-		pskrClient = pskreporter.NewClient(cfg.PSKReporter.Broker, cfg.PSKReporter.Port, pskrTopics, cfg.PSKReporter.Modes, cfg.PSKReporter.Name, cfg.PSKReporter.Workers, skewStore, cfg.PSKReporter.AppendSpotterSSID, cfg.PSKReporter.SpotChannelSize, cfg.PSKReporter.MaxPayloadBytes)
+		mqttQoS12Timeout := time.Duration(cfg.PSKReporter.MQTTQoS12EnqueueTimeoutMS) * time.Millisecond
+		pskrClient = pskreporter.NewClient(
+			cfg.PSKReporter.Broker,
+			cfg.PSKReporter.Port,
+			pskrTopics,
+			cfg.PSKReporter.Modes,
+			cfg.PSKReporter.Name,
+			cfg.PSKReporter.Workers,
+			cfg.PSKReporter.MQTTInboundWorkers,
+			cfg.PSKReporter.MQTTInboundQueueDepth,
+			mqttQoS12Timeout,
+			skewStore,
+			cfg.PSKReporter.AppendSpotterSSID,
+			cfg.PSKReporter.SpotChannelSize,
+			cfg.PSKReporter.MaxPayloadBytes,
+		)
 		err = pskrClient.Connect()
 		if err != nil {
 			log.Printf("Warning: Failed to connect to PSKReporter: %v", err)
@@ -1406,10 +1421,10 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 		combinedRBN := rbnTotal + rbnFTTotal
 		lines := []string{
 			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, secondaryFast, secondaryMed, secondarySlow, metaCache, knownPtr)), // 1
-			formatGridLineOrPlaceholder(gridStats, gridDB, pathPredictor),                                                                                  // 2
-			formatCTYLineOrPlaceholder(ctyLookup, ctyState),                                                                                                // 3
-			formatFCCLineOrPlaceholder(fccSnap),                                                                                                            // 4
-			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4),                                  // 5
+			formatGridLineOrPlaceholder(gridStats, gridDB, pathPredictor),                                                 // 2
+			formatCTYLineOrPlaceholder(ctyLookup, ctyState),                                                               // 3
+			formatFCCLineOrPlaceholder(fccSnap),                                                                           // 4
+			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4), // 5
 			fmt.Sprintf("PSKReporter: %s TOTAL / %s CW / %s RTTY / %s FT8 / %s FT4 / %s MSK144",
 				humanize.Comma(int64(pskTotal)),
 				humanize.Comma(int64(pskCW)),

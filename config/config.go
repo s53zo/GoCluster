@@ -304,6 +304,12 @@ type PSKReporterConfig struct {
 	Topic   string `yaml:"topic"`
 	Name    string `yaml:"name"`
 	Workers int    `yaml:"workers"`
+	// MQTTInboundWorkers controls Paho's inbound publish dispatch worker pool (0 = auto).
+	MQTTInboundWorkers int `yaml:"mqtt_inbound_workers"`
+	// MQTTInboundQueueDepth bounds the inbound publish queue from Paho to handlers (0 = auto).
+	MQTTInboundQueueDepth int `yaml:"mqtt_inbound_queue_depth"`
+	// MQTTQoS12EnqueueTimeoutMS bounds how long QoS1/2 publishes wait when the queue is full.
+	MQTTQoS12EnqueueTimeoutMS int `yaml:"mqtt_qos12_enqueue_timeout_ms"`
 	// SpotChannelSize controls the buffered ingest channel between MQTT client and processing.
 	SpotChannelSize int      `yaml:"spot_channel_size"`
 	Modes           []string `yaml:"modes"`
@@ -318,7 +324,10 @@ type PSKReporterConfig struct {
 	MaxPayloadBytes int `yaml:"max_payload_bytes"`
 }
 
-const defaultPSKReporterTopic = "pskr/filter/v2/+/+/#"
+const (
+	defaultPSKReporterTopic                 = "pskr/filter/v2/+/+/#"
+	defaultPSKReporterQoS12EnqueueTimeoutMS = 250
+)
 
 // ArchiveConfig controls optional Pebble archival of broadcasted spots.
 type ArchiveConfig struct {
@@ -777,6 +786,7 @@ func Load(path string) (*Config, error) {
 	legacySecondaryPrefer := yamlKeyPresent(raw, "dedup", "secondary_prefer_stronger_snr")
 	hasAdaptiveMinReportsEnabled := yamlKeyPresent(raw, "call_correction", "adaptive_min_reports", "enabled")
 	hasArchiveCleanupYield := yamlKeyPresent(raw, "archive", "cleanup_batch_yield_ms")
+	hasPSKRMQTTTimeout := yamlKeyPresent(raw, "pskreporter", "mqtt_qos12_enqueue_timeout_ms")
 
 	if legacySecondaryWindow || legacySecondaryPrefer {
 		fmt.Printf("Warning: dedup.secondary_window_seconds and dedup.secondary_prefer_stronger_snr are deprecated and ignored; use secondary_fast_* / secondary_med_* / secondary_slow_* instead.\n")
@@ -867,6 +877,18 @@ func Load(path string) (*Config, error) {
 
 	if cfg.PSKReporter.Workers < 0 {
 		cfg.PSKReporter.Workers = 0
+	}
+	if cfg.PSKReporter.MQTTInboundWorkers < 0 {
+		cfg.PSKReporter.MQTTInboundWorkers = 0
+	}
+	if cfg.PSKReporter.MQTTInboundQueueDepth < 0 {
+		cfg.PSKReporter.MQTTInboundQueueDepth = 0
+	}
+	if cfg.PSKReporter.MQTTQoS12EnqueueTimeoutMS < 0 {
+		cfg.PSKReporter.MQTTQoS12EnqueueTimeoutMS = 0
+	}
+	if cfg.PSKReporter.MQTTQoS12EnqueueTimeoutMS == 0 && !hasPSKRMQTTTimeout {
+		cfg.PSKReporter.MQTTQoS12EnqueueTimeoutMS = defaultPSKReporterQoS12EnqueueTimeoutMS
 	}
 	if cfg.PSKReporter.SpotChannelSize <= 0 {
 		cfg.PSKReporter.SpotChannelSize = 25000
@@ -1801,12 +1823,23 @@ func (c *Config) Print() {
 		if c.PSKReporter.Workers > 0 {
 			workerDesc = fmt.Sprintf("%d", c.PSKReporter.Workers)
 		}
-		fmt.Printf("PSKReporter: %s:%d (topic: %s buffer=%d workers=%s)\n",
+		mqttWorkerDesc := "auto"
+		if c.PSKReporter.MQTTInboundWorkers > 0 {
+			mqttWorkerDesc = fmt.Sprintf("%d", c.PSKReporter.MQTTInboundWorkers)
+		}
+		mqttQueueDesc := "auto"
+		if c.PSKReporter.MQTTInboundQueueDepth > 0 {
+			mqttQueueDesc = fmt.Sprintf("%d", c.PSKReporter.MQTTInboundQueueDepth)
+		}
+		fmt.Printf("PSKReporter: %s:%d (topic: %s buffer=%d workers=%s mqtt_inbound_workers=%s mqtt_inbound_queue=%s qos12_timeout=%dms)\n",
 			c.PSKReporter.Broker,
 			c.PSKReporter.Port,
 			c.PSKReporter.Topic,
 			c.PSKReporter.SpotChannelSize,
-			workerDesc)
+			workerDesc,
+			mqttWorkerDesc,
+			mqttQueueDesc,
+			c.PSKReporter.MQTTQoS12EnqueueTimeoutMS)
 	}
 	clusterWindow := "disabled"
 	if c.Dedup.ClusterWindowSeconds > 0 {

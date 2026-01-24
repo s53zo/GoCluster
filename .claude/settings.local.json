@@ -22,7 +22,12 @@
       "Bash(wc:*)",
       "Bash(grep:*)",
       "Bash(xargs:*)",
-      "Bash(go run:*)"
+      "Bash(go run:*)",
+      "Bash(for f in heap-20260123-1*.pprof)",
+      "Bash(do echo \"=== $f ===\")",
+      "Bash(done)",
+      "Bash(for f in allocs-20260123-1*.pprof)",
+      "Bash(go mod graph:*)"
     ],
     "deny": [],
     "ask": []

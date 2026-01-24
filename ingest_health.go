@@ -18,18 +18,23 @@ const (
 )
 
 type ingestHealthSnapshot struct {
-	Connected         bool
-	LastMessageAt     time.Time
-	LastSpotAt        time.Time
-	LastParseErrAt    time.Time
-	PayloadQueueLen   int
-	PayloadQueueCap   int
-	SpotQueueLen      int
-	SpotQueueCap      int
-	PayloadDrops      uint64
-	PayloadTooLarge   uint64
-	SpotDrops         uint64
-	ParseErrors       uint64
+	Connected            bool
+	LastMessageAt        time.Time
+	LastSpotAt           time.Time
+	LastParseErrAt       time.Time
+	PayloadQueueLen      int
+	PayloadQueueCap      int
+	MQTTQueueLen         int
+	MQTTQueueCap         int
+	SpotQueueLen         int
+	SpotQueueCap         int
+	PayloadDrops         uint64
+	PayloadTooLarge      uint64
+	SpotDrops            uint64
+	ParseErrors          uint64
+	MQTTDropsQoS0        uint64
+	MQTTQoS12Timeouts    uint64
+	MQTTQoS12Disconnects uint64
 }
 
 type ingestHealthSource struct {
@@ -120,6 +125,10 @@ func formatIngestHealthLine(name string, snap ingestHealthSnapshot, idle bool, n
 		b.WriteString(" payload_q=")
 		b.WriteString(fmt.Sprintf("%d/%d", snap.PayloadQueueLen, snap.PayloadQueueCap))
 	}
+	if snap.MQTTQueueCap > 0 {
+		b.WriteString(" mqtt_q=")
+		b.WriteString(fmt.Sprintf("%d/%d", snap.MQTTQueueLen, snap.MQTTQueueCap))
+	}
 	if snap.SpotQueueCap > 0 {
 		b.WriteString(" spot_q=")
 		b.WriteString(fmt.Sprintf("%d/%d", snap.SpotQueueLen, snap.SpotQueueCap))
@@ -136,6 +145,15 @@ func formatIngestHealthLine(name string, snap ingestHealthSnapshot, idle bool, n
 	}
 	if snap.ParseErrors > 0 {
 		dropParts = append(dropParts, fmt.Sprintf("parse=%d", snap.ParseErrors))
+	}
+	if snap.MQTTDropsQoS0 > 0 {
+		dropParts = append(dropParts, fmt.Sprintf("mqtt_qos0=%d", snap.MQTTDropsQoS0))
+	}
+	if snap.MQTTQoS12Timeouts > 0 {
+		dropParts = append(dropParts, fmt.Sprintf("mqtt_qos12_timeout=%d", snap.MQTTQoS12Timeouts))
+	}
+	if snap.MQTTQoS12Disconnects > 0 {
+		dropParts = append(dropParts, fmt.Sprintf("mqtt_qos12_disconnect=%d", snap.MQTTQoS12Disconnects))
 	}
 	if len(dropParts) > 0 {
 		b.WriteString(" drops=")
@@ -191,18 +209,23 @@ func pskReporterHealthSource(name string, client *pskreporter.Client) ingestHeal
 			}
 			snap := client.HealthSnapshot()
 			return ingestHealthSnapshot{
-				Connected:       snap.Connected,
-				LastMessageAt:   snap.LastPayloadAt,
-				LastSpotAt:      snap.LastSpotAt,
-				LastParseErrAt:  snap.LastParseErrAt,
-				PayloadQueueLen: snap.ProcessingQueueLen,
-				PayloadQueueCap: snap.ProcessingQueueCap,
-				SpotQueueLen:    snap.SpotQueueLen,
-				SpotQueueCap:    snap.SpotQueueCap,
-				PayloadDrops:    snap.PayloadDrops,
-				PayloadTooLarge: snap.PayloadTooLarge,
-				SpotDrops:       snap.SpotDrops,
-				ParseErrors:     snap.ParseErrors,
+				Connected:            snap.Connected,
+				LastMessageAt:        snap.LastPayloadAt,
+				LastSpotAt:           snap.LastSpotAt,
+				LastParseErrAt:       snap.LastParseErrAt,
+				PayloadQueueLen:      snap.ProcessingQueueLen,
+				PayloadQueueCap:      snap.ProcessingQueueCap,
+				MQTTQueueLen:         snap.MQTTInboundQueueLen,
+				MQTTQueueCap:         snap.MQTTInboundQueueCap,
+				SpotQueueLen:         snap.SpotQueueLen,
+				SpotQueueCap:         snap.SpotQueueCap,
+				PayloadDrops:         snap.PayloadDrops,
+				PayloadTooLarge:      snap.PayloadTooLarge,
+				SpotDrops:            snap.SpotDrops,
+				ParseErrors:          snap.ParseErrors,
+				MQTTDropsQoS0:        snap.MQTTInboundDropsQoS0,
+				MQTTQoS12Timeouts:    snap.MQTTInboundQoS12Timeouts,
+				MQTTQoS12Disconnects: snap.MQTTInboundQoS12Disconnects,
 			}
 		},
 	}

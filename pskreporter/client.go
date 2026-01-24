@@ -49,7 +49,10 @@ type Client struct {
 	appendSSID   bool
 	spotterCache *spot.CallCache
 
-	maxPayloadBytes int
+	maxPayloadBytes         int
+	mqttInboundWorkers      int
+	mqttInboundQueueDepth   int
+	mqttQoS12EnqueueTimeout time.Duration
 
 	lastPayloadAt  atomic.Int64
 	lastSpotAt     atomic.Int64
@@ -87,6 +90,8 @@ type PSKRMessage struct {
 
 const (
 	pskReporterQueuePerWorker = 256
+	mqttInboundQueuePerWorker = 256
+	mqttInboundQueueDepthCap  = 4096
 	defaultSpotBuffer         = 25000
 	defaultMaxPayloadBytes    = 4096
 	defaultDropLogInterval    = 10 * time.Second
@@ -118,7 +123,7 @@ func ConfigureCallCache(size int, ttl time.Duration) {
 // Key aspects: Initializes channels, caches, and worker settings.
 // Upstream: main.go startup.
 // Downstream: Client.Connect, worker pool.
-func NewClient(broker string, port int, topics []string, allowedModes []string, name string, workers int, skewStore *skew.Store, appendSSID bool, spotBuffer int, maxPayloadBytes int) *Client {
+func NewClient(broker string, port int, topics []string, allowedModes []string, name string, workers int, mqttInboundWorkers int, mqttInboundQueueDepth int, mqttQoS12EnqueueTimeout time.Duration, skewStore *skew.Store, appendSSID bool, spotBuffer int, maxPayloadBytes int) *Client {
 	if spotBuffer <= 0 {
 		spotBuffer = defaultSpotBuffer
 	}
@@ -136,19 +141,22 @@ func NewClient(broker string, port int, topics []string, allowedModes []string, 
 	}
 	allowAll := len(modeSet) == 0
 	return &Client{
-		broker:          broker,
-		port:            port,
-		topics:          append([]string{}, topics...),
-		allowedModes:    modeSet,
-		allowAllModes:   allowAll,
-		name:            name,
-		spotChan:        make(chan *spot.Spot, spotBuffer), // Buffered ingest to absorb bursts
-		shutdown:        make(chan struct{}),
-		workers:         workers,
-		skewStore:       skewStore,
-		appendSSID:      appendSSID,
-		spotterCache:    spot.NewCallCache(callCacheSize, callCacheTTL),
-		maxPayloadBytes: maxPayloadBytes,
+		broker:                  broker,
+		port:                    port,
+		topics:                  append([]string{}, topics...),
+		allowedModes:            modeSet,
+		allowAllModes:           allowAll,
+		name:                    name,
+		spotChan:                make(chan *spot.Spot, spotBuffer), // Buffered ingest to absorb bursts
+		shutdown:                make(chan struct{}),
+		workers:                 workers,
+		mqttInboundWorkers:      mqttInboundWorkers,
+		mqttInboundQueueDepth:   mqttInboundQueueDepth,
+		mqttQoS12EnqueueTimeout: mqttQoS12EnqueueTimeout,
+		skewStore:               skewStore,
+		appendSSID:              appendSSID,
+		spotterCache:            spot.NewCallCache(callCacheSize, callCacheTTL),
+		maxPayloadBytes:         maxPayloadBytes,
 
 		payloadDropCounter:     newRateCounter(logInterval),
 		payloadTooLargeCounter: newRateCounter(logInterval),
@@ -205,6 +213,31 @@ func (c *Client) Connect() error {
 	opts.SetPingTimeout(10 * time.Second)
 	opts.SetConnectTimeout(10 * time.Second)
 	opts.SetCleanSession(true)
+	opts.SetOrderMatters(false)
+
+	mqttWorkers := c.mqttInboundWorkers
+	if mqttWorkers <= 0 {
+		mqttWorkers = c.workers
+	}
+	if mqttWorkers <= 0 {
+		mqttWorkers = defaultPSKReporterWorkers()
+	}
+	queueDepth := c.mqttInboundQueueDepth
+	if queueDepth <= 0 {
+		queueDepth = mqttWorkers * mqttInboundQueuePerWorker
+		if queueDepth > mqttInboundQueueDepthCap {
+			queueDepth = mqttInboundQueueDepthCap
+		}
+	}
+	if c.mqttQoS12EnqueueTimeout < 0 {
+		c.mqttQoS12EnqueueTimeout = 0
+	}
+	c.mqttInboundWorkers = mqttWorkers
+	c.mqttInboundQueueDepth = queueDepth
+	opts.SetInboundPublishWorkers(mqttWorkers)
+	opts.SetInboundPublishQueueDepth(uint(queueDepth))
+	opts.SetInboundPublishEnqueueTimeout(c.mqttQoS12EnqueueTimeout)
+	log.Printf("PSKReporter: MQTT inbound queue depth=%d workers=%d qos12_timeout=%s", queueDepth, mqttWorkers, c.mqttQoS12EnqueueTimeout)
 
 	// Set auto-reconnect
 	opts.SetAutoReconnect(true)
@@ -263,19 +296,24 @@ func (c *Client) onConnect(client mqtt.Client) {
 func (c *Client) onConnectionLost(client mqtt.Client, err error) {
 	snap := c.HealthSnapshot()
 	now := time.Now()
-	log.Printf("PSKReporter: Connection lost: %v (last_payload=%s last_spot=%s last_parse_err=%s processing=%d/%d spot_queue=%d/%d drops payload=%d oversize=%d spot=%d parse=%d)",
+	log.Printf("PSKReporter: Connection lost: %v (last_payload=%s last_spot=%s last_parse_err=%s processing=%d/%d mqtt_q=%d/%d spot_queue=%d/%d drops payload=%d oversize=%d spot=%d parse=%d mqtt_drop=%d mqtt_qos12_timeout=%d mqtt_qos12_disconnect=%d)",
 		err,
 		formatAge(now, snap.LastPayloadAt),
 		formatAge(now, snap.LastSpotAt),
 		formatAge(now, snap.LastParseErrAt),
 		snap.ProcessingQueueLen,
 		snap.ProcessingQueueCap,
+		snap.MQTTInboundQueueLen,
+		snap.MQTTInboundQueueCap,
 		snap.SpotQueueLen,
 		snap.SpotQueueCap,
 		snap.PayloadDrops,
 		snap.PayloadTooLarge,
 		snap.SpotDrops,
-		snap.ParseErrors)
+		snap.ParseErrors,
+		snap.MQTTInboundDropsQoS0,
+		snap.MQTTInboundQoS12Timeouts,
+		snap.MQTTInboundQoS12Disconnects)
 	log.Println("PSKReporter: Will attempt to reconnect...")
 }
 
@@ -678,20 +716,36 @@ func (c *Client) IsConnected() bool {
 	return c.client != nil && c.client.IsConnected()
 }
 
+func (c *Client) mqttInboundStats() mqtt.InboundPublishStats {
+	if c == nil || c.client == nil {
+		return mqtt.InboundPublishStats{}
+	}
+	stats, ok := c.client.(mqtt.InboundPublishStatsProvider)
+	if !ok || stats == nil {
+		return mqtt.InboundPublishStats{}
+	}
+	return stats.InboundPublishStats()
+}
+
 // HealthSnapshot reports recent activity and queue state for diagnostics.
 type HealthSnapshot struct {
-	Connected           bool
-	LastPayloadAt       time.Time
-	LastSpotAt          time.Time
-	LastParseErrAt      time.Time
-	ProcessingQueueLen  int
-	ProcessingQueueCap  int
-	SpotQueueLen        int
-	SpotQueueCap        int
-	PayloadDrops        uint64
-	PayloadTooLarge     uint64
-	SpotDrops           uint64
-	ParseErrors         uint64
+	Connected                   bool
+	LastPayloadAt               time.Time
+	LastSpotAt                  time.Time
+	LastParseErrAt              time.Time
+	ProcessingQueueLen          int
+	ProcessingQueueCap          int
+	MQTTInboundQueueLen         int
+	MQTTInboundQueueCap         int
+	SpotQueueLen                int
+	SpotQueueCap                int
+	PayloadDrops                uint64
+	PayloadTooLarge             uint64
+	SpotDrops                   uint64
+	ParseErrors                 uint64
+	MQTTInboundDropsQoS0        uint64
+	MQTTInboundQoS12Timeouts    uint64
+	MQTTInboundQoS12Disconnects uint64
 }
 
 // Purpose: Provide a consistent ingest health snapshot.
@@ -711,6 +765,12 @@ func (c *Client) HealthSnapshot() HealthSnapshot {
 		SpotDrops:       c.spotDropCounter.count.Load(),
 		ParseErrors:     c.parseErrorCounter.count.Load(),
 	}
+	mqttStats := c.mqttInboundStats()
+	snap.MQTTInboundQueueLen = mqttStats.QueueLen
+	snap.MQTTInboundQueueCap = mqttStats.QueueCap
+	snap.MQTTInboundDropsQoS0 = mqttStats.DroppedQoS0
+	snap.MQTTInboundQoS12Timeouts = mqttStats.EnqueueTimeoutQoS12
+	snap.MQTTInboundQoS12Disconnects = mqttStats.DisconnectsQoS12
 	if ns := c.lastPayloadAt.Load(); ns > 0 {
 		snap.LastPayloadAt = time.Unix(0, ns)
 	}
