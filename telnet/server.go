@@ -125,53 +125,58 @@ func dedupeKeyLabel(policy dedupePolicy) string {
 //   - BroadcastSpot() is thread-safe (uses mutex)
 //   - Each client goroutine operates independently
 type Server struct {
-	port              int                               // TCP port to listen on
-	welcomeMessage    string                            // Welcome message for new connections
-	maxConnections    int                               // Maximum concurrent client connections
-	duplicateLoginMsg string                            // Message sent to evicted duplicate session
-	greetingTemplate  string                            // Post-login greeting with placeholders
-	loginPrompt       string                            // Login prompt before callsign entry
-	loginEmptyMessage string                            // Message for empty callsign
-	loginInvalidMsg   string                            // Message for invalid callsign
-	inputTooLongMsg   string                            // Template for input length violations
-	inputInvalidMsg   string                            // Template for invalid character violations
-	dialectWelcomeMsg string                            // Template for dialect welcome line
-	dialectSourceDef  string                            // Label for default dialect source
-	dialectSourcePers string                            // Label for persisted dialect source
-	pathStatusMsg     string                            // Template for path reliability status line
-	clusterCall       string                            // Cluster/node callsign for greeting substitution
-	listener          net.Listener                      // TCP listener
-	clients           map[string]*Client                // Map of callsign → Client
-	clientsMutex      sync.RWMutex                      // Protects clients map
-	shutdown          chan struct{}                     // Shutdown coordination channel
-	broadcast         chan *broadcastPayload            // Broadcast channel for spots (buffered, configurable)
-	broadcastWorkers  int                               // Number of goroutines delivering spots
-	workerQueues      []chan *broadcastJob              // Per-worker job queues
-	workerQueueSize   int                               // Capacity of each worker's queue
-	batchInterval     time.Duration                     // Broadcast batch interval; 0 means immediate
-	batchMax          int                               // Max jobs per batch before flush
-	metrics           broadcastMetrics                  // Broadcast metrics counters
-	keepaliveInterval time.Duration                     // Optional periodic CRLF to keep idle sessions alive
-	clientShards      [][]*Client                       // Cached shard layout for broadcasts
-	shardsDirty       atomic.Bool                       // Flag to rebuild shards on client add/remove
-	processor         *commands.Processor               // Command processor for user commands
-	skipHandshake     bool                              // When true, omit Telnet IAC negotiation
-	transport         string                            // Telnet transport backend ("native" or "ziutek")
-	useZiutek         bool                              // True when the external telnet transport is enabled
-	echoMode          string                            // Input echo policy ("server", "local", "off")
-	clientBufferSize  int                               // Per-client spot channel capacity
-	loginLineLimit    int                               // Maximum bytes accepted for login/callsign input
-	commandLineLimit  int                               // Maximum bytes accepted for post-login commands
-	filterEngine      *filterCommandEngine              // Table-driven filter command parser/executor
-	reputationGate    *reputation.Gate                  // Optional reputation gate for login metadata
-	startTime         time.Time                         // Process start time for uptime tokens
-	pathPredictor     *pathreliability.Predictor        // Optional path reliability predictor
-	pathDisplay       bool                              // Toggle glyph rendering
-	noiseOffsets      map[string]float64                // Noise class lookup
-	gridLookup        func(string) (string, bool, bool) // Optional grid lookup from store
-	dedupeFastEnabled bool                              // Fast secondary dedupe policy enabled
-	dedupeMedEnabled  bool                              // Med secondary dedupe policy enabled
-	dedupeSlowEnabled bool                              // Slow secondary dedupe policy enabled
+	port                 int                               // TCP port to listen on
+	welcomeMessage       string                            // Welcome message for new connections
+	maxConnections       int                               // Maximum concurrent client connections
+	duplicateLoginMsg    string                            // Message sent to evicted duplicate session
+	greetingTemplate     string                            // Post-login greeting with placeholders
+	loginPrompt          string                            // Login prompt before callsign entry
+	loginEmptyMessage    string                            // Message for empty callsign
+	loginInvalidMsg      string                            // Message for invalid callsign
+	inputTooLongMsg      string                            // Template for input length violations
+	inputInvalidMsg      string                            // Template for invalid character violations
+	dialectWelcomeMsg    string                            // Template for dialect welcome line
+	dialectSourceDef     string                            // Label for default dialect source
+	dialectSourcePers    string                            // Label for persisted dialect source
+	pathStatusMsg        string                            // Template for path reliability status line
+	clusterCall          string                            // Cluster/node callsign for greeting substitution
+	listener             net.Listener                      // TCP listener
+	clients              map[string]*Client                // Map of callsign → Client
+	clientsMutex         sync.RWMutex                      // Protects clients map
+	shutdown             chan struct{}                     // Shutdown coordination channel
+	broadcast            chan *broadcastPayload            // Broadcast channel for spots (buffered, configurable)
+	broadcastWorkers     int                               // Number of goroutines delivering spots
+	workerQueues         []chan *broadcastJob              // Per-worker job queues
+	workerQueueSize      int                               // Capacity of each worker's queue
+	batchInterval        time.Duration                     // Broadcast batch interval; 0 means immediate
+	batchMax             int                               // Max jobs per batch before flush
+	metrics              broadcastMetrics                  // Broadcast metrics counters
+	keepaliveInterval    time.Duration                     // Optional periodic CRLF to keep idle sessions alive
+	clientShards         [][]*Client                       // Cached shard layout for broadcasts
+	shardsDirty          atomic.Bool                       // Flag to rebuild shards on client add/remove
+	processor            *commands.Processor               // Command processor for user commands
+	skipHandshake        bool                              // When true, omit Telnet IAC negotiation
+	transport            string                            // Telnet transport backend ("native" or "ziutek")
+	useZiutek            bool                              // True when the external telnet transport is enabled
+	echoMode             string                            // Input echo policy ("server", "local", "off")
+	clientBufferSize     int                               // Per-client spot channel capacity
+	loginLineLimit       int                               // Maximum bytes accepted for login/callsign input
+	commandLineLimit     int                               // Maximum bytes accepted for post-login commands
+	filterEngine         *filterCommandEngine              // Table-driven filter command parser/executor
+	reputationGate       *reputation.Gate                  // Optional reputation gate for login metadata
+	startTime            time.Time                         // Process start time for uptime tokens
+	pathPredictor        *pathreliability.Predictor        // Optional path reliability predictor
+	pathDisplay          bool                              // Toggle glyph rendering
+	noiseOffsets         map[string]float64                // Noise class lookup
+	gridLookup           func(string) (string, bool, bool) // Optional grid lookup from store
+	dedupeFastEnabled    bool                              // Fast secondary dedupe policy enabled
+	dedupeMedEnabled     bool                              // Med secondary dedupe policy enabled
+	dedupeSlowEnabled    bool                              // Slow secondary dedupe policy enabled
+	pathPredTotal        atomic.Uint64                     // Path predictions computed (glyphs)
+	pathPredDerived      atomic.Uint64                     // Predictions using derived user/DX grids
+	pathPredNarrowband   atomic.Uint64                     // Narrowband predictions won by narrowband store
+	pathPredBaseline     atomic.Uint64                     // Narrowband predictions won by baseline store
+	pathPredInsufficient atomic.Uint64                     // Narrowband predictions with insufficient data
 }
 
 // Client represents a connected telnet client session.
@@ -1310,6 +1315,47 @@ func (s *Server) BroadcastMetricSnapshot() (queueDrops, clientDrops, senderFailu
 	return s.metrics.snapshot()
 }
 
+type pathPredictionStats struct {
+	Total        uint64
+	Derived      uint64
+	Narrowband   uint64
+	Baseline     uint64
+	Insufficient uint64
+}
+
+func (s *Server) recordPathPrediction(mode string, res pathreliability.Result, userDerived, dxDerived bool) {
+	if s == nil {
+		return
+	}
+	s.pathPredTotal.Add(1)
+	if userDerived || dxDerived {
+		s.pathPredDerived.Add(1)
+	}
+	if pathreliability.IsNarrowbandMode(mode) {
+		switch res.Source {
+		case pathreliability.SourceNarrowband:
+			s.pathPredNarrowband.Add(1)
+		case pathreliability.SourceBaseline:
+			s.pathPredBaseline.Add(1)
+		default:
+			s.pathPredInsufficient.Add(1)
+		}
+	}
+}
+
+func (s *Server) PathPredictionStatsSnapshot() pathPredictionStats {
+	if s == nil {
+		return pathPredictionStats{}
+	}
+	return pathPredictionStats{
+		Total:        s.pathPredTotal.Swap(0),
+		Derived:      s.pathPredDerived.Swap(0),
+		Narrowband:   s.pathPredNarrowband.Swap(0),
+		Baseline:     s.pathPredBaseline.Swap(0),
+		Insufficient: s.pathPredInsufficient.Swap(0),
+	}
+}
+
 func defaultBroadcastWorkers() int {
 	workers := runtime.NumCPU()
 	if workers < 4 {
@@ -1793,6 +1839,7 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 	}
 	now := time.Now().UTC()
 	res := s.pathPredictor.Predict(userCell, dxCell, userGrid2, dxGrid2, band, mode, noisePenalty, now)
+	s.recordPathPrediction(mode, res, state.gridDerived, sp.DXMetadata.GridDerived)
 	g := res.Glyph
 	return g
 }
@@ -1854,7 +1901,7 @@ func (s *Server) pathClassForClient(client *Client, sp *spot.Spot) string {
 	}
 	now := time.Now().UTC()
 	res := s.pathPredictor.Predict(userCell, dxCell, userGrid2, dxGrid2, band, mode, noisePenalty, now)
-	if res.Weight < cfg.MinEffectiveWeight {
+	if res.Source == pathreliability.SourceInsufficient {
 		return filter.PathClassInsufficient
 	}
 	return pathreliability.ClassForDB(res.Value, mode, cfg)

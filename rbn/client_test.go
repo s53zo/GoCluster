@@ -2,6 +2,7 @@ package rbn
 
 import (
 	"testing"
+	"time"
 
 	"dxcluster/spot"
 )
@@ -39,5 +40,39 @@ func TestFinalizeModeNormalizesSSB(t *testing.T) {
 	}
 	if got := spot.NormalizeVoiceMode("SSB", 14074); got != "USB" {
 		t.Fatalf("expected SSB on 20m to normalize to USB, got %q", got)
+	}
+}
+
+func TestParseTimeFromRBNClampsFuture(t *testing.T) {
+	now := time.Date(2026, 1, 23, 22, 0, 0, 0, time.UTC)
+	got := parseTimeFromRBNAt("2359Z", now)
+	if !got.Equal(now) {
+		t.Fatalf("expected future time to clamp to now %v, got %v", now, got)
+	}
+}
+
+func TestParseTimeFromRBNAllowsSmallFutureSkew(t *testing.T) {
+	now := time.Date(2026, 1, 23, 22, 0, 0, 0, time.UTC)
+	got := parseTimeFromRBNAt("2201Z", now)
+	want := time.Date(2026, 1, 23, 22, 1, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("expected small future skew to be accepted (%v), got %v", want, got)
+	}
+}
+
+func TestParseTimeFromRBNKeepsSameDay(t *testing.T) {
+	now := time.Date(2026, 1, 23, 22, 0, 0, 0, time.UTC)
+	got := parseTimeFromRBNAt("0006Z", now)
+	want := time.Date(2026, 1, 23, 0, 6, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("expected same-day parse (%v), got %v", want, got)
+	}
+}
+
+func TestParseTimeFromRBNInvalidFormatFallsBack(t *testing.T) {
+	now := time.Date(2026, 1, 23, 22, 0, 0, 0, time.UTC)
+	got := parseTimeFromRBNAt("bad", now)
+	if !got.Equal(now) {
+		t.Fatalf("expected invalid format to return now %v, got %v", now, got)
 	}
 }

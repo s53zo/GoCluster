@@ -61,11 +61,11 @@ func (s *Store) Update(receiverCell, senderCell CellID, receiverGrid2, senderGri
 	}
 	halfLife := s.bandIndex.HalfLifeSeconds(band, s.cfg)
 	if receiverCell == InvalidCell || senderCell == InvalidCell {
-		// Still allow coarse update if grids are valid.
+		// Still allow coarse update if enabled and grids are valid.
 	} else {
 		s.updateBucket(packKey(receiverCell, senderCell, idx), value, weight, now, halfLife)
 	}
-	if receiverGrid2 != "" && senderGrid2 != "" {
+	if s.cfg.CoarseFallbackEnabled && receiverGrid2 != "" && senderGrid2 != "" {
 		s.updateBucket(packGrid2Key(receiverGrid2, senderGrid2, idx), value, weight, now, halfLife)
 	}
 }
@@ -111,6 +111,11 @@ type Sample struct {
 	AgeSec int64
 }
 
+type bandCounts struct {
+	fine   int
+	coarse int
+}
+
 // Lookup returns the decayed samples for the given keys.
 func (s *Store) Lookup(receiverCell, senderCell CellID, receiverGrid2, senderGrid2 string, band string, now time.Time) (fine Sample, coarse Sample) {
 	if s == nil || !s.cfg.Enabled {
@@ -124,7 +129,7 @@ func (s *Store) Lookup(receiverCell, senderCell CellID, receiverGrid2, senderGri
 	if receiverCell != InvalidCell && senderCell != InvalidCell {
 		fine = s.sample(packKey(receiverCell, senderCell, idx), halfLife, now)
 	}
-	if receiverGrid2 != "" && senderGrid2 != "" {
+	if s.cfg.CoarseFallbackEnabled && receiverGrid2 != "" && senderGrid2 != "" {
 		coarse = s.sample(packGrid2Key(receiverGrid2, senderGrid2, idx), halfLife, now)
 	}
 	return
@@ -212,6 +217,53 @@ func (s *Store) Stats(now time.Time) (fine int, coarse int) {
 		sh.mu.RUnlock()
 	}
 	return fine, coarse
+}
+
+// StatsByBand returns counts of active fine/coarse buckets per band.
+func (s *Store) StatsByBand(now time.Time) []bandCounts {
+	if s == nil || !s.cfg.Enabled {
+		return nil
+	}
+	bands := s.bandIndex.Bands()
+	if len(bands) == 0 {
+		return nil
+	}
+	counts := make([]bandCounts, len(bands))
+	nowSec := now.Unix()
+	staleAfter := int64(s.cfg.StaleAfterSeconds)
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		for key, b := range sh.buckets {
+			if b == nil {
+				continue
+			}
+			age := nowSec - b.lastUpdate
+			if age < 0 {
+				age = 0
+			}
+			if staleAfter > 0 && age > staleAfter {
+				continue
+			}
+			isCoarse := key&0xFFFF != 0
+			var idx uint16
+			if isCoarse {
+				idx = uint16((key >> 32) & 0xFFFF)
+			} else {
+				idx = uint16((key >> 48) & 0xFFFF)
+			}
+			if int(idx) >= len(counts) {
+				continue
+			}
+			if isCoarse {
+				counts[idx].coarse++
+			} else {
+				counts[idx].fine++
+			}
+		}
+		sh.mu.RUnlock()
+	}
+	return counts
 }
 
 func decayFactor(ageSec int64, halfLifeSec int) float64 {

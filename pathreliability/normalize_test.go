@@ -116,6 +116,9 @@ func TestPredictUsesInsufficientGlyph(t *testing.T) {
 	if res.Glyph != "I" {
 		t.Fatalf("expected insufficient glyph I, got %q", res.Glyph)
 	}
+	if res.Source != SourceInsufficient {
+		t.Fatalf("expected insufficient source, got %v", res.Source)
+	}
 }
 
 func TestFT8EquivalentBandwidthOffsets(t *testing.T) {
@@ -166,6 +169,9 @@ func TestPredictNarrowbandFallsBackToBaseline(t *testing.T) {
 	if res.Glyph != GlyphForDB(-5, "CW", cfg) {
 		t.Fatalf("unexpected glyph for fallback: %q", res.Glyph)
 	}
+	if res.Source != SourceBaseline {
+		t.Fatalf("expected baseline source, got %v", res.Source)
+	}
 }
 
 func TestPredictBaselineIgnoresNarrowband(t *testing.T) {
@@ -181,5 +187,77 @@ func TestPredictBaselineIgnoresNarrowband(t *testing.T) {
 	res := predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "FT8", 0, now)
 	if res.Glyph != cfg.GlyphSymbols.Insufficient {
 		t.Fatalf("expected insufficient when baseline is empty, got %q", res.Glyph)
+	}
+	if res.Source != SourceInsufficient {
+		t.Fatalf("expected insufficient source, got %v", res.Source)
+	}
+}
+
+func TestPredictNarrowbandMinWeightUsesBaseline(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MinEffectiveWeight = 0.1
+	cfg.MinEffectiveWeightNarrowband = 3.0
+	predictor := NewPredictor(cfg, []string{"20m"})
+	userCell := EncodeCell("FN31")
+	dxCell := EncodeCell("FN32")
+	now := time.Now().UTC()
+
+	predictor.Update(BucketNarrowband, userCell, dxCell, "FN", "FN", "20m", -2, 2.0, now, false)
+	predictor.Update(BucketBaseline, userCell, dxCell, "FN", "FN", "20m", -6, 2.0, now, false)
+
+	res := predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "CW", 0, now)
+	if res.Source != SourceBaseline {
+		t.Fatalf("expected baseline source, got %v", res.Source)
+	}
+	if res.Glyph != GlyphForDB(-6, "CW", cfg) {
+		t.Fatalf("unexpected glyph for baseline fallback: %q", res.Glyph)
+	}
+}
+
+func TestPredictNarrowbandOverrideRatioSelectsBaseline(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MinEffectiveWeight = 0.1
+	cfg.MinEffectiveWeightNarrowband = 0.1
+	cfg.NarrowbandOverrideMinWeightRatio = 1.5
+	predictor := NewPredictor(cfg, []string{"20m"})
+	userCell := EncodeCell("FN31")
+	dxCell := EncodeCell("FN32")
+	now := time.Now().UTC()
+
+	predictor.Update(BucketNarrowband, userCell, dxCell, "FN", "FN", "20m", -2, 2.0, now, false)
+	predictor.Update(BucketBaseline, userCell, dxCell, "FN", "FN", "20m", -8, 6.0, now, false)
+
+	res := predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "CW", 0, now)
+	if res.Source != SourceBaseline {
+		t.Fatalf("expected baseline source, got %v", res.Source)
+	}
+	if res.Glyph != GlyphForDB(-8, "CW", cfg) {
+		t.Fatalf("unexpected glyph for baseline override: %q", res.Glyph)
+	}
+}
+
+func TestPredictCoarseFallbackToggle(t *testing.T) {
+	now := time.Now().UTC()
+	userCell := EncodeCell("FN31")
+	dxCell := EncodeCell("FN32")
+
+	cfg := DefaultConfig()
+	cfg.MinEffectiveWeight = 0.1
+	cfg.CoarseFallbackEnabled = true
+	predictor := NewPredictor(cfg, []string{"20m"})
+	predictor.Update(BucketBaseline, InvalidCell, InvalidCell, "FN", "FN", "20m", -5, 1.0, now, false)
+
+	res := predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "FT8", 0, now)
+	if res.Glyph == cfg.GlyphSymbols.Insufficient {
+		t.Fatalf("expected coarse fallback glyph when enabled, got insufficient")
+	}
+
+	cfg.CoarseFallbackEnabled = false
+	predictor = NewPredictor(cfg, []string{"20m"})
+	predictor.Update(BucketBaseline, InvalidCell, InvalidCell, "FN", "FN", "20m", -5, 1.0, now, false)
+
+	res = predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "FT8", 0, now)
+	if res.Glyph != cfg.GlyphSymbols.Insufficient {
+		t.Fatalf("expected insufficient when coarse fallback disabled, got %q", res.Glyph)
 	}
 }

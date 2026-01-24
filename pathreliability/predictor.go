@@ -50,11 +50,21 @@ func (p *Predictor) Update(bucket BucketClass, receiverCell, senderCell CellID, 
 	}
 }
 
+// PredictionSource describes which bucket family produced the glyph.
+type PredictionSource uint8
+
+const (
+	SourceInsufficient PredictionSource = iota
+	SourceBaseline
+	SourceNarrowband
+)
+
 // Result carries merged glyph and diagnostics.
 type Result struct {
 	Glyph  string
 	Value  float64
 	Weight float64
+	Source PredictionSource
 }
 
 // Predict returns a single merged glyph for the path.
@@ -64,33 +74,63 @@ func (p *Predictor) Predict(userCell, dxCell CellID, userGrid2, dxGrid2 string, 
 		insufficient = p.cfg.GlyphSymbols.Insufficient
 	}
 	if p == nil || !p.cfg.Enabled {
-		return Result{Glyph: insufficient}
+		return Result{Glyph: insufficient, Source: SourceInsufficient}
 	}
 
 	modeKey := normalizeMode(mode)
+	makeResult := func(db, weight float64, source PredictionSource) Result {
+		return Result{Glyph: GlyphForDB(db, modeKey, p.cfg), Value: db, Weight: weight, Source: source}
+	}
+	makeInsufficient := func(db, weight float64) Result {
+		return Result{Glyph: insufficient, Value: db, Weight: weight, Source: SourceInsufficient}
+	}
+
 	switch {
 	case IsNarrowbandMode(modeKey):
-		mergedDB, mergedWeight, ok := p.mergeFromStore(p.narrowband, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
-		if ok && mergedWeight >= p.cfg.MinEffectiveWeight {
-			return Result{Glyph: GlyphForDB(mergedDB, modeKey, p.cfg), Value: mergedDB, Weight: mergedWeight}
+		nbDB, nbWeight, nbOK := p.mergeFromStore(p.narrowband, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
+		baseDB, baseWeight, baseOK := p.mergeFromStore(p.baseline, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
+
+		nbSufficient := nbOK && nbWeight >= p.cfg.MinEffectiveWeightNarrowband
+		baseSufficient := baseOK && baseWeight >= p.cfg.MinEffectiveWeight
+
+		if nbSufficient && baseSufficient {
+			ratio := p.cfg.NarrowbandOverrideMinWeightRatio
+			if ratio <= 0 || nbWeight >= baseWeight*ratio {
+				return makeResult(nbDB, nbWeight, SourceNarrowband)
+			}
+			return makeResult(baseDB, baseWeight, SourceBaseline)
 		}
-		mergedDB, mergedWeight, ok = p.mergeFromStore(p.baseline, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
-		if ok && mergedWeight >= p.cfg.MinEffectiveWeight {
-			return Result{Glyph: GlyphForDB(mergedDB, modeKey, p.cfg), Value: mergedDB, Weight: mergedWeight}
+		if nbSufficient {
+			return makeResult(nbDB, nbWeight, SourceNarrowband)
 		}
-		return Result{Glyph: insufficient, Value: mergedDB, Weight: mergedWeight}
+		if baseSufficient {
+			return makeResult(baseDB, baseWeight, SourceBaseline)
+		}
+		if baseOK && (!nbOK || baseWeight >= nbWeight) {
+			return makeInsufficient(baseDB, baseWeight)
+		}
+		if nbOK {
+			return makeInsufficient(nbDB, nbWeight)
+		}
+		return makeInsufficient(0, 0)
 	case IsVoiceMode(modeKey):
 		mergedDB, mergedWeight, ok := p.mergeFromStore(p.baseline, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
 		if ok && mergedWeight >= p.cfg.MinEffectiveWeight {
-			return Result{Glyph: GlyphForDB(mergedDB, modeKey, p.cfg), Value: mergedDB, Weight: mergedWeight}
+			return makeResult(mergedDB, mergedWeight, SourceBaseline)
 		}
-		return Result{Glyph: insufficient, Value: mergedDB, Weight: mergedWeight}
+		if ok {
+			return makeInsufficient(mergedDB, mergedWeight)
+		}
+		return makeInsufficient(0, 0)
 	default:
 		mergedDB, mergedWeight, ok := p.mergeFromStore(p.baseline, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
 		if ok && mergedWeight >= p.cfg.MinEffectiveWeight {
-			return Result{Glyph: GlyphForDB(mergedDB, modeKey, p.cfg), Value: mergedDB, Weight: mergedWeight}
+			return makeResult(mergedDB, mergedWeight, SourceBaseline)
 		}
-		return Result{Glyph: insufficient, Value: mergedDB, Weight: mergedWeight}
+		if ok {
+			return makeInsufficient(mergedDB, mergedWeight)
+		}
+		return makeInsufficient(0, 0)
 	}
 }
 
@@ -153,6 +193,15 @@ type PredictorStats struct {
 	NarrowCoarse   int
 }
 
+// BandBucketStats reports fine/coarse bucket counts per band.
+type BandBucketStats struct {
+	Band           string
+	BaselineFine   int
+	BaselineCoarse int
+	NarrowFine     int
+	NarrowCoarse   int
+}
+
 // Stats returns counts of active fine/coarse buckets for each bucket class.
 func (p *Predictor) Stats(now time.Time) PredictorStats {
 	if p == nil || !p.cfg.Enabled {
@@ -164,6 +213,44 @@ func (p *Predictor) Stats(now time.Time) PredictorStats {
 	}
 	if p.narrowband != nil {
 		stats.NarrowFine, stats.NarrowCoarse = p.narrowband.Stats(now)
+	}
+	return stats
+}
+
+// StatsByBand returns per-band bucket counts for baseline and narrowband stores.
+func (p *Predictor) StatsByBand(now time.Time) []BandBucketStats {
+	if p == nil || !p.cfg.Enabled {
+		return nil
+	}
+	var bands []string
+	if p.baseline != nil {
+		bands = p.baseline.bandIndex.Bands()
+	} else if p.narrowband != nil {
+		bands = p.narrowband.bandIndex.Bands()
+	}
+	if len(bands) == 0 {
+		return nil
+	}
+	baselineCounts := []bandCounts{}
+	if p.baseline != nil {
+		baselineCounts = p.baseline.StatsByBand(now)
+	}
+	narrowCounts := []bandCounts{}
+	if p.narrowband != nil {
+		narrowCounts = p.narrowband.StatsByBand(now)
+	}
+	stats := make([]BandBucketStats, len(bands))
+	for i, band := range bands {
+		entry := BandBucketStats{Band: band}
+		if i < len(baselineCounts) {
+			entry.BaselineFine = baselineCounts[i].fine
+			entry.BaselineCoarse = baselineCounts[i].coarse
+		}
+		if i < len(narrowCounts) {
+			entry.NarrowFine = narrowCounts[i].fine
+			entry.NarrowCoarse = narrowCounts[i].coarse
+		}
+		stats[i] = entry
 	}
 	return stats
 }

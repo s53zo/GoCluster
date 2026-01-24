@@ -1006,6 +1006,9 @@ func main() {
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
 	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor)
+	if pathCfg.Enabled {
+		go startPathPredictionLogger(ctx, telnetServer, pathPredictor)
+	}
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -2026,6 +2029,57 @@ func startPipelineHealthMonitor(ctx context.Context, dedup *dedup.Deduplicator, 
 			}
 		}
 	}()
+}
+
+func startPathPredictionLogger(ctx context.Context, srv *telnet.Server, predictor *pathreliability.Predictor) {
+	// Purpose: Periodically report path prediction source mix and per-band bucket counts.
+	// Key aspects: Uses atomic snapshot/reset; exits on context cancellation.
+	// Upstream: main startup.
+	// Downstream: telnet.Server.PathPredictionStatsSnapshot, pathreliability.Predictor.StatsByBand.
+	if srv == nil && predictor == nil {
+		return
+	}
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now().UTC()
+			if srv != nil {
+				stats := srv.PathPredictionStatsSnapshot()
+				if stats.Total > 0 {
+					narrowbandTotal := stats.Narrowband + stats.Baseline + stats.Insufficient
+					log.Printf("Path predictions (5m): total=%s derived=%s narrowband_mode=%s (narrow=%s baseline=%s insufficient=%s)",
+						humanize.Comma(int64(stats.Total)),
+						humanize.Comma(int64(stats.Derived)),
+						humanize.Comma(int64(narrowbandTotal)),
+						humanize.Comma(int64(stats.Narrowband)),
+						humanize.Comma(int64(stats.Baseline)),
+						humanize.Comma(int64(stats.Insufficient)))
+				}
+			}
+			if predictor == nil || !predictor.Config().Enabled {
+				continue
+			}
+			bandStats := predictor.StatsByBand(now)
+			if len(bandStats) == 0 {
+				continue
+			}
+			var b strings.Builder
+			b.WriteString("Path buckets (5m):")
+			for _, entry := range bandStats {
+				fmt.Fprintf(&b, " %s b=%s/%s n=%s/%s",
+					entry.Band,
+					humanize.Comma(int64(entry.BaselineFine)),
+					humanize.Comma(int64(entry.BaselineCoarse)),
+					humanize.Comma(int64(entry.NarrowFine)),
+					humanize.Comma(int64(entry.NarrowCoarse)))
+			}
+			log.Println(b.String())
+		}
+	}
 }
 
 // collapseSSIDForBroadcast trims SSID fragments so clients see a single

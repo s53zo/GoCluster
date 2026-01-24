@@ -51,3 +51,10 @@ func (b BandIndex) HalfLifeSeconds(band string, cfg Config) int {
 	}
 	return cfg.DefaultHalfLifeSec
 }
+
+// Bands returns the canonical band names in index order.
+func (b BandIndex) Bands() []string {
+	out := make([]string, len(b.idxToBand))
+	copy(out, b.idxToBand)
+	return out
+}

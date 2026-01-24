@@ -1,8 +1,10 @@
 package rbn
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"dxcluster/spot"
 )
@@ -11,7 +13,8 @@ func TestMinimalParserStripsFusedTimeAndKeepsRemainder(t *testing.T) {
 	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
 	c.UseMinimalParser()
 
-	line := "DX de GM5G: 28421.9 GM5G USB ARRL 10m Contest 1708ZIO87 1708Z"
+	ts := time.Now().UTC().Format("1504Z")
+	line := fmt.Sprintf("DX de GM5G: 28421.9 GM5G USB ARRL 10m Contest %sIO87 %s", ts, ts)
 	c.parseSpot(line)
 
 	var s *spot.Spot
@@ -21,8 +24,8 @@ func TestMinimalParserStripsFusedTimeAndKeepsRemainder(t *testing.T) {
 		t.Fatalf("expected a parsed spot")
 	}
 
-	if got := s.Time.UTC().Format("1504Z"); got != "1708Z" {
-		t.Fatalf("expected parsed time 1708Z, got %q", got)
+	if got := s.Time.UTC().Format("1504Z"); got != ts {
+		t.Fatalf("expected parsed time %s, got %q", ts, got)
 	}
 	if strings.Contains(s.Comment, "1708Z") {
 		t.Fatalf("expected comment to exclude time token, got %q", s.Comment)

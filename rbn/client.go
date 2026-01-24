@@ -487,16 +487,22 @@ func (c *Client) normalizeSpotter(raw string) string {
 	return spot.NormalizeCallsign(raw)
 }
 
+const rbnMaxFutureSkew = 2 * time.Minute
+
 // Purpose: Parse RBN HHMMZ timestamps into full UTC times.
-// Key aspects: Uses today's date and corrects around midnight boundaries.
+// Key aspects: Uses today's UTC date; clamps future times beyond a small skew.
 // Upstream: parseSpot.
 // Downstream: time.Date, time.Now.
 func parseTimeFromRBN(timeStr string) time.Time {
+	return parseTimeFromRBNAt(timeStr, time.Now().UTC())
+}
+
+func parseTimeFromRBNAt(timeStr string, now time.Time) time.Time {
 	// timeStr format is "HHMMZ" e.g. "0531Z"
 	if len(timeStr) != 5 || !strings.HasSuffix(timeStr, "Z") {
 		// Invalid format, return current time as fallback
 		log.Printf("Warning: Invalid RBN time format: %s", timeStr)
-		return time.Now().UTC()
+		return now
 	}
 
 	// Extract hour and minute
@@ -506,29 +512,18 @@ func parseTimeFromRBN(timeStr string) time.Time {
 	hour, err1 := strconv.Atoi(hourStr)
 	min, err2 := strconv.Atoi(minStr)
 
-	if err1 != nil || err2 != nil {
+	if err1 != nil || err2 != nil || hour < 0 || hour > 23 || min < 0 || min > 59 {
 		log.Printf("Warning: Failed to parse RBN time: %s", timeStr)
-		return time.Now().UTC()
+		return now
 	}
 
-	// Get current date in UTC
-	now := time.Now().UTC()
+	// Construct timestamp with parsed HH:MM and today's date.
+	// Set seconds to 0 since RBN doesn't provide seconds.
 	year, month, day := now.Date()
-
-	// Construct timestamp with parsed HH:MM and today's date
-	// Set seconds to 0 since RBN doesn't provide seconds
 	spotTime := time.Date(year, month, day, hour, min, 0, 0, time.UTC)
 
-	// Handle day boundary: if the spot time is more than 12 hours in the future,
-	// it's probably from yesterday (we received it just after midnight UTC)
-	if spotTime.Sub(now) > 12*time.Hour {
-		spotTime = spotTime.AddDate(0, 0, -1)
-	}
-
-	// Handle day boundary: if the spot time is more than 12 hours in the past,
-	// it might be from tomorrow (rare but possible near midnight)
-	if now.Sub(spotTime) > 12*time.Hour {
-		spotTime = spotTime.AddDate(0, 0, 1)
+	if spotTime.After(now.Add(rbnMaxFutureSkew)) {
+		return now
 	}
 
 	return spotTime

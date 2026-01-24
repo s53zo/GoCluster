@@ -1,15 +1,18 @@
 package rbn
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"dxcluster/spot"
 )
 
 func TestACParserExtractsModeSNRAndGrid(t *testing.T) {
 	c := NewClient("example.com", 0, "N0FT", "UPSTREAM", nil, false, 10)
-	line := "DX de DL1YAW: 144360.0 S51AT JO41DX<MS>JN75 MSK144 +5 dB 1800Z"
+	ts := time.Now().UTC().Format("1504Z")
+	line := fmt.Sprintf("DX de DL1YAW: 144360.0 S51AT JO41DX<MS>JN75 MSK144 +5 dB %s", ts)
 	c.parseSpot(line)
 
 	var s *spot.Spot
@@ -25,8 +28,8 @@ func TestACParserExtractsModeSNRAndGrid(t *testing.T) {
 	if !s.HasReport || s.Report != 5 {
 		t.Fatalf("expected SNR +5 dB, got HasReport=%v Report=%d", s.HasReport, s.Report)
 	}
-	if got := s.Time.UTC().Format("1504Z"); got != "1800Z" {
-		t.Fatalf("expected time 1800Z, got %q", got)
+	if got := s.Time.UTC().Format("1504Z"); got != ts {
+		t.Fatalf("expected time %s, got %q", ts, got)
 	}
 	if !strings.Contains(s.Comment, "JO41DX<MS>JN75") {
 		t.Fatalf("expected grid fragment to remain in comment, got %q", s.Comment)
