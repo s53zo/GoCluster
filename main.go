@@ -2032,10 +2032,10 @@ func startPipelineHealthMonitor(ctx context.Context, dedup *dedup.Deduplicator, 
 }
 
 func startPathPredictionLogger(ctx context.Context, srv *telnet.Server, predictor *pathreliability.Predictor) {
-	// Purpose: Periodically report path prediction source mix and per-band bucket counts.
+	// Purpose: Periodically report path prediction outcomes, bucket counts, and weight histograms.
 	// Key aspects: Uses atomic snapshot/reset; exits on context cancellation.
 	// Upstream: main startup.
-	// Downstream: telnet.Server.PathPredictionStatsSnapshot, pathreliability.Predictor.StatsByBand.
+	// Downstream: telnet.Server.PathPredictionStatsSnapshot, pathreliability.Predictor stats/histograms.
 	if srv == nil && predictor == nil {
 		return
 	}
@@ -2050,13 +2050,10 @@ func startPathPredictionLogger(ctx context.Context, srv *telnet.Server, predicto
 			if srv != nil {
 				stats := srv.PathPredictionStatsSnapshot()
 				if stats.Total > 0 {
-					narrowbandTotal := stats.Narrowband + stats.Baseline + stats.Insufficient
-					log.Printf("Path predictions (5m): total=%s derived=%s narrowband_mode=%s (narrow=%s baseline=%s insufficient=%s)",
+					log.Printf("Path predictions (5m): total=%s derived=%s combined=%s insufficient=%s",
 						humanize.Comma(int64(stats.Total)),
 						humanize.Comma(int64(stats.Derived)),
-						humanize.Comma(int64(narrowbandTotal)),
-						humanize.Comma(int64(stats.Narrowband)),
-						humanize.Comma(int64(stats.Baseline)),
+						humanize.Comma(int64(stats.Combined)),
 						humanize.Comma(int64(stats.Insufficient)))
 				}
 			}
@@ -2070,16 +2067,46 @@ func startPathPredictionLogger(ctx context.Context, srv *telnet.Server, predicto
 			var b strings.Builder
 			b.WriteString("Path buckets (5m):")
 			for _, entry := range bandStats {
-				fmt.Fprintf(&b, " %s b=%s/%s n=%s/%s",
+				fmt.Fprintf(&b, " %s f=%s c=%s",
 					entry.Band,
-					humanize.Comma(int64(entry.BaselineFine)),
-					humanize.Comma(int64(entry.BaselineCoarse)),
-					humanize.Comma(int64(entry.NarrowFine)),
-					humanize.Comma(int64(entry.NarrowCoarse)))
+					humanize.Comma(int64(entry.Fine)),
+					humanize.Comma(int64(entry.Coarse)))
 			}
 			log.Println(b.String())
+			hist := predictor.WeightHistogramByBand(now)
+			if len(hist.Bands) == 0 || len(hist.Edges) == 0 {
+				continue
+			}
+			var h strings.Builder
+			h.WriteString("Path weight dist (5m):")
+			for _, entry := range hist.Bands {
+				if entry.Total == 0 {
+					continue
+				}
+				fmt.Fprintf(&h, " %s t=%s", entry.Band, humanize.Comma(int64(entry.Total)))
+				for i, count := range entry.Bins {
+					label := weightBinLabel(i, hist.Edges)
+					fmt.Fprintf(&h, " %s=%s", label, humanize.Comma(int64(count)))
+				}
+			}
+			if h.Len() > len("Path weight dist (5m):") {
+				log.Println(h.String())
+			}
 		}
 	}
+}
+
+func weightBinLabel(idx int, edges []float64) string {
+	if len(edges) == 0 {
+		return fmt.Sprintf("b%d", idx)
+	}
+	if idx <= 0 {
+		return fmt.Sprintf("<%g", edges[0])
+	}
+	if idx < len(edges) {
+		return fmt.Sprintf("%g-%g", edges[idx-1], edges[idx])
+	}
+	return fmt.Sprintf(">=%g", edges[len(edges)-1])
 }
 
 // collapseSSIDForBroadcast trims SSID fragments so clients see a single
@@ -3071,12 +3098,10 @@ func formatGridLine(metrics *gridMetrics, store *gridStoreHandle, predictor *pat
 	var propPairs string
 	if predictor != nil {
 		stats := predictor.Stats(time.Now().UTC())
-		if stats.BaselineFine > 0 || stats.BaselineCoarse > 0 || stats.NarrowFine > 0 || stats.NarrowCoarse > 0 {
-			propPairs = fmt.Sprintf(" | Pairs b %s/%s n %s/%s",
-				humanize.Comma(int64(stats.BaselineFine)),
-				humanize.Comma(int64(stats.BaselineCoarse)),
-				humanize.Comma(int64(stats.NarrowFine)),
-				humanize.Comma(int64(stats.NarrowCoarse)))
+		if stats.CombinedFine > 0 || stats.CombinedCoarse > 0 {
+			propPairs = fmt.Sprintf(" | Pairs c %s/%s",
+				humanize.Comma(int64(stats.CombinedFine)),
+				humanize.Comma(int64(stats.CombinedCoarse)))
 		}
 	}
 	drops := fmt.Sprintf(" | Drop a%s s%s",

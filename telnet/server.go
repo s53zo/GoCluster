@@ -174,9 +174,8 @@ type Server struct {
 	dedupeSlowEnabled    bool                              // Slow secondary dedupe policy enabled
 	pathPredTotal        atomic.Uint64                     // Path predictions computed (glyphs)
 	pathPredDerived      atomic.Uint64                     // Predictions using derived user/DX grids
-	pathPredNarrowband   atomic.Uint64                     // Narrowband predictions won by narrowband store
-	pathPredBaseline     atomic.Uint64                     // Narrowband predictions won by baseline store
-	pathPredInsufficient atomic.Uint64                     // Narrowband predictions with insufficient data
+	pathPredCombined     atomic.Uint64                     // Predictions with sufficient combined data
+	pathPredInsufficient atomic.Uint64                     // Predictions with insufficient data
 }
 
 // Client represents a connected telnet client session.
@@ -1318,12 +1317,11 @@ func (s *Server) BroadcastMetricSnapshot() (queueDrops, clientDrops, senderFailu
 type pathPredictionStats struct {
 	Total        uint64
 	Derived      uint64
-	Narrowband   uint64
-	Baseline     uint64
+	Combined     uint64
 	Insufficient uint64
 }
 
-func (s *Server) recordPathPrediction(mode string, res pathreliability.Result, userDerived, dxDerived bool) {
+func (s *Server) recordPathPrediction(res pathreliability.Result, userDerived, dxDerived bool) {
 	if s == nil {
 		return
 	}
@@ -1331,15 +1329,11 @@ func (s *Server) recordPathPrediction(mode string, res pathreliability.Result, u
 	if userDerived || dxDerived {
 		s.pathPredDerived.Add(1)
 	}
-	if pathreliability.IsNarrowbandMode(mode) {
-		switch res.Source {
-		case pathreliability.SourceNarrowband:
-			s.pathPredNarrowband.Add(1)
-		case pathreliability.SourceBaseline:
-			s.pathPredBaseline.Add(1)
-		default:
-			s.pathPredInsufficient.Add(1)
-		}
+	switch res.Source {
+	case pathreliability.SourceCombined:
+		s.pathPredCombined.Add(1)
+	default:
+		s.pathPredInsufficient.Add(1)
 	}
 }
 
@@ -1350,8 +1344,7 @@ func (s *Server) PathPredictionStatsSnapshot() pathPredictionStats {
 	return pathPredictionStats{
 		Total:        s.pathPredTotal.Swap(0),
 		Derived:      s.pathPredDerived.Swap(0),
-		Narrowband:   s.pathPredNarrowband.Swap(0),
-		Baseline:     s.pathPredBaseline.Swap(0),
+		Combined:     s.pathPredCombined.Swap(0),
 		Insufficient: s.pathPredInsufficient.Swap(0),
 	}
 }
@@ -1839,7 +1832,7 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 	}
 	now := time.Now().UTC()
 	res := s.pathPredictor.Predict(userCell, dxCell, userGrid2, dxGrid2, band, mode, noisePenalty, now)
-	s.recordPathPrediction(mode, res, state.gridDerived, sp.DXMetadata.GridDerived)
+	s.recordPathPrediction(res, state.gridDerived, sp.DXMetadata.GridDerived)
 	g := res.Glyph
 	return g
 }

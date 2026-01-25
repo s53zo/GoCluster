@@ -116,6 +116,11 @@ type bandCounts struct {
 	coarse int
 }
 
+type weightHistogram struct {
+	total int
+	bins  []int
+}
+
 // Lookup returns the decayed samples for the given keys.
 func (s *Store) Lookup(receiverCell, senderCell CellID, receiverGrid2, senderGrid2 string, band string, now time.Time) (fine Sample, coarse Sample) {
 	if s == nil || !s.cfg.Enabled {
@@ -264,6 +269,78 @@ func (s *Store) StatsByBand(now time.Time) []bandCounts {
 		sh.mu.RUnlock()
 	}
 	return counts
+}
+
+// WeightHistogramByBand returns per-band bucket weight histograms for active buckets.
+// edges defines the ascending bin boundaries (len+1 bins, last bin is >= last edge).
+func (s *Store) WeightHistogramByBand(now time.Time, edges []float64) []weightHistogram {
+	if s == nil || !s.cfg.Enabled {
+		return nil
+	}
+	bands := s.bandIndex.Bands()
+	if len(bands) == 0 {
+		return nil
+	}
+	if len(edges) == 0 {
+		return nil
+	}
+	binCount := len(edges) + 1
+	counts := make([]weightHistogram, len(bands))
+	for i := range counts {
+		counts[i].bins = make([]int, binCount)
+	}
+	halfLives := make([]int, len(bands))
+	for i, band := range bands {
+		halfLives[i] = s.bandIndex.HalfLifeSeconds(band, s.cfg)
+	}
+	nowSec := now.Unix()
+	staleAfter := int64(s.cfg.StaleAfterSeconds)
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		for key, b := range sh.buckets {
+			if b == nil {
+				continue
+			}
+			age := nowSec - b.lastUpdate
+			if age < 0 {
+				age = 0
+			}
+			if staleAfter > 0 && age > staleAfter {
+				continue
+			}
+			isCoarse := key&0xFFFF != 0
+			var idx uint16
+			if isCoarse {
+				idx = uint16((key >> 32) & 0xFFFF)
+			} else {
+				idx = uint16((key >> 48) & 0xFFFF)
+			}
+			if int(idx) >= len(counts) {
+				continue
+			}
+			halfLife := halfLives[idx]
+			decay := decayFactor(age, halfLife)
+			decayedWeight := float64(b.weight) * decay
+			if decayedWeight <= 0 {
+				continue
+			}
+			bin := weightBinIndex(decayedWeight, edges)
+			counts[idx].total++
+			counts[idx].bins[bin]++
+		}
+		sh.mu.RUnlock()
+	}
+	return counts
+}
+
+func weightBinIndex(weight float64, edges []float64) int {
+	for i, edge := range edges {
+		if weight < edge {
+			return i
+		}
+	}
+	return len(edges)
 }
 
 func decayFactor(ageSec int64, halfLifeSec int) float64 {

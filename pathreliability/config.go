@@ -17,8 +17,6 @@ type Config struct {
 	BandHalfLifeSec                  map[string]int             `yaml:"band_half_life_seconds"`               // per-band overrides
 	StaleAfterSeconds                int                        `yaml:"stale_after_seconds"`                  // purge when older than this
 	MinEffectiveWeight               float64                    `yaml:"min_effective_weight"`                 // minimum decayed weight to report
-	MinEffectiveWeightNarrowband     float64                    `yaml:"min_effective_weight_narrowband"`      // minimum decayed weight to report narrowband glyphs
-	NarrowbandOverrideMinWeightRatio float64                    `yaml:"narrowband_override_min_weight_ratio"` // baseline wins when narrowband weight < ratio*baseline (0 disables)
 	MinFineWeight                    float64                    `yaml:"min_fine_weight"`                      // minimum fine weight to blend with coarse
 	CoarseFallbackEnabled            bool                       `yaml:"coarse_fallback_enabled"`              // enable coarse grid2 updates/lookups
 	NeighborRadius                   int                        `yaml:"neighbor_radius"`                      // Deprecated: grid2 neighbor fallback removed (ignored).
@@ -153,8 +151,6 @@ func DefaultConfig() Config {
 		BandHalfLifeSec:                  map[string]int{},
 		StaleAfterSeconds:                1800,
 		MinEffectiveWeight:               1.0,
-		MinEffectiveWeightNarrowband:     1.0,
-		NarrowbandOverrideMinWeightRatio: 0,
 		MinFineWeight:                    5.0,
 		CoarseFallbackEnabled:            true,
 		NeighborRadius:                   0,
@@ -222,12 +218,6 @@ func (c *Config) normalize() {
 	}
 	if c.MinEffectiveWeight <= 0 {
 		c.MinEffectiveWeight = def.MinEffectiveWeight
-	}
-	if c.MinEffectiveWeightNarrowband <= 0 {
-		c.MinEffectiveWeightNarrowband = c.MinEffectiveWeight
-	}
-	if c.NarrowbandOverrideMinWeightRatio < 0 {
-		c.NarrowbandOverrideMinWeightRatio = 0
 	}
 	if c.MinFineWeight <= 0 {
 		c.MinFineWeight = def.MinFineWeight
