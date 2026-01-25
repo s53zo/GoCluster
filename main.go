@@ -2047,16 +2047,18 @@ func startPathPredictionLogger(ctx context.Context, srv *telnet.Server, predicto
 			return
 		case <-ticker.C:
 			now := time.Now().UTC()
-			if srv != nil {
-				stats := srv.PathPredictionStatsSnapshot()
-				if stats.Total > 0 {
-					log.Printf("Path predictions (5m): total=%s derived=%s combined=%s insufficient=%s",
-						humanize.Comma(int64(stats.Total)),
-						humanize.Comma(int64(stats.Derived)),
-						humanize.Comma(int64(stats.Combined)),
-						humanize.Comma(int64(stats.Insufficient)))
+				if srv != nil {
+					stats := srv.PathPredictionStatsSnapshot()
+					if stats.Total > 0 {
+						log.Printf("Path predictions (5m): total=%s derived=%s combined=%s insufficient=%s no_sample=%s low_weight=%s",
+							humanize.Comma(int64(stats.Total)),
+							humanize.Comma(int64(stats.Derived)),
+							humanize.Comma(int64(stats.Combined)),
+							humanize.Comma(int64(stats.Insufficient)),
+							humanize.Comma(int64(stats.NoSample)),
+							humanize.Comma(int64(stats.LowWeight)))
+					}
 				}
-			}
 			if predictor == nil || !predictor.Config().Enabled {
 				continue
 			}

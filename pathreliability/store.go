@@ -156,7 +156,8 @@ func (s *Store) sample(key uint64, halfLife int, now time.Time) Sample {
 	if age < 0 {
 		age = 0
 	}
-	if age > int64(s.cfg.StaleAfterSeconds) {
+	staleAfter := s.staleAfterSeconds(halfLife)
+	if staleAfter > 0 && age > staleAfter {
 		return Sample{}
 	}
 	decay := decayFactor(age, halfLife)
@@ -177,12 +178,38 @@ func (s *Store) PurgeStale(now time.Time) int {
 		return 0
 	}
 	removed := 0
-	cutoff := now.Add(-time.Duration(s.cfg.StaleAfterSeconds) * time.Second).Unix()
+	bands := s.bandIndex.Bands()
+	staleAfterByBand := make([]int64, len(bands))
+	for i, band := range bands {
+		halfLife := s.bandIndex.HalfLifeSeconds(band, s.cfg)
+		staleAfterByBand[i] = s.staleAfterSeconds(halfLife)
+	}
+	nowSec := now.Unix()
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.mu.Lock()
 		for k, b := range sh.buckets {
-			if b == nil || b.lastUpdate <= cutoff {
+			if b == nil {
+				delete(sh.buckets, k)
+				removed++
+				continue
+			}
+			age := nowSec - b.lastUpdate
+			if age < 0 {
+				age = 0
+			}
+			isCoarse := k&0xFFFF != 0
+			var idx uint16
+			if isCoarse {
+				idx = uint16((k >> 32) & 0xFFFF)
+			} else {
+				idx = uint16((k >> 48) & 0xFFFF)
+			}
+			if int(idx) >= len(staleAfterByBand) {
+				continue
+			}
+			staleAfter := staleAfterByBand[idx]
+			if staleAfter > 0 && age > staleAfter {
 				delete(sh.buckets, k)
 				removed++
 			}
@@ -197,8 +224,13 @@ func (s *Store) Stats(now time.Time) (fine int, coarse int) {
 	if s == nil || !s.cfg.Enabled {
 		return 0, 0
 	}
+	bands := s.bandIndex.Bands()
+	staleAfterByBand := make([]int64, len(bands))
+	for i, band := range bands {
+		halfLife := s.bandIndex.HalfLifeSeconds(band, s.cfg)
+		staleAfterByBand[i] = s.staleAfterSeconds(halfLife)
+	}
 	nowSec := now.Unix()
-	staleAfter := int64(s.cfg.StaleAfterSeconds)
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.mu.RLock()
@@ -210,10 +242,21 @@ func (s *Store) Stats(now time.Time) (fine int, coarse int) {
 			if age < 0 {
 				age = 0
 			}
+			isCoarse := key&0xFFFF != 0
+			var idx uint16
+			if isCoarse {
+				idx = uint16((key >> 32) & 0xFFFF)
+			} else {
+				idx = uint16((key >> 48) & 0xFFFF)
+			}
+			if int(idx) >= len(staleAfterByBand) {
+				continue
+			}
+			staleAfter := staleAfterByBand[idx]
 			if staleAfter > 0 && age > staleAfter {
 				continue
 			}
-			if key&0xFFFF != 0 {
+			if isCoarse {
 				coarse++
 			} else {
 				fine++
@@ -234,8 +277,12 @@ func (s *Store) StatsByBand(now time.Time) []bandCounts {
 		return nil
 	}
 	counts := make([]bandCounts, len(bands))
+	staleAfterByBand := make([]int64, len(bands))
+	for i, band := range bands {
+		halfLife := s.bandIndex.HalfLifeSeconds(band, s.cfg)
+		staleAfterByBand[i] = s.staleAfterSeconds(halfLife)
+	}
 	nowSec := now.Unix()
-	staleAfter := int64(s.cfg.StaleAfterSeconds)
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.mu.RLock()
@@ -247,9 +294,6 @@ func (s *Store) StatsByBand(now time.Time) []bandCounts {
 			if age < 0 {
 				age = 0
 			}
-			if staleAfter > 0 && age > staleAfter {
-				continue
-			}
 			isCoarse := key&0xFFFF != 0
 			var idx uint16
 			if isCoarse {
@@ -258,6 +302,10 @@ func (s *Store) StatsByBand(now time.Time) []bandCounts {
 				idx = uint16((key >> 48) & 0xFFFF)
 			}
 			if int(idx) >= len(counts) {
+				continue
+			}
+			staleAfter := staleAfterByBand[idx]
+			if staleAfter > 0 && age > staleAfter {
 				continue
 			}
 			if isCoarse {
@@ -293,8 +341,11 @@ func (s *Store) WeightHistogramByBand(now time.Time, edges []float64) []weightHi
 	for i, band := range bands {
 		halfLives[i] = s.bandIndex.HalfLifeSeconds(band, s.cfg)
 	}
+	staleAfterByBand := make([]int64, len(bands))
+	for i, halfLife := range halfLives {
+		staleAfterByBand[i] = s.staleAfterSeconds(halfLife)
+	}
 	nowSec := now.Unix()
-	staleAfter := int64(s.cfg.StaleAfterSeconds)
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.mu.RLock()
@@ -306,9 +357,6 @@ func (s *Store) WeightHistogramByBand(now time.Time, edges []float64) []weightHi
 			if age < 0 {
 				age = 0
 			}
-			if staleAfter > 0 && age > staleAfter {
-				continue
-			}
 			isCoarse := key&0xFFFF != 0
 			var idx uint16
 			if isCoarse {
@@ -317,6 +365,10 @@ func (s *Store) WeightHistogramByBand(now time.Time, edges []float64) []weightHi
 				idx = uint16((key >> 48) & 0xFFFF)
 			}
 			if int(idx) >= len(counts) {
+				continue
+			}
+			staleAfter := staleAfterByBand[idx]
+			if staleAfter > 0 && age > staleAfter {
 				continue
 			}
 			halfLife := halfLives[idx]
@@ -358,4 +410,21 @@ func clamp(v, min, max float64) float64 {
 		return max
 	}
 	return v
+}
+
+func (s *Store) staleAfterSeconds(halfLifeSec int) int64 {
+	if s == nil {
+		return 0
+	}
+	if s.cfg.StaleAfterHalfLifeMultiplier > 0 && halfLifeSec > 0 {
+		seconds := math.Ceil(float64(halfLifeSec) * s.cfg.StaleAfterHalfLifeMultiplier)
+		if seconds < 1 {
+			seconds = 1
+		}
+		return int64(seconds)
+	}
+	if s.cfg.StaleAfterSeconds <= 0 {
+		return 0
+	}
+	return int64(s.cfg.StaleAfterSeconds)
 }

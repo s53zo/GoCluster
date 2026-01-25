@@ -15,7 +15,8 @@ type Config struct {
 	ClampMax                         float64                    `yaml:"clamp_max"`                            // FT8-equiv ceiling (dB)
 	DefaultHalfLifeSec               int                        `yaml:"default_half_life_seconds"`            // fallback half-life when band not listed
 	BandHalfLifeSec                  map[string]int             `yaml:"band_half_life_seconds"`               // per-band overrides
-	StaleAfterSeconds                int                        `yaml:"stale_after_seconds"`                  // purge when older than this
+	StaleAfterSeconds                int                        `yaml:"stale_after_seconds"`                  // fallback purge when older than this
+	StaleAfterHalfLifeMultiplier     float64                    `yaml:"stale_after_half_life_multiplier"`     // stale = k * half-life (per band)
 	MinEffectiveWeight               float64                    `yaml:"min_effective_weight"`                 // minimum decayed weight to report
 	MinFineWeight                    float64                    `yaml:"min_fine_weight"`                      // minimum fine weight to blend with coarse
 	CoarseFallbackEnabled            bool                       `yaml:"coarse_fallback_enabled"`              // enable coarse grid2 updates/lookups
@@ -150,6 +151,7 @@ func DefaultConfig() Config {
 		DefaultHalfLifeSec:               300,
 		BandHalfLifeSec:                  map[string]int{},
 		StaleAfterSeconds:                1800,
+		StaleAfterHalfLifeMultiplier:     5,
 		MinEffectiveWeight:               1.0,
 		MinFineWeight:                    5.0,
 		CoarseFallbackEnabled:            true,
@@ -215,6 +217,9 @@ func (c *Config) normalize() {
 	}
 	if c.StaleAfterSeconds <= 0 {
 		c.StaleAfterSeconds = def.StaleAfterSeconds
+	}
+	if c.StaleAfterHalfLifeMultiplier <= 0 {
+		c.StaleAfterHalfLifeMultiplier = def.StaleAfterHalfLifeMultiplier
 	}
 	if c.MinEffectiveWeight <= 0 {
 		c.MinEffectiveWeight = def.MinEffectiveWeight

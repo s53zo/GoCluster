@@ -176,6 +176,8 @@ type Server struct {
 	pathPredDerived      atomic.Uint64                     // Predictions using derived user/DX grids
 	pathPredCombined     atomic.Uint64                     // Predictions with sufficient combined data
 	pathPredInsufficient atomic.Uint64                     // Predictions with insufficient data
+	pathPredNoSample     atomic.Uint64                     // Insufficient predictions with no samples
+	pathPredLowWeight    atomic.Uint64                     // Insufficient predictions below min weight
 }
 
 // Client represents a connected telnet client session.
@@ -1319,6 +1321,8 @@ type pathPredictionStats struct {
 	Derived      uint64
 	Combined     uint64
 	Insufficient uint64
+	NoSample     uint64
+	LowWeight    uint64
 }
 
 func (s *Server) recordPathPrediction(res pathreliability.Result, userDerived, dxDerived bool) {
@@ -1334,6 +1338,11 @@ func (s *Server) recordPathPrediction(res pathreliability.Result, userDerived, d
 		s.pathPredCombined.Add(1)
 	default:
 		s.pathPredInsufficient.Add(1)
+		if res.Weight > 0 {
+			s.pathPredLowWeight.Add(1)
+		} else {
+			s.pathPredNoSample.Add(1)
+		}
 	}
 }
 
@@ -1346,6 +1355,8 @@ func (s *Server) PathPredictionStatsSnapshot() pathPredictionStats {
 		Derived:      s.pathPredDerived.Swap(0),
 		Combined:     s.pathPredCombined.Swap(0),
 		Insufficient: s.pathPredInsufficient.Swap(0),
+		NoSample:     s.pathPredNoSample.Swap(0),
+		LowWeight:    s.pathPredLowWeight.Swap(0),
 	}
 }
 
