@@ -498,12 +498,12 @@ func (s *Server) handlePathSettingsCommand(client *Client, line string) (string,
 		return fmt.Sprintf("Grid set to %s\n", grid), true
 	case "NOISE":
 		if len(upper) < 3 {
-			return "Usage: SET NOISE <QUIET|RURAL|SUBURBAN|URBAN>\n", true
+			return "Usage: SET NOISE <QUIET|RURAL|SUBURBAN|URBAN|INDUSTRIAL>\n", true
 		}
 		class := strings.ToUpper(strings.TrimSpace(upper[2]))
 		penalty := s.noisePenaltyForClass(class)
-		if class == "" || (penalty == 0 && class != "QUIET" && class != "RURAL" && class != "SUBURBAN" && class != "URBAN") {
-			return "Unknown noise class. Use QUIET, RURAL, SUBURBAN, or URBAN.\n", true
+		if class == "" || (penalty == 0 && class != "QUIET" && class != "RURAL" && class != "SUBURBAN" && class != "URBAN" && class != "INDUSTRIAL") {
+			return "Unknown noise class. Use QUIET, RURAL, SUBURBAN, URBAN, or INDUSTRIAL.\n", true
 		}
 		client.pathMu.Lock()
 		client.noiseClass = class
@@ -1908,7 +1908,7 @@ func (s *Server) pathClassForClient(client *Client, sp *spot.Spot) string {
 	if res.Source == pathreliability.SourceInsufficient {
 		return filter.PathClassInsufficient
 	}
-	return pathreliability.ClassForDB(res.Value, mode, cfg)
+	return pathreliability.ClassForPower(res.Value, mode, cfg)
 }
 
 func diagTagForSpot(client *Client, sp *spot.Spot) string {

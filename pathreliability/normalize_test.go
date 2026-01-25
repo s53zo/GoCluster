@@ -6,42 +6,42 @@ import (
 	"time"
 )
 
-func TestGlyphForDB(t *testing.T) {
+func TestGlyphForPower(t *testing.T) {
 	cfg := DefaultConfig()
-	if got := GlyphForDB(-12, "FT8", cfg); got != "+" {
+	if got := GlyphForPower(cfg.powerFromDB(-12), "FT8", cfg); got != "+" {
 		t.Fatalf("expected + for -12 dB, got %q", got)
 	}
-	if got := GlyphForDB(-16, "FT8", cfg); got != "=" {
+	if got := GlyphForPower(cfg.powerFromDB(-16), "FT8", cfg); got != "=" {
 		t.Fatalf("expected = for -16 dB, got %q", got)
 	}
-	if got := GlyphForDB(-20, "FT8", cfg); got != "-" {
+	if got := GlyphForPower(cfg.powerFromDB(-20), "FT8", cfg); got != "-" {
 		t.Fatalf("expected - for -20 dB, got %q", got)
 	}
-	if got := GlyphForDB(-30, "FT8", cfg); got != "!" {
+	if got := GlyphForPower(cfg.powerFromDB(-30), "FT8", cfg); got != "!" {
 		t.Fatalf("expected ! for -30 dB, got %q", got)
 	}
-	if got := GlyphForDB(-4, "CW", cfg); got != "-" {
+	if got := GlyphForPower(cfg.powerFromDB(-4), "CW", cfg); got != "-" {
 		t.Fatalf("expected - for -4 dB in CW thresholds, got %q", got)
 	}
 }
 
-func TestClassForDB(t *testing.T) {
+func TestClassForPower(t *testing.T) {
 	cfg := DefaultConfig()
-	if got := ClassForDB(-12, "FT8", cfg); got != "HIGH" {
+	if got := ClassForPower(cfg.powerFromDB(-12), "FT8", cfg); got != "HIGH" {
 		t.Fatalf("expected HIGH for -12 dB, got %q", got)
 	}
-	if got := ClassForDB(-16, "FT8", cfg); got != "MEDIUM" {
+	if got := ClassForPower(cfg.powerFromDB(-16), "FT8", cfg); got != "MEDIUM" {
 		t.Fatalf("expected MEDIUM for -16 dB, got %q", got)
 	}
-	if got := ClassForDB(-20, "FT8", cfg); got != "LOW" {
+	if got := ClassForPower(cfg.powerFromDB(-20), "FT8", cfg); got != "LOW" {
 		t.Fatalf("expected LOW for -20 dB, got %q", got)
 	}
-	if got := ClassForDB(-30, "FT8", cfg); got != "UNLIKELY" {
+	if got := ClassForPower(cfg.powerFromDB(-30), "FT8", cfg); got != "UNLIKELY" {
 		t.Fatalf("expected UNLIKELY for -30 dB, got %q", got)
 	}
 }
 
-func TestGlyphForDBUsesCustomSymbols(t *testing.T) {
+func TestGlyphForPowerUsesCustomSymbols(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.GlyphSymbols = GlyphSymbols{
 		High:         "H",
@@ -50,31 +50,32 @@ func TestGlyphForDBUsesCustomSymbols(t *testing.T) {
 		Unlikely:     "U",
 		Insufficient: "I",
 	}
-	if got := GlyphForDB(-12, "FT8", cfg); got != "H" {
+	if got := GlyphForPower(cfg.powerFromDB(-12), "FT8", cfg); got != "H" {
 		t.Fatalf("expected H for -12 dB, got %q", got)
 	}
-	if got := GlyphForDB(-16, "FT8", cfg); got != "M" {
+	if got := GlyphForPower(cfg.powerFromDB(-16), "FT8", cfg); got != "M" {
 		t.Fatalf("expected M for -16 dB, got %q", got)
 	}
-	if got := GlyphForDB(-20, "FT8", cfg); got != "L" {
+	if got := GlyphForPower(cfg.powerFromDB(-20), "FT8", cfg); got != "L" {
 		t.Fatalf("expected L for -20 dB, got %q", got)
 	}
-	if got := GlyphForDB(-30, "FT8", cfg); got != "U" {
+	if got := GlyphForPower(cfg.powerFromDB(-30), "FT8", cfg); got != "U" {
 		t.Fatalf("expected U for -30 dB, got %q", got)
 	}
 }
 
 func TestMergeSamplesWeighted(t *testing.T) {
 	cfg := DefaultConfig()
-	receive := Sample{Value: -10, Weight: 10}
-	transmit := Sample{Value: -5, Weight: 4}
-	mergedDB, mergedWeight, ok := mergeSamples(receive, transmit, cfg, 0)
+	receive := Sample{Value: cfg.powerFromDB(-10), Weight: 10}
+	transmit := Sample{Value: cfg.powerFromDB(-5), Weight: 4}
+	mergedPower, mergedWeight, ok := mergeSamples(receive, transmit, cfg, 0)
 	if !ok {
 		t.Fatalf("expected merge ok")
 	}
 	if mergedWeight <= 0 {
 		t.Fatalf("expected positive merged weight")
 	}
+	mergedDB := powerToDB(mergedPower)
 	if mergedDB >= -7 || mergedDB <= -11 {
 		t.Fatalf("unexpected merged dB: %v", mergedDB)
 	}
@@ -152,6 +153,18 @@ func TestBucketForIngest(t *testing.T) {
 	}
 }
 
+func TestPowerFromDBClampsToRange(t *testing.T) {
+	cfg := DefaultConfig()
+	high := cfg.powerFromDB(cfg.ClampMax + 10)
+	low := cfg.powerFromDB(cfg.ClampMin - 10)
+	if math.Abs(powerToDB(high)-cfg.ClampMax) > 0.2 {
+		t.Fatalf("expected high clamp near %v dB, got %v dB", cfg.ClampMax, powerToDB(high))
+	}
+	if math.Abs(powerToDB(low)-cfg.ClampMin) > 0.2 {
+		t.Fatalf("expected low clamp near %v dB, got %v dB", cfg.ClampMin, powerToDB(low))
+	}
+}
+
 func TestPredictUsesCombinedBuckets(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.MinEffectiveWeight = 0.1
@@ -166,7 +179,7 @@ func TestPredictUsesCombinedBuckets(t *testing.T) {
 	if resCW.Glyph == cfg.GlyphSymbols.Insufficient {
 		t.Fatalf("expected combined glyph for CW, got insufficient")
 	}
-	if resCW.Glyph != GlyphForDB(-5, "CW", cfg) {
+	if resCW.Glyph != GlyphForPower(cfg.powerFromDB(-5), "CW", cfg) {
 		t.Fatalf("unexpected CW glyph: %q", resCW.Glyph)
 	}
 	if resCW.Source != SourceCombined {
@@ -177,7 +190,7 @@ func TestPredictUsesCombinedBuckets(t *testing.T) {
 	if resFT8.Glyph == cfg.GlyphSymbols.Insufficient {
 		t.Fatalf("expected combined glyph for FT8, got insufficient")
 	}
-	if resFT8.Glyph != GlyphForDB(-5, "FT8", cfg) {
+	if resFT8.Glyph != GlyphForPower(cfg.powerFromDB(-5), "FT8", cfg) {
 		t.Fatalf("unexpected FT8 glyph: %q", resFT8.Glyph)
 	}
 	if resFT8.Source != SourceCombined {

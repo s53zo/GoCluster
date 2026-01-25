@@ -2,6 +2,7 @@ package pathreliability
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
 
@@ -31,6 +32,13 @@ type Config struct {
 	GlyphThresholds                  GlyphThresholds            `yaml:"glyph_thresholds"`                     // fallback glyph thresholds in FT8-equiv dB
 	GlyphSymbols                     GlyphSymbols               `yaml:"glyph_symbols"`                        // glyph mapping for high/medium/low/unlikely/insufficient
 	NoiseOffsets                     map[string]float64         `yaml:"noise_offsets"`                        // noise class -> dB penalty
+
+	modeThresholdsPower      map[string]GlyphThresholdsPower
+	glyphThresholdsPower     GlyphThresholdsPower
+	noisePenaltyDivisors     map[float64]float64
+	powerLUT                 []float64
+	powerLUTMinDB            float64
+	powerLUTStepDB           float64
 }
 
 // ModeOffsets normalizes non-FT8 modes to FT8-equivalent dB.
@@ -52,6 +60,14 @@ type GlyphThresholds struct {
 	hasMedium   bool
 	hasLow      bool
 	hasUnlikely bool
+}
+
+// GlyphThresholdsPower defines power-domain cutoffs for glyphs.
+type GlyphThresholdsPower struct {
+	High     float64
+	Medium   float64
+	Low      float64
+	Unlikely float64
 }
 
 // UnmarshalYAML enforces the new high/medium/low/unlikely keys and rejects legacy names.
@@ -144,7 +160,7 @@ func (s *GlyphSymbols) UnmarshalYAML(value *yaml.Node) error {
 
 // DefaultConfig returns a safe, enabled configuration.
 func DefaultConfig() Config {
-	return Config{
+	cfg := Config{
 		Enabled:                          true,
 		ClampMin:                         -25,
 		ClampMax:                         15,
@@ -198,8 +214,11 @@ func DefaultConfig() Config {
 			"RURAL":    6,
 			"SUBURBAN": 9,
 			"URBAN":    12,
+			"INDUSTRIAL": 21,
 		},
 	}
+	cfg.buildCaches()
+	return cfg
 }
 
 // normalize fills defaults and clamps obvious invalids.
@@ -326,6 +345,60 @@ func (c *Config) normalize() {
 		normalized[strings.ToUpper(strings.TrimSpace(k))] = v
 	}
 	c.NoiseOffsets = normalized
+	c.buildCaches()
+}
+
+func (c *Config) buildCaches() {
+	if c == nil {
+		return
+	}
+	if c.powerLUTStepDB <= 0 {
+		c.powerLUTStepDB = 0.1
+	}
+	minDB := math.Floor(c.ClampMin/c.powerLUTStepDB) * c.powerLUTStepDB
+	maxDB := math.Ceil(c.ClampMax/c.powerLUTStepDB) * c.powerLUTStepDB
+	if maxDB < minDB {
+		minDB = c.ClampMin
+		maxDB = c.ClampMax
+	}
+	size := int(math.Round((maxDB-minDB)/c.powerLUTStepDB)) + 1
+	if size < 2 {
+		size = 2
+	}
+	lut := make([]float64, size)
+	for i := 0; i < size; i++ {
+		db := minDB + float64(i)*c.powerLUTStepDB
+		lut[i] = dbToPower(db)
+	}
+	c.powerLUT = lut
+	c.powerLUTMinDB = minDB
+
+	c.noisePenaltyDivisors = make(map[float64]float64, len(c.NoiseOffsets))
+	for _, penalty := range c.NoiseOffsets {
+		if penalty <= 0 {
+			continue
+		}
+		c.noisePenaltyDivisors[penalty] = dbToPower(penalty)
+	}
+
+	c.glyphThresholdsPower = thresholdsPower(c.GlyphThresholds)
+	c.modeThresholdsPower = make(map[string]GlyphThresholdsPower, len(c.ModeThresholds))
+	for mode, thresholds := range c.ModeThresholds {
+		c.modeThresholdsPower[mode] = thresholdsPower(thresholds)
+	}
+}
+
+func thresholdsPower(t GlyphThresholds) GlyphThresholdsPower {
+	return GlyphThresholdsPower{
+		High:     dbToPower(t.High),
+		Medium:   dbToPower(t.Medium),
+		Low:      dbToPower(t.Low),
+		Unlikely: dbToPower(t.Unlikely),
+	}
+}
+
+func dbToPower(db float64) float64 {
+	return math.Pow(10, db/10)
 }
 
 func validGlyphThresholds(t GlyphThresholds) bool {

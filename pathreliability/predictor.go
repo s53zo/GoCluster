@@ -34,10 +34,11 @@ func (p *Predictor) Update(bucket BucketClass, receiverCell, senderCell CellID, 
 	if isBeacon && p.cfg.BeaconWeightCap > 0 && w > p.cfg.BeaconWeightCap {
 		w = p.cfg.BeaconWeightCap
 	}
+	power := p.cfg.powerFromDB(ft8dB)
 	switch bucket {
 	case BucketCombined:
 		if p.combined != nil {
-			p.combined.Update(receiverCell, senderCell, receiverGrid2, senderGrid2, band, ft8dB, w, now)
+			p.combined.Update(receiverCell, senderCell, receiverGrid2, senderGrid2, band, power, w, now)
 		}
 	default:
 		return
@@ -55,7 +56,7 @@ const (
 // Result carries merged glyph and diagnostics.
 type Result struct {
 	Glyph  string
-	Value  float64
+	Value  float64 // power
 	Weight float64
 	Source PredictionSource
 }
@@ -71,19 +72,19 @@ func (p *Predictor) Predict(userCell, dxCell CellID, userGrid2, dxGrid2 string, 
 	}
 
 	modeKey := normalizeMode(mode)
-	makeResult := func(db, weight float64, source PredictionSource) Result {
-		return Result{Glyph: GlyphForDB(db, modeKey, p.cfg), Value: db, Weight: weight, Source: source}
+	makeResult := func(power, weight float64, source PredictionSource) Result {
+		return Result{Glyph: GlyphForPower(power, modeKey, p.cfg), Value: power, Weight: weight, Source: source}
 	}
-	makeInsufficient := func(db, weight float64) Result {
-		return Result{Glyph: insufficient, Value: db, Weight: weight, Source: SourceInsufficient}
+	makeInsufficient := func(power, weight float64) Result {
+		return Result{Glyph: insufficient, Value: power, Weight: weight, Source: SourceInsufficient}
 	}
 
-	mergedDB, mergedWeight, ok := p.mergeFromStore(p.combined, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
+	mergedPower, mergedWeight, ok := p.mergeFromStore(p.combined, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
 	if ok && mergedWeight >= p.cfg.MinEffectiveWeight {
-		return makeResult(mergedDB, mergedWeight, SourceCombined)
+		return makeResult(mergedPower, mergedWeight, SourceCombined)
 	}
 	if ok {
-		return makeInsufficient(mergedDB, mergedWeight)
+		return makeInsufficient(mergedPower, mergedWeight)
 	}
 	return makeInsufficient(0, 0)
 }
@@ -94,17 +95,17 @@ func mergeSamples(receive Sample, transmit Sample, cfg Config, noisePenalty floa
 	if !hasReceive && !hasTransmit {
 		return 0, 0, false
 	}
-	receiveDB := receive.Value
+	receivePower := receive.Value
 	if hasReceive && noisePenalty > 0 {
-		receiveDB = ApplyNoise(receiveDB, noisePenalty, cfg.ClampMin, cfg.ClampMax)
+		receivePower = ApplyNoisePower(receivePower, noisePenalty, cfg)
 	}
 	if hasReceive && hasTransmit {
-		mergedDB := cfg.MergeReceiveWeight*receiveDB + cfg.MergeTransmitWeight*transmit.Value
+		mergedPower := cfg.MergeReceiveWeight*receivePower + cfg.MergeTransmitWeight*transmit.Value
 		mergedWeight := cfg.MergeReceiveWeight*receive.Weight + cfg.MergeTransmitWeight*transmit.Weight
-		return mergedDB, mergedWeight, true
+		return mergedPower, mergedWeight, true
 	}
 	if hasReceive {
-		return receiveDB, receive.Weight * cfg.ReverseHintDiscount, true
+		return receivePower, receive.Weight * cfg.ReverseHintDiscount, true
 	}
 	return transmit.Value, transmit.Weight * cfg.ReverseHintDiscount, true
 }

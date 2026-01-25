@@ -11,10 +11,10 @@ const (
 	ln2           = 0.6931471805599453
 )
 
-// bucket holds decaying FT8-equiv stats for a directional path.
+// bucket holds decaying power stats for a directional path.
 type bucket struct {
-	avg    float32
-	weight float32
+	sumPower float64
+	weight   float64
 	// lastUpdate stores Unix seconds.
 	lastUpdate int64
 }
@@ -51,7 +51,7 @@ func NewStore(cfg Config, bands []string) *Store {
 
 // Update applies a new FT8-equiv reading to the directional path.
 // weight should normally be 1.0; beacons may be clamped by caller.
-func (s *Store) Update(receiverCell, senderCell CellID, receiverGrid2, senderGrid2 string, band string, value float64, weight float64, now time.Time) {
+func (s *Store) Update(receiverCell, senderCell CellID, receiverGrid2, senderGrid2 string, band string, power float64, weight float64, now time.Time) {
 	if s == nil || !s.cfg.Enabled {
 		return
 	}
@@ -63,14 +63,14 @@ func (s *Store) Update(receiverCell, senderCell CellID, receiverGrid2, senderGri
 	if receiverCell == InvalidCell || senderCell == InvalidCell {
 		// Still allow coarse update if enabled and grids are valid.
 	} else {
-		s.updateBucket(packKey(receiverCell, senderCell, idx), value, weight, now, halfLife)
+		s.updateBucket(packKey(receiverCell, senderCell, idx), power, weight, now, halfLife)
 	}
 	if s.cfg.CoarseFallbackEnabled && receiverGrid2 != "" && senderGrid2 != "" {
-		s.updateBucket(packGrid2Key(receiverGrid2, senderGrid2, idx), value, weight, now, halfLife)
+		s.updateBucket(packGrid2Key(receiverGrid2, senderGrid2, idx), power, weight, now, halfLife)
 	}
 }
 
-func (s *Store) updateBucket(key uint64, value float64, weight float64, now time.Time, halfLifeSec int) {
+func (s *Store) updateBucket(key uint64, power float64, weight float64, now time.Time, halfLifeSec int) {
 	if key == 0 {
 		return
 	}
@@ -81,30 +81,30 @@ func (s *Store) updateBucket(key uint64, value float64, weight float64, now time
 	b, ok := sh.buckets[key]
 	if !ok {
 		sh.buckets[key] = &bucket{
-			avg:        float32(clamp(value, s.cfg.ClampMin, s.cfg.ClampMax)),
-			weight:     float32(weight),
+			sumPower:   power * weight,
+			weight:     weight,
 			lastUpdate: nowSec,
 		}
 		return
 	}
 	elapsed := nowSec - b.lastUpdate
 	decay := decayFactor(elapsed, halfLifeSec)
-	oldWeight := float64(b.weight) * decay
+	oldWeight := b.weight * decay
+	oldSumPower := b.sumPower * decay
 	newWeight := oldWeight + weight
 	if newWeight <= 0 {
 		b.weight = 0
-		b.avg = 0
+		b.sumPower = 0
 		b.lastUpdate = nowSec
 		return
 	}
-	oldAvg := float64(b.avg)
-	newAvg := (oldAvg*oldWeight + value*weight) / newWeight
-	b.avg = float32(clamp(newAvg, s.cfg.ClampMin, s.cfg.ClampMax))
-	b.weight = float32(newWeight)
+	newSumPower := oldSumPower + power*weight
+	b.sumPower = newSumPower
+	b.weight = newWeight
 	b.lastUpdate = nowSec
 }
 
-// Sample represents a decayed reading with weight.
+// Sample represents a decayed power reading with weight.
 type Sample struct {
 	Value  float64
 	Weight float64
@@ -161,12 +161,16 @@ func (s *Store) sample(key uint64, halfLife int, now time.Time) Sample {
 		return Sample{}
 	}
 	decay := decayFactor(age, halfLife)
-	decayedWeight := float64(b.weight) * decay
+	decayedWeight := b.weight * decay
 	if decayedWeight <= 0 {
 		return Sample{}
 	}
+	decayedSumPower := b.sumPower * decay
+	if decayedSumPower <= 0 {
+		return Sample{}
+	}
 	return Sample{
-		Value:  float64(b.avg),
+		Value:  decayedSumPower / decayedWeight,
 		Weight: decayedWeight,
 		AgeSec: age,
 	}

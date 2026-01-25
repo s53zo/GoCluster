@@ -12,8 +12,8 @@ func TestStoreStatsByBandCounts(t *testing.T) {
 	store := NewStore(cfg, []string{"160m", "80m"})
 	now := time.Now().UTC()
 
-	store.Update(EncodeCell("FN31"), EncodeCell("FN32"), "", "", "160m", -5, 1.0, now)
-	store.Update(InvalidCell, InvalidCell, "FN", "FN", "80m", -10, 1.0, now)
+	store.Update(EncodeCell("FN31"), EncodeCell("FN32"), "", "", "160m", dbToPower(-5), 1.0, now)
+	store.Update(InvalidCell, InvalidCell, "FN", "FN", "80m", dbToPower(-10), 1.0, now)
 
 	stats := store.StatsByBand(now)
 	if len(stats) != 2 {
@@ -58,8 +58,8 @@ func TestStoreWeightHistogramByBand(t *testing.T) {
 	store := NewStore(cfg, []string{"160m"})
 	now := time.Now().UTC()
 
-	store.Update(EncodeCell("FN31"), EncodeCell("FN32"), "", "", "160m", -5, 0.5, now)
-	store.Update(EncodeCell("EM10"), EncodeCell("EM11"), "", "", "160m", -5, 2.5, now)
+	store.Update(EncodeCell("FN31"), EncodeCell("FN32"), "", "", "160m", dbToPower(-5), 0.5, now)
+	store.Update(EncodeCell("EM10"), EncodeCell("EM11"), "", "", "160m", dbToPower(-5), 2.5, now)
 
 	edges := []float64{1, 2, 3}
 	hist := store.WeightHistogramByBand(now, edges)

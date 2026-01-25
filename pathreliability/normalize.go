@@ -1,6 +1,7 @@
 package pathreliability
 
 import (
+	"math"
 	"strings"
 )
 
@@ -28,22 +29,29 @@ func normalizeMode(mode string) string {
 	return up
 }
 
-// ApplyNoise subtracts a noise penalty from the DX->user direction.
-func ApplyNoise(value float64, offset float64, clampMin, clampMax float64) float64 {
-	return clamp(value-offset, clampMin, clampMax)
+// ApplyNoisePower applies a noise penalty (dB) in the power domain.
+func ApplyNoisePower(power float64, penaltyDB float64, cfg Config) float64 {
+	if power <= 0 || penaltyDB <= 0 {
+		return power
+	}
+	divisor := cfg.noiseDivisorForPenalty(penaltyDB)
+	if divisor <= 0 {
+		return power
+	}
+	return power / divisor
 }
 
-// GlyphForDB maps FT8-equiv dB to the ASCII glyph scale for a given mode.
-func GlyphForDB(ft8dB float64, mode string, cfg Config) string {
-	thresholds := thresholdsForMode(mode, cfg)
+// GlyphForPower maps power to the ASCII glyph scale for a given mode.
+func GlyphForPower(power float64, mode string, cfg Config) string {
+	thresholds := thresholdsForModePower(mode, cfg)
 	switch {
-	case ft8dB >= thresholds.High:
+	case power >= thresholds.High:
 		return cfg.GlyphSymbols.High
-	case ft8dB >= thresholds.Medium:
+	case power >= thresholds.Medium:
 		return cfg.GlyphSymbols.Medium
-	case ft8dB >= thresholds.Low:
+	case power >= thresholds.Low:
 		return cfg.GlyphSymbols.Low
-	case ft8dB >= thresholds.Unlikely:
+	case power >= thresholds.Unlikely:
 		return cfg.GlyphSymbols.Unlikely
 	default:
 		return cfg.GlyphSymbols.Unlikely
@@ -57,32 +65,29 @@ const (
 	classUnlikely = "UNLIKELY"
 )
 
-// ClassForDB maps FT8-equiv dB to the threshold class name for filtering.
-func ClassForDB(ft8dB float64, mode string, cfg Config) string {
-	thresholds := thresholdsForMode(mode, cfg)
+// ClassForPower maps power to the threshold class name for filtering.
+func ClassForPower(power float64, mode string, cfg Config) string {
+	thresholds := thresholdsForModePower(mode, cfg)
 	switch {
-	case ft8dB >= thresholds.High:
+	case power >= thresholds.High:
 		return classHigh
-	case ft8dB >= thresholds.Medium:
+	case power >= thresholds.Medium:
 		return classMedium
-	case ft8dB >= thresholds.Low:
+	case power >= thresholds.Low:
 		return classLow
 	default:
 		return classUnlikely
 	}
 }
 
-func thresholdsForMode(mode string, cfg Config) GlyphThresholds {
+func thresholdsForModePower(mode string, cfg Config) GlyphThresholdsPower {
 	key := normalizeMode(mode)
-	if cfg.ModeThresholds != nil {
-		if t, ok := cfg.ModeThresholds[key]; ok && validGlyphThresholds(t) {
+	if cfg.modeThresholdsPower != nil {
+		if t, ok := cfg.modeThresholdsPower[key]; ok {
 			return t
 		}
 	}
-	if validGlyphThresholds(cfg.GlyphThresholds) {
-		return cfg.GlyphThresholds
-	}
-	return DefaultConfig().GlyphThresholds
+	return cfg.glyphThresholdsPower
 }
 
 // SelectSample blends fine/coarse samples by confidence weight.
@@ -116,4 +121,40 @@ func SelectSample(fine Sample, coarse Sample, minFineWeight float64) Sample {
 		Weight: sum,
 		AgeSec: age,
 	}
+}
+
+func (c Config) powerFromDB(db float64) float64 {
+	if c.powerLUTStepDB <= 0 || len(c.powerLUT) == 0 {
+		return dbToPower(clamp(db, c.ClampMin, c.ClampMax))
+	}
+	clamped := clamp(db, c.ClampMin, c.ClampMax)
+	// LUT uses a fixed dB step; round to the nearest index.
+	idx := int(math.Round((clamped - c.powerLUTMinDB) / c.powerLUTStepDB))
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(c.powerLUT) {
+		idx = len(c.powerLUT) - 1
+	}
+	return c.powerLUT[idx]
+}
+
+func (c Config) noiseDivisorForPenalty(penalty float64) float64 {
+	if penalty <= 0 {
+		return 1
+	}
+	if c.noisePenaltyDivisors != nil {
+		if v, ok := c.noisePenaltyDivisors[penalty]; ok && v > 0 {
+			return v
+		}
+	}
+	return dbToPower(penalty)
+}
+
+func powerToDB(power float64) float64 {
+	const minPower = 1e-10
+	if power < minPower {
+		power = minPower
+	}
+	return 10 * math.Log10(power)
 }

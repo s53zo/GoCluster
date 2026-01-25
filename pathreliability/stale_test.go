@@ -13,7 +13,7 @@ func TestStoreStaleAfterHalfLifeMultiplier(t *testing.T) {
 	store := NewStore(cfg, []string{"160m"})
 	now := time.Now().UTC()
 
-	store.Update(EncodeCell("FN31"), EncodeCell("FN32"), "", "", "160m", -5, 1.0, now)
+	store.Update(EncodeCell("FN31"), EncodeCell("FN32"), "", "", "160m", dbToPower(-5), 1.0, now)
 
 	fine, _ := store.Lookup(EncodeCell("FN31"), EncodeCell("FN32"), "", "", "160m", now.Add(49*time.Second))
 	if fine.Weight == 0 {
