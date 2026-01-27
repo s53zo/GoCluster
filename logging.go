@@ -295,6 +295,22 @@ func (f *logFanout) Close() error {
 	return firstErr
 }
 
+// Purpose: Write a single line only to the file sink (no console/UI output).
+// Key aspects: Safe when file logging is disabled.
+// Upstream: periodic background loggers that should not spam the console.
+// Downstream: lineSink.WriteLine.
+func (f *logFanout) WriteFileOnlyLine(line string, now time.Time) {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	file := f.file
+	f.mu.Unlock()
+	if file != nil {
+		file.WriteLine(line, now)
+	}
+}
+
 func formatLogTimestamp(now time.Time) string {
 	return now.In(time.Local).Format(logTimestampLayout)
 }

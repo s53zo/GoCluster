@@ -1,0 +1,147 @@
+package main
+
+import (
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"dxcluster/pathreliability"
+	"dxcluster/spot"
+)
+
+// pathReportMetrics tracks per-spot aggregates for reporting.
+// It maintains per-hour unique spotters/grid pairs and per-5m source mix.
+type pathReportMetrics struct {
+	mu           sync.Mutex
+	hourKey      string
+	spotters     map[string]map[string]struct{}
+	gridPairs    map[string]map[string]struct{}
+	sourceCounts map[string]uint64
+}
+
+func newPathReportMetrics() *pathReportMetrics {
+	return &pathReportMetrics{
+		spotters:     make(map[string]map[string]struct{}),
+		gridPairs:    make(map[string]map[string]struct{}),
+		sourceCounts: make(map[string]uint64),
+	}
+}
+
+func (m *pathReportMetrics) Observe(s *spot.Spot, now time.Time) {
+	if m == nil || s == nil {
+		return
+	}
+	ts := s.Time
+	if ts.IsZero() {
+		ts = now
+	}
+	ts = ts.UTC()
+	hourKey := ts.Format("2006-01-02 15")
+
+	band := strings.TrimSpace(s.BandNorm)
+	if band == "" {
+		band = strings.TrimSpace(s.Band)
+	}
+	if band == "" {
+		band = spot.FreqToBand(s.Frequency)
+	}
+	band = strings.TrimSpace(spot.NormalizeBand(band))
+	if band == "" || band == "???" {
+		return
+	}
+
+	deCall := strings.TrimSpace(s.DECallNorm)
+	if deCall == "" {
+		deCall = strings.TrimSpace(s.DECall)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.hourKey != hourKey {
+		m.hourKey = hourKey
+		m.spotters = make(map[string]map[string]struct{})
+		m.gridPairs = make(map[string]map[string]struct{})
+	}
+
+	if label := sourceBucket(s.SourceType); label != "" {
+		m.sourceCounts[label]++
+	}
+
+	if deCall != "" {
+		set := m.spotters[band]
+		if set == nil {
+			set = make(map[string]struct{})
+			m.spotters[band] = set
+		}
+		set[deCall] = struct{}{}
+	}
+
+	deGrid2 := pathreliability.EncodeGrid2(s.DEMetadata.Grid)
+	dxGrid2 := pathreliability.EncodeGrid2(s.DXMetadata.Grid)
+	if deGrid2 != "" && dxGrid2 != "" {
+		key := fmt.Sprintf("%s|%s", deGrid2, dxGrid2)
+		set := m.gridPairs[band]
+		if set == nil {
+			set = make(map[string]struct{})
+			m.gridPairs[band] = set
+		}
+		set[key] = struct{}{}
+	}
+}
+
+func (m *pathReportMetrics) SnapshotSources() map[string]uint64 {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]uint64, len(m.sourceCounts))
+	for k, v := range m.sourceCounts {
+		out[k] = v
+	}
+	for k := range m.sourceCounts {
+		m.sourceCounts[k] = 0
+	}
+	return out
+}
+
+func (m *pathReportMetrics) HourlyCounts(now time.Time) (string, map[string]int, map[string]int) {
+	if m == nil {
+		return "", nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.hourKey == "" {
+		m.hourKey = now.UTC().Format("2006-01-02 15")
+	}
+	spotters := make(map[string]int, len(m.spotters))
+	for band, set := range m.spotters {
+		spotters[band] = len(set)
+	}
+	pairs := make(map[string]int, len(m.gridPairs))
+	for band, set := range m.gridPairs {
+		pairs[band] = len(set)
+	}
+	return m.hourKey, spotters, pairs
+}
+
+func sourceBucket(source spot.SourceType) string {
+	switch source {
+	case spot.SourceRBN:
+		return "RBN"
+	case spot.SourceFT8, spot.SourceFT4:
+		return "RBN-FT"
+	case spot.SourcePSKReporter:
+		return "PSK"
+	case spot.SourceManual:
+		return "HUMAN"
+	case spot.SourceUpstream:
+		return "UPSTREAM"
+	case spot.SourcePeer:
+		return "PEER"
+	default:
+		return "OTHER"
+	}
+}

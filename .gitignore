@@ -19,6 +19,7 @@ logs/
 # Local env/config
 .env
 cmd/daily_analysis/.env
+data/config/openai.yaml
 .claude/
 .vscode/
 NUL

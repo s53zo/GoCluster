@@ -3,10 +3,8 @@ package main
 import (
 	"archive/zip"
 	"bufio"
-	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -20,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"dxcluster/internal/openaiutil"
 	spotpkg "dxcluster/spot"
 	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
@@ -88,32 +87,6 @@ type stabilityBucket struct {
 	Start  int64
 	Total  int
 	Stable int
-}
-
-type openAIRequest struct {
-	Model               string            `json:"model"`
-	MaxCompletionTokens int               `json:"max_completion_tokens,omitempty"`
-	Temperature         float64           `json:"temperature,omitempty"`
-	Messages            []openAIMessage   `json:"messages"`
-	ResponseFormat      map[string]string `json:"response_format,omitempty"`
-	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
-	Verbosity           string            `json:"verbosity,omitempty"`
-}
-
-type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type openAIResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
 }
 
 func defaultConfig() Config {
@@ -568,22 +541,6 @@ func computeStability(db *sql.DB, csvPath string, minTs int64, cfg StabilityConf
 // generateLLM requests recommendations from OpenAI using the assembled report and optional config snapshot.
 // It respects OPENAI_API_KEY when api_key is blank in the config. When enabled but no key is found, it errors.
 func generateLLM(cfg Config, analysisDate time.Time, report []string) (string, error) {
-	key := strings.TrimSpace(cfg.OpenAI.APIKey)
-	if key == "" {
-		key = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
-	}
-	if key == "" {
-		return "", fmt.Errorf("OPENAI_API_KEY missing; set openai.api_key or environment variable")
-	}
-	model := strings.TrimSpace(cfg.OpenAI.Model)
-	if model == "" {
-		model = "gpt-5-nano"
-	}
-	endpoint := strings.TrimSpace(cfg.OpenAI.Endpoint)
-	if endpoint == "" {
-		endpoint = "https://api.openai.com/v1/chat/completions"
-	}
-
 	userContent := strings.Join(report, "\n")
 	if cfg.OpenAI.IncludeConfigSnapshot {
 		cfgPath := cfg.OpenAI.ClusterConfigPath
@@ -600,64 +557,16 @@ func generateLLM(cfg Config, analysisDate time.Time, report []string) (string, e
 	if systemPrompt == "" {
 		systemPrompt = "You are an RF/cluster QA analyst. Read the daily call-correction metrics and propose specific parameter adjustments."
 	}
-
-	reqBody := openAIRequest{
-		Model:               model,
-		MaxCompletionTokens: cfg.OpenAI.MaxTokens,
-		Messages: []openAIMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userContent},
-		},
-	}
-	// GPT-5 series: use text response, minimal reasoning effort, low verbosity; skip temperature.
-	if strings.HasPrefix(model, "gpt-5") {
-		reqBody.ResponseFormat = map[string]string{"type": "text"}
-		reqBody.ReasoningEffort = "minimal"
-		reqBody.Verbosity = "low"
-	} else if cfg.OpenAI.Temperature > 0 {
-		reqBody.Temperature = cfg.OpenAI.Temperature
-	}
-
-	payload, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("marshal OpenAI request: %w", err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return "", fmt.Errorf("build OpenAI request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("call OpenAI: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read OpenAI response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("OpenAI HTTP %s: %s", resp.Status, string(body))
-	}
-
-	var oaResp openAIResponse
-	if err := json.Unmarshal(body, &oaResp); err != nil {
-		return "", fmt.Errorf("parse OpenAI response: %w", err)
-	}
-	if oaResp.Error != nil {
-		return "", fmt.Errorf("OpenAI error: %s", oaResp.Error.Message)
-	}
-	if len(oaResp.Choices) == 0 {
-		return "", fmt.Errorf("OpenAI response had no choices")
-	}
-	return strings.TrimSpace(oaResp.Choices[0].Message.Content), nil
+	return openaiutil.Generate(ctx, openaiutil.Config{
+		APIKey:       cfg.OpenAI.APIKey,
+		Model:        cfg.OpenAI.Model,
+		Endpoint:     cfg.OpenAI.Endpoint,
+		MaxTokens:    cfg.OpenAI.MaxTokens,
+		Temperature:  cfg.OpenAI.Temperature,
+		SystemPrompt: systemPrompt,
+	}, userContent)
 }
 
 // loadDotEnv loads KEY=VALUE pairs from a .env-style file into the process environment.
