@@ -88,6 +88,10 @@ func Refresh(cfg config.FCCULSConfig, force bool) (bool, error) {
 		return false, nil
 	}
 
+	// Prevent readers from reopening the DB during build/swap.
+	SetRefreshInProgress(true)
+	defer SetRefreshInProgress(false)
+
 	extractDir, err := extractArchive(dest)
 	if err != nil {
 		return false, err

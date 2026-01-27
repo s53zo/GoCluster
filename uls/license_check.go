@@ -23,6 +23,7 @@ var (
 	licenseMu      sync.Mutex
 	licenseDead    atomic.Bool
 	licenseEnabled atomic.Bool
+	refreshActive  atomic.Bool
 	loggedDBError  atomic.Bool
 )
 
@@ -40,6 +41,22 @@ func init() {
 // Downstream: licenseEnabled flag read by IsLicensedUS.
 func SetLicenseChecksEnabled(enabled bool) {
 	licenseEnabled.Store(enabled)
+}
+
+// Purpose: Mark whether a refresh/swap is in progress to fail open on lookups.
+// Key aspects: Uses atomic flag so hot-path checks avoid locks.
+// Upstream: FCC ULS refresh/swap logic.
+// Downstream: IsLicensedUS and getLicenseDB.
+func SetRefreshInProgress(active bool) {
+	refreshActive.Store(active)
+}
+
+// Purpose: Report whether a refresh/swap is currently active.
+// Key aspects: Used by UI to avoid touching the DB during swaps.
+// Upstream: Stats/monitoring.
+// Downstream: RefreshInProgress callers.
+func RefreshInProgress() bool {
+	return refreshActive.Load()
 }
 
 // Purpose: Configure the FCC ULS SQLite path used for license lookups.
@@ -70,6 +87,10 @@ func SetLicenseDBPath(path string) {
 // Downstream: getLicenseDB, NormalizeForLicense, SQL query, ResetLicenseDB.
 func IsLicensedUS(call string) bool {
 	if !licenseEnabled.Load() {
+		return true
+	}
+	// Fail open while a refresh/swap is active so the DB file can be replaced.
+	if refreshActive.Load() {
 		return true
 	}
 	if licenseDead.Load() {
@@ -138,6 +159,9 @@ func IsLicensedUS(call string) bool {
 func getLicenseDB() *sql.DB {
 	licenseOnce.Do(func() {
 		if licenseDBPath == "" {
+			return
+		}
+		if refreshActive.Load() {
 			return
 		}
 		// Open read-only with query_only/immutable pragmas and a short busy timeout so refresh

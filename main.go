@@ -856,7 +856,8 @@ func main() {
 	// Key aspects: Handles corrections, licensing, secondary dedupe, and fan-out.
 	// Upstream: main startup after wiring dependencies.
 	// Downstream: processOutputSpots.
-	go processOutputSpots(deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor)
+	pathReport := newPathReportMetrics()
+	go processOutputSpots(deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor, pathReport)
 	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
@@ -1007,7 +1008,7 @@ func main() {
 	// Downstream: displayStatsWithFCC.
 	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor)
 	if pathCfg.Enabled {
-		go startPathPredictionLogger(ctx, telnetServer, pathPredictor)
+		go startPathPredictionLogger(ctx, logMux, telnetServer, pathPredictor, pathReport)
 	}
 
 	// Set up signal handling for graceful shutdown
@@ -1305,11 +1306,17 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 
 	prevSourceCounts := make(map[string]uint64)
 	prevSourceModeCounts := make(map[string]uint64)
-	fccSnap := loadFCCSnapshot(fccDBPath)
+	var fccSnap *fccSnapshot
+	if !uls.RefreshInProgress() {
+		fccSnap = loadFCCSnapshot(fccDBPath)
+	}
 
 	for range ticker.C {
 		// Refresh FCC snapshot each interval to reflect completed downloads/builds.
-		fccSnap = loadFCCSnapshot(fccDBPath)
+		// Skip reads while a refresh/swap is active to avoid holding the DB open.
+		if !uls.RefreshInProgress() {
+			fccSnap = loadFCCSnapshot(fccDBPath)
+		}
 
 		sourceTotals := tracker.GetSourceCounts()
 		sourceModeTotals := tracker.GetSourceModeCounts()
@@ -1602,6 +1609,7 @@ func processOutputSpots(
 	archiveWriter *archive.Writer,
 	lastOutput *atomic.Int64,
 	pathPredictor *pathreliability.Predictor,
+	pathReport *pathReportMetrics,
 ) {
 	outputChan := deduplicator.GetOutputChannel()
 	secondaryActive := secondaryFast != nil || secondaryMed != nil || secondarySlow != nil
@@ -1852,6 +1860,9 @@ func processOutputSpots(
 						}
 						bucket := pathreliability.BucketForIngest(mode)
 						if bucket != pathreliability.BucketNone {
+							if pathReport != nil {
+								pathReport.Observe(s, spotTime)
+							}
 							// Spot SNR reflects DX -> DE (spotter is the receiver).
 							pathPredictor.Update(bucket, deCell, dxCell, deGrid2, dxGrid2, band, ft8, 1.0, spotTime, s.IsBeacon)
 						}
@@ -2031,7 +2042,7 @@ func startPipelineHealthMonitor(ctx context.Context, dedup *dedup.Deduplicator, 
 	}()
 }
 
-func startPathPredictionLogger(ctx context.Context, srv *telnet.Server, predictor *pathreliability.Predictor) {
+func startPathPredictionLogger(ctx context.Context, logMux *logFanout, srv *telnet.Server, predictor *pathreliability.Predictor, pathReport *pathReportMetrics) {
 	// Purpose: Periodically report path prediction outcomes, bucket counts, and weight histograms.
 	// Key aspects: Uses atomic snapshot/reset; exits on context cancellation.
 	// Upstream: main startup.
@@ -2041,24 +2052,113 @@ func startPathPredictionLogger(ctx context.Context, srv *telnet.Server, predicto
 	}
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
+	type ge10Sample struct {
+		ts  time.Time
+		val int
+	}
+	ge10Window := make(map[string][]ge10Sample)
+	const ge10WindowDuration = time.Hour
+
+	pruneGe10 := func(now time.Time, band string) {
+		samples := ge10Window[band]
+		if len(samples) == 0 {
+			return
+		}
+		cutoff := now.Add(-ge10WindowDuration)
+		n := 0
+		for _, s := range samples {
+			if s.ts.After(cutoff) || s.ts.Equal(cutoff) {
+				samples[n] = s
+				n++
+			}
+		}
+		if n == 0 {
+			delete(ge10Window, band)
+			return
+		}
+		ge10Window[band] = samples[:n]
+	}
+
+	ge10Stats := func(band string) (min, med, p75, max int, ok bool) {
+		samples := ge10Window[band]
+		if len(samples) == 0 {
+			return 0, 0, 0, 0, false
+		}
+		vals := make([]int, 0, len(samples))
+		for _, s := range samples {
+			vals = append(vals, s.val)
+		}
+		sort.Ints(vals)
+		min = vals[0]
+		max = vals[len(vals)-1]
+		mid := len(vals) / 2
+		if len(vals)%2 == 1 {
+			med = vals[mid]
+		} else {
+			med = int(math.Round(float64(vals[mid-1]+vals[mid]) / 2))
+		}
+		if len(vals) == 1 {
+			p75 = vals[0]
+		} else {
+			pos := int(math.Round(0.75 * float64(len(vals)-1)))
+			if pos < 0 {
+				pos = 0
+			}
+			if pos >= len(vals) {
+				pos = len(vals) - 1
+			}
+			p75 = vals[pos]
+		}
+		return min, med, p75, max, true
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			now := time.Now().UTC()
-				if srv != nil {
-					stats := srv.PathPredictionStatsSnapshot()
-					if stats.Total > 0 {
-						log.Printf("Path predictions (5m): total=%s derived=%s combined=%s insufficient=%s no_sample=%s low_weight=%s",
-							humanize.Comma(int64(stats.Total)),
-							humanize.Comma(int64(stats.Derived)),
-							humanize.Comma(int64(stats.Combined)),
-							humanize.Comma(int64(stats.Insufficient)),
-							humanize.Comma(int64(stats.NoSample)),
-							humanize.Comma(int64(stats.LowWeight)))
+			fileOnly := func(line string) {
+				if logMux == nil {
+					return
+				}
+				logMux.WriteFileOnlyLine(line, now)
+			}
+			if srv != nil {
+				stats := srv.PathPredictionStatsSnapshot()
+				if stats.Total > 0 {
+					fileOnly(fmt.Sprintf(
+						"Path predictions (5m): total=%s derived=%s combined=%s insufficient=%s no_sample=%s low_weight=%s",
+						humanize.Comma(int64(stats.Total)),
+						humanize.Comma(int64(stats.Derived)),
+						humanize.Comma(int64(stats.Combined)),
+						humanize.Comma(int64(stats.Insufficient)),
+						humanize.Comma(int64(stats.NoSample)),
+						humanize.Comma(int64(stats.LowWeight)),
+					))
+				}
+			}
+			if pathReport != nil {
+				sourceCounts := pathReport.SnapshotSources()
+				if len(sourceCounts) > 0 {
+					total := uint64(0)
+					for _, v := range sourceCounts {
+						total += v
+					}
+					if total > 0 {
+						var s strings.Builder
+						s.WriteString("Path source mix (5m):")
+						fmt.Fprintf(&s, " total=%s", humanize.Comma(int64(total)))
+						for _, label := range []string{"RBN", "RBN-FT", "PSK", "HUMAN", "PEER", "UPSTREAM", "OTHER"} {
+							if val, ok := sourceCounts[label]; ok {
+								fmt.Fprintf(&s, " %s=%s", label, humanize.Comma(int64(val)))
+							} else {
+								fmt.Fprintf(&s, " %s=0", label)
+							}
+						}
+						fileOnly(s.String())
 					}
 				}
+			}
 			if predictor == nil || !predictor.Config().Enabled {
 				continue
 			}
@@ -2074,7 +2174,7 @@ func startPathPredictionLogger(ctx context.Context, srv *telnet.Server, predicto
 					humanize.Comma(int64(entry.Fine)),
 					humanize.Comma(int64(entry.Coarse)))
 			}
-			log.Println(b.String())
+			fileOnly(b.String())
 			hist := predictor.WeightHistogramByBand(now)
 			if len(hist.Bands) == 0 || len(hist.Edges) == 0 {
 				continue
@@ -2092,7 +2192,70 @@ func startPathPredictionLogger(ctx context.Context, srv *telnet.Server, predicto
 				}
 			}
 			if h.Len() > len("Path weight dist (5m):") {
-				log.Println(h.String())
+				fileOnly(h.String())
+			}
+			if len(hist.Bands) > 0 {
+				var v strings.Builder
+				v.WriteString("Path ge10 variance (5m):")
+				for _, entry := range hist.Bands {
+					band := entry.Band
+					if band == "" {
+						continue
+					}
+					ge10 := 0
+					if len(entry.Bins) > 0 {
+						ge10 = entry.Bins[len(entry.Bins)-1]
+					}
+					ge10Window[band] = append(ge10Window[band], ge10Sample{ts: now, val: ge10})
+					pruneGe10(now, band)
+					min, med, p75, max, ok := ge10Stats(band)
+					if !ok {
+						continue
+					}
+					deg := 0
+					if max == 0 {
+						deg = 1
+					}
+					fmt.Fprintf(&v, " %s min=%d med=%d p75=%d max=%d deg=%d", band, min, med, p75, max, deg)
+				}
+				if v.Len() > len("Path ge10 variance (5m):") {
+					fileOnly(v.String())
+				}
+			}
+			if pathReport != nil {
+				hourKey, spotters, gridPairs := pathReport.HourlyCounts(now)
+				bandOrder := make([]string, 0, len(bandStats))
+				for _, entry := range bandStats {
+					bandOrder = append(bandOrder, entry.Band)
+				}
+				if len(bandOrder) == 0 {
+					for band := range spotters {
+						bandOrder = append(bandOrder, band)
+					}
+					sort.Strings(bandOrder)
+				}
+				if len(spotters) > 0 {
+					var u strings.Builder
+					u.WriteString("Path unique spotters (hour):")
+					if hourKey != "" {
+						fmt.Fprintf(&u, " hour=%s", hourKey[len(hourKey)-2:]) // HH
+					}
+					for _, band := range bandOrder {
+						fmt.Fprintf(&u, " %s=%s", band, humanize.Comma(int64(spotters[band])))
+					}
+					fileOnly(u.String())
+				}
+				if len(gridPairs) > 0 {
+					var g strings.Builder
+					g.WriteString("Path unique grid pairs (hour):")
+					if hourKey != "" {
+						fmt.Fprintf(&g, " hour=%s", hourKey[len(hourKey)-2:])
+					}
+					for _, band := range bandOrder {
+						fmt.Fprintf(&g, " %s=%s", band, humanize.Comma(int64(gridPairs[band])))
+					}
+					fileOnly(g.String())
+				}
 			}
 		}
 	}

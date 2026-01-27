@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"dxcluster/config"
 
@@ -118,6 +119,41 @@ func buildDatabase(extractDir, dbPath string, tempDir string) error {
 		return fmt.Errorf("fcc uls: close sqlite: %w", err)
 	}
 
+	if err := replaceDBWithRetry(dbPath, tmpPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+const (
+	swapRetryMaxDuration = 60 * time.Second
+	swapRetryInitial     = 250 * time.Millisecond
+	swapRetryMaxDelay    = 5 * time.Second
+)
+
+// Purpose: Replace the existing DB file with a temp build, retrying on sharing violations.
+// Key aspects: Bounded retry window; exponential backoff; avoids time.After in loops.
+// Upstream: buildDatabase.
+// Downstream: replaceDBOnce, shouldRetryReplace.
+func replaceDBWithRetry(dbPath, tmpPath string) error {
+	start := time.Now()
+	delay := swapRetryInitial
+	for {
+		if err := replaceDBOnceFn(dbPath, tmpPath); err == nil {
+			return nil
+		} else if !shouldRetryReplace(err) || time.Since(start) >= swapRetryMaxDuration {
+			return err
+		}
+		timer := time.NewTimer(delay)
+		<-timer.C
+		timer.Stop()
+		delay = minDuration(delay*2, swapRetryMaxDelay)
+	}
+}
+
+var replaceDBOnceFn = replaceDBOnce
+
+func replaceDBOnce(dbPath, tmpPath string) error {
 	if err := os.Remove(dbPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("fcc uls: remove old db: %w", err)
 	}
@@ -125,6 +161,23 @@ func buildDatabase(extractDir, dbPath string, tempDir string) error {
 		return fmt.Errorf("fcc uls: replace db: %w", err)
 	}
 	return nil
+}
+
+func shouldRetryReplace(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "being used by another process") ||
+		strings.Contains(lower, "used by another process") ||
+		strings.Contains(lower, "sharing violation")
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // Purpose: Load a single ULS table from a DAT file into SQLite.
