@@ -83,7 +83,7 @@ func generateSpots(ctx context.Context, input chan<- *spot.Spot, ratePerSec int,
 
 	modes := []string{"FT8", "FT4", "CW", "RTTY", "SSB"}
 	var seq uint64
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rng := rand.New(rand.NewSource(time.Now().UTC().UnixNano()))
 
 	for {
 		select {
@@ -116,3 +116,4 @@ func makeSpot(seq uint64, baseFreq float64, modes []string, rng *rand.Rand) *spo
 	s.SourceType = spot.SourceManual
 	return s
 }
+

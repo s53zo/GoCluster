@@ -233,7 +233,7 @@ func (c *callMetaCache) UpdateGrid(call, grid string, derived bool) bool {
 	shard := c.shardFor(call)
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
-	now := time.Now()
+	now := time.Now().UTC()
 	if elem, ok := shard.entries[call]; ok {
 		entry := elem.Value.(*callMetaEntry)
 		shard.order.MoveToFront(elem)

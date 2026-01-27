@@ -144,7 +144,7 @@ type timestampGenerator struct {
 }
 
 func (g *timestampGenerator) Next() string {
-	now := time.Now().UTC()
+	now := time.Now().UTC().UTC()
 	sec := now.Hour()*3600 + now.Minute()*60 + now.Second()
 	if sec != g.lastSec {
 		g.lastSec = sec
@@ -203,7 +203,7 @@ func main() {
 	flag.Parse()
 
 	log.SetOutput(os.Stdout)
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds | log.LUTC)
 
 	backoff := cfg.backoffBase
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -269,7 +269,7 @@ func runProbe(ctx context.Context, cfg probeConfig) error {
 
 	defer func() {
 		if shouldSendBye {
-			_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+			_ = conn.SetWriteDeadline(time.Now().UTC().Add(2 * time.Second))
 			if err := sendLine("BYE"); err != nil {
 				log.Printf("bye send error: %v", err)
 			} else {
@@ -293,10 +293,10 @@ func runProbe(ctx context.Context, cfg probeConfig) error {
 		}
 	}
 
-	handshakeDeadline := time.Now().Add(cfg.loginTimeout + cfg.initTimeout)
+	handshakeDeadline := time.Now().UTC().Add(cfg.loginTimeout + cfg.initTimeout)
 
 	for {
-		deadline := time.Now().Add(cfg.idleTimeout)
+		deadline := time.Now().UTC().Add(cfg.idleTimeout)
 		line, err := reader.ReadLine(deadline)
 		if err != nil {
 			return err
@@ -314,7 +314,7 @@ func runProbe(ctx context.Context, cfg probeConfig) error {
 				return err
 			}
 			initSent = true
-			handshakeDeadline = time.Now().Add(cfg.initTimeout)
+			handshakeDeadline = time.Now().UTC().Add(cfg.initTimeout)
 			continue
 		}
 
@@ -361,7 +361,7 @@ func runProbe(ctx context.Context, cfg probeConfig) error {
 				return err
 			}
 			initSent = true
-			handshakeDeadline = time.Now().Add(cfg.initTimeout)
+			handshakeDeadline = time.Now().UTC().Add(cfg.initTimeout)
 			continue
 		}
 
@@ -369,7 +369,7 @@ func runProbe(ctx context.Context, cfg probeConfig) error {
 			log.Printf("RX %s (established)", line)
 			established = true
 			shouldSendBye = true
-			handshakeDeadline = time.Now().Add(24 * time.Hour)
+			handshakeDeadline = time.Now().UTC().Add(24 * time.Hour)
 			if cfg.keepalive > 0 {
 				t := time.NewTicker(cfg.keepalive)
 				keepaliveTick = t.C
@@ -406,7 +406,7 @@ func runProbe(ctx context.Context, cfg probeConfig) error {
 			log.Printf("RX spot %s", line)
 			if initSent && !established {
 				established = true
-				handshakeDeadline = time.Now().Add(24 * time.Hour)
+				handshakeDeadline = time.Now().UTC().Add(24 * time.Hour)
 			}
 			continue
 		}
@@ -419,7 +419,7 @@ func runProbe(ctx context.Context, cfg probeConfig) error {
 
 		log.Printf("RX %s", line)
 
-		if time.Now().After(handshakeDeadline) && !established {
+		if time.Now().UTC().After(handshakeDeadline) && !established {
 			return errors.New("handshake timeout")
 		}
 
@@ -473,3 +473,4 @@ func modeLabel(pc9x bool) string {
 	}
 	return "legacy"
 }
+

@@ -143,7 +143,7 @@ func (fa *FrequencyAverager) StartCleanup(interval, window time.Duration) {
 			select {
 			case <-ticker.C:
 				fa.mu.Lock()
-				fa.cleanup(time.Now(), window)
+				fa.cleanup(time.Now().UTC(), window)
 				fa.mu.Unlock()
 			case <-fa.sweepQuit:
 				return

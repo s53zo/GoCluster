@@ -76,7 +76,7 @@ func (s *Store) Verify(ctx context.Context, maxDuration time.Duration) (Integrit
 }
 
 func verifyDB(ctx context.Context, db *pebble.DB, maxDuration time.Duration) (IntegrityStats, error) {
-	start := time.Now()
+	start := time.Now().UTC()
 	deadline := time.Time{}
 	if maxDuration > 0 {
 		deadline = start.Add(maxDuration)
@@ -108,7 +108,7 @@ func verifyDB(ctx context.Context, db *pebble.DB, maxDuration time.Duration) (In
 			default:
 			}
 		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
+		if !deadline.IsZero() && time.Now().UTC().After(deadline) {
 			return stats, errors.New("gridstore: integrity scan timed out")
 		}
 		if _, err := decodeRecordValue(iter.Value()); err != nil {
@@ -122,3 +122,4 @@ func verifyDB(ctx context.Context, db *pebble.DB, maxDuration time.Duration) (In
 	stats.Duration = time.Since(start)
 	return stats, nil
 }
+

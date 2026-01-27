@@ -28,6 +28,7 @@ type reportSummary struct {
 	ModelContext      modelContext            `json:"model_context"`
 	Bands             []bandSummary           `json:"bands"`
 	BandGroups        map[string][]string     `json:"band_groups"`
+	CoverageMedians   map[string]coverageStat `json:"coverage_medians_by_band"`
 	PredictionsByHour []predictionHour        `json:"predictions_by_hour"`
 	SourceMixByHour   []sourceMixHour         `json:"source_mix_by_hour"`
 	Thresholds        classificationThreshold `json:"thresholds"`
@@ -97,6 +98,11 @@ type sourceMixHour struct {
 	OTHER    int    `json:"other"`
 }
 
+type coverageStat struct {
+	SpottersMedian int `json:"spotters_median"`
+	GridPairsMedian int `json:"grid_pairs_median"`
+}
+
 type ge10Variance struct {
 	Min int
 	Med int
@@ -119,8 +125,6 @@ type modelContext struct {
 	MergeReceiveWeight           float64                                    `json:"merge_receive_weight"`
 	MergeTransmitWeight          float64                                    `json:"merge_transmit_weight"`
 	NoiseOffsets                 map[string]float64                         `json:"noise_offsets"`
-	GlyphThresholds              pathreliability.GlyphThresholds            `json:"glyph_thresholds"`
-	ModeThresholds               map[string]pathreliability.GlyphThresholds `json:"mode_thresholds"`
 }
 
 type openAIConfig struct {
@@ -179,6 +183,8 @@ func parseLog(path string) ([]string, error) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
+	const maxLineBytes = 1024 * 1024
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 	lines := make([]string, 0, 4096)
 	for scanner.Scan() {
 		line := ansiRe.ReplaceAllString(scanner.Text(), "")
@@ -198,6 +204,9 @@ func parseLog(path string) ([]string, error) {
 			}
 			buf.WriteString(strings.TrimRight(line, "\n"))
 			continue
+		}
+		if buf.Len() > 0 {
+			buf.WriteByte('\n')
 		}
 		buf.WriteString(strings.TrimRight(line, "\n"))
 	}
@@ -386,10 +395,24 @@ func buildModelContext(cfg pathreliability.Config, bands []string) modelContext 
 		MergeReceiveWeight:           cfg.MergeReceiveWeight,
 		MergeTransmitWeight:          cfg.MergeTransmitWeight,
 		NoiseOffsets:                 cfg.NoiseOffsets,
-		GlyphThresholds:              cfg.GlyphThresholds,
-		ModeThresholds:               cfg.ModeThresholds,
 	}
 }
+
+var bandGroups = map[string][]string{
+	"low":  {"160m", "80m", "60m"},
+	"mid":  {"40m", "30m", "20m"},
+	"high": {"17m", "15m", "12m", "10m"},
+}
+
+var allowedBands = func() map[string]struct{} {
+	allowed := make(map[string]struct{})
+	for _, group := range bandGroups {
+		for _, band := range group {
+			allowed[band] = struct{}{}
+		}
+	}
+	return allowed
+}()
 
 func main() {
 	dateFlag := flag.String("date", "", "Date to analyze (YYYY-MM-DD, defaults to today UTC)")
@@ -400,6 +423,7 @@ func main() {
 	openAIConfigFlag := flag.String("openai-config", filepath.Join("data", "config", "openai.yaml"), "OpenAI config for narrative generation")
 	noLLMFlag := flag.Bool("no-llm", false, "Disable OpenAI narrative generation")
 	flag.Parse()
+	log.SetFlags(log.LstdFlags | log.LUTC)
 
 	date := time.Now().UTC()
 	if *dateFlag != "" {
@@ -587,6 +611,9 @@ func main() {
 		hour := tsTime.Hour()
 		weights := weightByTS[ts]
 		for band, f := range buckets {
+			if _, ok := allowedBands[band]; !ok {
+				continue
+			}
 			w := weights[band]
 			if bandHourStats[band] == nil {
 				bandHourStats[band] = make(map[int][]hourStat)
@@ -775,11 +802,37 @@ func main() {
 		}
 	}
 
-	bandGroups := map[string][]string{
-		"low":  {"160m", "80m", "60m"},
-		"mid":  {"40m", "30m", "20m", "17m", "15m", "12m", "10m"},
-		"high": {"6m", "2m", "70cm", "23cm", "13cm"},
-		"none": {"2200m", "630m", "33cm", "25m"},
+	presentBands := make(map[string]struct{}, len(summaries))
+	for _, band := range summaries {
+		presentBands[band.Band] = struct{}{}
+	}
+	filteredGroups := make(map[string][]string, len(bandGroups))
+	for name, group := range bandGroups {
+		for _, band := range group {
+			if _, ok := presentBands[band]; ok {
+				filteredGroups[name] = append(filteredGroups[name], band)
+			}
+		}
+		if len(filteredGroups[name]) == 0 {
+			delete(filteredGroups, name)
+		}
+	}
+
+	coverageMedians := make(map[string]coverageStat, len(summaries))
+	for _, band := range summaries {
+		var spotters, pairs []int
+		for _, hour := range band.Hours {
+			if hour.UniqueSpotters > 0 {
+				spotters = append(spotters, hour.UniqueSpotters)
+			}
+			if hour.UniqueGridPairs > 0 {
+				pairs = append(pairs, hour.UniqueGridPairs)
+			}
+		}
+		coverageMedians[band.Band] = coverageStat{
+			SpottersMedian: median(spotters),
+			GridPairsMedian: median(pairs),
+		}
 	}
 
 	summary := reportSummary{
@@ -788,7 +841,8 @@ func main() {
 		Timezone:          "UTC",
 		ModelContext:      buildModelContext(pathCfg, bands),
 		Bands:             summaries,
-		BandGroups:        bandGroups,
+		BandGroups:        filteredGroups,
+		CoverageMedians:   coverageMedians,
 		PredictionsByHour: predSummary,
 		SourceMixByHour:   sourceMixSummary,
 		Thresholds: classificationThreshold{
@@ -853,38 +907,15 @@ func buildFinalReport(summary reportSummary) string {
 	}
 
 	b.WriteString("Evidence quality & coverage\n\n")
-	b.WriteString(coverageSummary(summary.Bands, summary.SourceMixByHour))
+	b.WriteString(coverageSummary(summary.Bands, summary.SourceMixByHour, summary.CoverageMedians))
 	b.WriteString("\n\n")
 	b.WriteString("Strength bucket degeneracy\n\n")
 	b.WriteString(degeneracySummary(summary.Bands))
 	b.WriteString("\n\n")
 
-	b.WriteString("Low bands (160m / 80m / 60m)\n")
-	b.WriteString("These show the clearest time‑of‑day patterns in evidence:\n\n")
-	writeBandDetail(&b, bandMap["160m"])
-	writeBandDetail(&b, bandMap["80m"])
-	writeBandDetail(&b, bandMap["60m"])
-
-	b.WriteString("Mid bands (40m / 30m / 20m / 17m / 15m / 12m / 10m)\n")
-	b.WriteString("These show sustained evidence with varying strength by hour:\n\n")
-	writeBandDetail(&b, bandForReport(bandMap, "40m"))
-	writeBandDetail(&b, bandForReport(bandMap, "30m"))
-	writeBandDetail(&b, bandForReport(bandMap, "20m"))
-	writeBandDetail(&b, bandForReport(bandMap, "17m"))
-	writeBandDetail(&b, bandForReport(bandMap, "15m"))
-	writeBandDetail(&b, bandForReport(bandMap, "12m"))
-	writeBandDetail(&b, bandForReport(bandMap, "10m"))
-
-	b.WriteString("High bands / VHF/UHF\n\n")
-	writeBandDetail(&b, bandForReport(bandMap, "6m"))
-	writeBandDetail(&b, bandForReport(bandMap, "2m"))
-	writeBandDetail(&b, bandForReport(bandMap, "70cm"))
-	writeBandDetail(&b, bandForReport(bandMap, "23cm"))
-	writeBandDetail(&b, bandForReport(bandMap, "13cm"))
-	writeBandDetail(&b, bandForReport(bandMap, "2200m"))
-	writeBandDetail(&b, bandForReport(bandMap, "630m"))
-	writeBandDetail(&b, bandForReport(bandMap, "33cm"))
-	writeBandDetail(&b, bandForReport(bandMap, "25m"))
+	writeGroupSection(&b, "Low bands", summary.BandGroups["low"], bandMap, "These show the clearest time-of-day patterns in evidence:")
+	writeGroupSection(&b, "Mid bands", summary.BandGroups["mid"], bandMap, "These show sustained evidence with varying strength by hour:")
+	writeGroupSection(&b, "High bands", summary.BandGroups["high"], bandMap, "These show useful daytime evidence windows:")
 
 	b.WriteString("Prediction activity by hour (overall)\n\n")
 	b.WriteString(predictionActivitySummary(summary.PredictionsByHour))
@@ -897,6 +928,17 @@ func buildFinalReport(summary reportSummary) string {
 	return b.String()
 }
 
+func writeGroupSection(b *strings.Builder, title string, bands []string, bandMap map[string]bandSummary, lead string) {
+	if len(bands) == 0 {
+		return
+	}
+	b.WriteString(title + " (" + strings.Join(bands, " / ") + ")\n")
+	b.WriteString(lead + "\n\n")
+	for _, band := range bands {
+		writeBandDetail(b, bandMap[band])
+	}
+}
+
 func writeModelContext(b *strings.Builder, ctx modelContext, bands []bandSummary) {
 	if b == nil {
 		return
@@ -906,16 +948,6 @@ func writeModelContext(b *strings.Builder, ctx modelContext, bands []bandSummary
 	fmt.Fprintf(b, "Min effective weight: %.2f. Min fine weight: %.2f. Reverse hint discount: %.2f.\n",
 		ctx.MinEffectiveWeight, ctx.MinFineWeight, ctx.ReverseHintDiscount)
 	fmt.Fprintf(b, "Merge weights: receive %.2f / transmit %.2f.\n", ctx.MergeReceiveWeight, ctx.MergeTransmitWeight)
-	fmt.Fprintf(b, "Glyph thresholds (dB): high %.1f, medium %.1f, low %.1f, unlikely %.1f.\n",
-		ctx.GlyphThresholds.High, ctx.GlyphThresholds.Medium, ctx.GlyphThresholds.Low, ctx.GlyphThresholds.Unlikely)
-	if len(ctx.ModeThresholds) > 0 {
-		keys := make([]string, 0, len(ctx.ModeThresholds))
-		for k := range ctx.ModeThresholds {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		b.WriteString("Mode-specific thresholds: " + strings.Join(keys, ", ") + ".\n")
-	}
 	if len(ctx.NoiseOffsets) > 0 {
 		keys := make([]string, 0, len(ctx.NoiseOffsets))
 		for k := range ctx.NoiseOffsets {
@@ -947,7 +979,7 @@ func writeModelContext(b *strings.Builder, ctx modelContext, bands []bandSummary
 	}
 }
 
-func coverageSummary(bands []bandSummary, mixes []sourceMixHour) string {
+func coverageSummary(bands []bandSummary, mixes []sourceMixHour, medians map[string]coverageStat) string {
 	if len(bands) == 0 {
 		return "No coverage data available."
 	}
@@ -977,15 +1009,19 @@ func coverageSummary(bands []bandSummary, mixes []sourceMixHour) string {
 	if len(mixParts) > 0 {
 		b.WriteString("Source mix totals across the day: " + strings.Join(mixParts, ", ") + ".\n")
 	}
-	b.WriteString("Median unique spotters/grid pairs per band: ")
+	b.WriteString("Median unique spotters/grid pairs per band (non-zero hours only): ")
 	parts := make([]string, 0, len(bands))
 	for _, band := range bands {
-		var spotters, pairs []int
-		for _, hour := range band.Hours {
-			spotters = append(spotters, hour.UniqueSpotters)
-			pairs = append(pairs, hour.UniqueGridPairs)
+		stat := medians[band.Band]
+		spotterStr := "n/a"
+		pairStr := "n/a"
+		if stat.SpottersMedian > 0 {
+			spotterStr = fmt.Sprintf("%d", stat.SpottersMedian)
 		}
-		parts = append(parts, fmt.Sprintf("%s %d/%d", band.Band, median(spotters), median(pairs)))
+		if stat.GridPairsMedian > 0 {
+			pairStr = fmt.Sprintf("%d", stat.GridPairsMedian)
+		}
+		parts = append(parts, fmt.Sprintf("%s %s/%s", band.Band, spotterStr, pairStr))
 	}
 	b.WriteString(strings.Join(parts, "; "))
 	b.WriteString(".")
@@ -1150,18 +1186,32 @@ func predictionActivitySummary(hours []predictionHour) string {
 }
 
 func deterministicTakeaway(summary reportSummary, bandMap map[string]bandSummary) string {
-	low := []bandSummary{bandMap["160m"], bandMap["80m"], bandMap["60m"]}
-	mid := []bandSummary{bandMap["40m"], bandMap["30m"], bandMap["20m"], bandMap["17m"], bandMap["15m"], mergeBands(bandMap["12m"], bandMap["10m"])}
-	high := []bandSummary{bandMap["6m"], bandMap["2m"], bandMap["70cm"], bandMap["23cm"], bandMap["13cm"]}
+	groupBands := func(group []string) []bandSummary {
+		out := make([]bandSummary, 0, len(group))
+		for _, band := range group {
+			if b, ok := bandMap[band]; ok {
+				out = append(out, b)
+			}
+		}
+		return out
+	}
+	low := groupBands(summary.BandGroups["low"])
+	mid := groupBands(summary.BandGroups["mid"])
+	high := groupBands(summary.BandGroups["high"])
 
 	lowConclusion := groupConclusion(low)
 	midConclusion := groupConclusion(mid)
 	highConclusion := groupConclusion(high)
 
-	lines := []string{
-		fmt.Sprintf("Low bands (160m/80m/60m): %s.", lowConclusion),
-		fmt.Sprintf("Mid bands (40m/30m/20m/17m/15m/12m/10m): %s.", midConclusion),
-		fmt.Sprintf("High bands (6m/2m/70cm/23cm/13cm): %s.", highConclusion),
+	var lines []string
+	if len(low) > 0 {
+		lines = append(lines, fmt.Sprintf("Low bands (%s): %s.", strings.Join(summary.BandGroups["low"], "/"), lowConclusion))
+	}
+	if len(mid) > 0 {
+		lines = append(lines, fmt.Sprintf("Mid bands (%s): %s.", strings.Join(summary.BandGroups["mid"], "/"), midConclusion))
+	}
+	if len(high) > 0 {
+		lines = append(lines, fmt.Sprintf("High bands (%s): %s.", strings.Join(summary.BandGroups["high"], "/"), highConclusion))
 	}
 	return strings.Join(lines, " ")
 }

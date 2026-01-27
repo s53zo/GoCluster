@@ -715,7 +715,7 @@ func (s *Spot) IsValid() bool {
 // Downstream: fmt.Sprintf and sanitizeDXClusterComment.
 func (s *Spot) String() string {
 	return fmt.Sprintf("[%s] %s spotted %s on %.1f kHz (%s %s) - %s",
-		s.Time.Format("15:04:05"),
+		s.Time.UTC().Format("15:04:05"),
 		s.DECall,
 		s.DXCall,
 		s.Frequency,

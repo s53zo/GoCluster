@@ -937,7 +937,7 @@ func (ci *CorrectionIndex) StartCleanup(interval, window time.Duration) {
 			select {
 			case <-ticker.C:
 				ci.mu.Lock()
-				ci.cleanup(time.Now(), window)
+				ci.cleanup(time.Now().UTC(), window)
 				ci.mu.Unlock()
 			case <-ci.sweepQuit:
 				return

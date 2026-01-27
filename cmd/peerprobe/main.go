@@ -48,6 +48,7 @@ type probeConfig struct {
 }
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
 	clusterHost := flag.String("cluster_host", "localhost", "Host for telnet cluster comparison (hostname or host:port)")
 	clusterPort := flag.Int("cluster_port", 0, "Port for telnet cluster comparison (optional when cluster_host includes port)")
 	clusterCall := flag.String("cluster_call", "LZ3ZZ", "Callsign to use when logging into cluster telnet")
@@ -114,7 +115,7 @@ func readPeerFeed(conn net.Conn, reader *lineReader, writeMu *sync.Mutex, localC
 	for {
 		var deadline time.Time
 		if idleTimeout > 0 {
-			deadline = time.Now().Add(idleTimeout)
+			deadline = time.Now().UTC().Add(idleTimeout)
 		}
 		line, err := reader.ReadLine(deadline)
 		if err != nil {
@@ -128,7 +129,7 @@ func readPeerFeed(conn net.Conn, reader *lineReader, writeMu *sync.Mutex, localC
 			}
 			return
 		}
-		arrival := time.Now()
+		arrival := time.Now().UTC().UTC()
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -172,7 +173,7 @@ func startTelnetTap(host string, port int, callsign string, out chan<- spotEvent
 			}
 			s.RefreshBeaconFlag()
 			s.EnsureNormalized()
-			arrival := time.Now()
+			arrival := time.Now().UTC().UTC()
 			log.Printf("TELNET ARRIVAL %s DX %s DE %s", arrival.Format(time.RFC3339Nano), s.DXCall, s.DECall)
 			out <- spotEvent{Spot: s, Arrival: arrival, Source: "telnet"}
 		}
@@ -277,7 +278,7 @@ func (s *eventStore) match(ev spotEvent) (bool, time.Duration, spotEvent) {
 }
 
 func (s *eventStore) prune() {
-	cutoff := time.Now().Add(-s.window)
+	cutoff := time.Now().UTC().UTC().Add(-s.window)
 	for key, list := range s.byKey {
 		filtered := list[:0]
 		for _, ev := range list {
@@ -485,10 +486,10 @@ func handshake(ctx context.Context, reader *lineReader, writeMu *sync.Mutex, con
 	sentCall := cfg.localCall != ""
 	sentPass := cfg.password == ""
 	pc9x := false
-	deadline := time.Now().Add(time.Duration(cfg.loginSec+cfg.initSec) * time.Second)
+	deadline := time.Now().UTC().Add(time.Duration(cfg.loginSec+cfg.initSec) * time.Second)
 
 	for {
-		if time.Now().After(deadline) {
+		if time.Now().UTC().After(deadline) {
 			return false, pc9x, fmt.Errorf("handshake timeout")
 		}
 		line, err := reader.ReadLine(deadline)
@@ -763,7 +764,7 @@ type timestampGenerator struct {
 }
 
 func (g *timestampGenerator) Next() string {
-	now := time.Now().UTC()
+	now := time.Now().UTC().UTC()
 	sec := now.Hour()*3600 + now.Minute()*60 + now.Second()
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -775,3 +776,4 @@ func (g *timestampGenerator) Next() string {
 	g.seq++
 	return fmt.Sprintf("%d.%02d", sec, g.seq)
 }
+

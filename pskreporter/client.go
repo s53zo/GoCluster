@@ -205,7 +205,7 @@ func (c *Client) Connect() error {
 	opts.AddBroker(brokerURL)
 
 	// Set client ID with timestamp for uniqueness
-	clientID := fmt.Sprintf("gocluster-%d", time.Now().Unix())
+	clientID := fmt.Sprintf("gocluster-%d", time.Now().UTC().Unix())
 	opts.SetClientID(clientID)
 
 	// Set keep alive and timeouts
@@ -295,7 +295,7 @@ func (c *Client) onConnect(client mqtt.Client) {
 // Downstream: None.
 func (c *Client) onConnectionLost(client mqtt.Client, err error) {
 	snap := c.HealthSnapshot()
-	now := time.Now()
+	now := time.Now().UTC()
 	log.Printf("PSKReporter: Connection lost: %v (last_payload=%s last_spot=%s last_parse_err=%s processing=%d/%d mqtt_q=%d/%d spot_queue=%d/%d drops payload=%d oversize=%d spot=%d parse=%d mqtt_drop=%d mqtt_qos12_timeout=%d mqtt_qos12_disconnect=%d)",
 		err,
 		formatAge(now, snap.LastPayloadAt),
@@ -333,7 +333,7 @@ func (c *Client) messageHandler(client mqtt.Client, msg mqtt.Message) {
 	default:
 	}
 	raw := msg.Payload()
-	now := time.Now()
+	now := time.Now().UTC()
 	c.lastPayloadAt.Store(now.UnixNano())
 	if c.maxPayloadBytes > 0 && len(raw) > c.maxPayloadBytes {
 		if count, ok := c.payloadTooLargeCounter.Inc(); ok {
@@ -426,7 +426,7 @@ func (c *Client) handlePayload(payload []byte) {
 	var pskrMsg PSKRMessage
 	if err := jsonFast.Unmarshal(payload, &pskrMsg); err != nil {
 		if errCompat := jsonCompat.Unmarshal(payload, &pskrMsg); errCompat != nil {
-			c.lastParseErrAt.Store(time.Now().UnixNano())
+			c.lastParseErrAt.Store(time.Now().UTC().UnixNano())
 			if count, ok := c.parseErrorCounter.Inc(); ok {
 				log.Printf("PSKReporter: Failed to parse message (total=%d): %v", count, errCompat)
 			}
@@ -456,7 +456,7 @@ func (c *Client) handlePayload(payload []byte) {
 	if s == nil {
 		return
 	}
-	c.lastSpotAt.Store(time.Now().UnixNano())
+	c.lastSpotAt.Store(time.Now().UTC().UnixNano())
 	select {
 	case c.spotChan <- s:
 	default:
@@ -665,7 +665,7 @@ func (c *rateCounter) Inc() (uint64, bool) {
 	if c.interval <= 0 {
 		return total, true
 	}
-	now := time.Now().UnixNano()
+	now := time.Now().UTC().UnixNano()
 	last := c.lastLog.Load()
 	if now-last < c.interval.Nanoseconds() {
 		return total, false

@@ -379,7 +379,7 @@ func (d *dashboard) flushBatches() {
 	d.unlicensedBatch = d.unlicensedBatch[:0]
 	d.harmBatch = d.harmBatch[:0]
 	d.sysBatch = d.sysBatch[:0]
-	now := time.Now()
+	now := time.Now().UTC()
 	sec := now.Unix()
 	if sec != d.lastTSSecond {
 		d.lastTSSecond = sec

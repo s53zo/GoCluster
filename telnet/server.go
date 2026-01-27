@@ -771,7 +771,7 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		commandLineLimit:  config.CommandLineLimit,
 		filterEngine:      newFilterCommandEngineWithCTY(config.CTYLookup),
 		reputationGate:    opts.ReputationGate,
-		startTime:         time.Now().UTC(),
+		startTime:         time.Now().UTC().UTC(),
 		pathPredictor:     opts.PathPredictor,
 		pathDisplay:       opts.PathDisplayEnabled,
 		noiseOffsets:      opts.NoiseOffsets,
@@ -1438,7 +1438,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		conn:         conn,
 		reader:       bufio.NewReader(readerConn),
 		writer:       bufio.NewWriter(writerConn),
-		connected:    time.Now(),
+		connected:    time.Now().UTC().UTC(),
 		server:       s,
 		address:      address,
 		spotChan:     make(chan *spot.Spot, spotQueueSize),
@@ -1456,7 +1456,7 @@ func (s *Server) handleClient(conn net.Conn) {
 	s.negotiateTelnet(client)
 
 	// Send welcome message with template tokens (uptime, user count, etc.).
-	loginTime := time.Now().UTC()
+	loginTime := time.Now().UTC().UTC()
 	s.sendPreLoginMessage(client, s.welcomeMessage, loginTime)
 	s.sendPreLoginMessage(client, s.loginPrompt, loginTime)
 
@@ -1500,7 +1500,7 @@ func (s *Server) handleClient(conn net.Conn) {
 	log.Printf("Client %s logged in as %s", address, client.callsign)
 
 	if s.reputationGate != nil {
-		s.reputationGate.RecordLogin(client.callsign, spotterIP(client.address), time.Now().UTC())
+		s.reputationGate.RecordLogin(client.callsign, spotterIP(client.address), time.Now().UTC().UTC())
 	}
 
 	// Capture the client's IP immediately after login so it is persisted before
@@ -1712,7 +1712,7 @@ func sendTelnetOption(conn net.Conn, command, option byte) {
 	if conn == nil {
 		return
 	}
-	if err := conn.SetWriteDeadline(time.Now().Add(defaultSendDeadline)); err != nil {
+	if err := conn.SetWriteDeadline(time.Now().UTC().Add(defaultSendDeadline)); err != nil {
 		return
 	}
 	_, _ = conn.Write([]byte{IAC, command, option})
@@ -1841,7 +1841,7 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 	if strings.TrimSpace(mode) == "" {
 		mode = sp.Mode
 	}
-	now := time.Now().UTC()
+	now := time.Now().UTC().UTC()
 	res := s.pathPredictor.Predict(userCell, dxCell, userGrid2, dxGrid2, band, mode, noisePenalty, now)
 	s.recordPathPrediction(res, state.gridDerived, sp.DXMetadata.GridDerived)
 	g := res.Glyph
@@ -1903,7 +1903,7 @@ func (s *Server) pathClassForClient(client *Client, sp *spot.Spot) string {
 	if mode == "" {
 		mode = strings.TrimSpace(sp.Mode)
 	}
-	now := time.Now().UTC()
+	now := time.Now().UTC().UTC()
 	res := s.pathPredictor.Predict(userCell, dxCell, userGrid2, dxGrid2, band, mode, noisePenalty, now)
 	if res.Source == pathreliability.SourceInsufficient {
 		return filter.PathClassInsufficient
@@ -2077,7 +2077,7 @@ func applyTemplateTokens(msg string, data templateData) string {
 	}
 	now := data.now
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = time.Now().UTC().UTC()
 	}
 	date := now.Format("02-Jan-2006")
 	tm := now.Format("15:04:05")
@@ -2186,7 +2186,7 @@ func formatUptime(now, start time.Time) string {
 
 func (s *Server) preLoginTemplateData(now time.Time) templateData {
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = time.Now().UTC().UTC()
 	}
 	dialect := ""
 	defaultDialect := ""
@@ -2219,7 +2219,7 @@ func (s *Server) sendPreLoginMessage(client *Client, template string, now time.T
 
 func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin time.Time, prevIP, dialectSource, dialectDefault string) templateData {
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = time.Now().UTC().UTC()
 	}
 	callsign := ""
 	grid := ""
@@ -2396,7 +2396,7 @@ func (c *Client) Send(message string) error {
 	// bounding how long a write can block. Each call refreshes the deadline and
 	// then clears it, so idle clients are not disconnected by an old timeout.
 	if c.conn != nil {
-		if err := c.conn.SetWriteDeadline(time.Now().Add(defaultSendDeadline)); err != nil {
+		if err := c.conn.SetWriteDeadline(time.Now().UTC().Add(defaultSendDeadline)); err != nil {
 			return err
 		}
 		defer c.conn.SetWriteDeadline(time.Time{})
@@ -2716,3 +2716,4 @@ func (c *Client) logRejectedInput(context, reason string) {
 	}
 	log.Printf("Rejected %s input from %s: %s", context, id, reason)
 }
+

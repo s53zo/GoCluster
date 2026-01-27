@@ -166,8 +166,9 @@ func main() {
 	csvFlag := flag.String("csv", "", "Path to RBN CSV (info only)")
 	reportFlag := flag.String("report", "", "Output report path")
 	flag.Parse()
+	log.SetFlags(log.LstdFlags | log.LUTC)
 
-	analysisDate := time.Now().AddDate(0, 0, -1)
+	analysisDate := time.Now().UTC().AddDate(0, 0, -1)
 	if *dateFlag != "" {
 		d, err := time.Parse("2006-01-02", *dateFlag)
 		must(err)

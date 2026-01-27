@@ -152,7 +152,7 @@ func (s *session) Run(ctx context.Context) error {
 		}
 		var deadline time.Time
 		if s.idleTimeout > 0 {
-			deadline = time.Now().Add(s.idleTimeout)
+			deadline = time.Now().UTC().Add(s.idleTimeout)
 		}
 		line, err := s.reader.ReadLine(deadline)
 		if err != nil {
@@ -280,7 +280,7 @@ func (s *session) sendRaw(data []byte) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if err := s.conn.SetWriteDeadline(time.Now().Add(defaultPeerWriteDeadline)); err != nil {
+	if err := s.conn.SetWriteDeadline(time.Now().UTC().Add(defaultPeerWriteDeadline)); err != nil {
 		return err
 	}
 	if _, err := s.writer.Write(data); err != nil {
@@ -298,7 +298,7 @@ func (s *session) writeLine(line string) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if err := s.conn.SetWriteDeadline(time.Now().Add(defaultPeerWriteDeadline)); err != nil {
+	if err := s.conn.SetWriteDeadline(time.Now().UTC().Add(defaultPeerWriteDeadline)); err != nil {
 		return err
 	}
 	_, err := s.writer.WriteString(line)
@@ -314,7 +314,7 @@ func (s *session) writeRaw(data []byte) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if err := s.conn.SetWriteDeadline(time.Now().Add(defaultPeerWriteDeadline)); err != nil {
+	if err := s.conn.SetWriteDeadline(time.Now().UTC().Add(defaultPeerWriteDeadline)); err != nil {
 		return err
 	}
 	if _, err := s.writer.Write(data); err != nil {
@@ -397,7 +397,7 @@ func (s *session) handlePing(frame *Frame) {
 }
 
 func (s *session) runOutboundHandshake() error {
-	start := time.Now()
+	start := time.Now().UTC()
 	deadline := start.Add(s.loginTimeout + s.initTimeout)
 	initSent := false
 	waitInit := true
@@ -421,7 +421,7 @@ func (s *session) runOutboundHandshake() error {
 	logPrefix := fmt.Sprintf("Peering hs %s -> %s", s.localCall, s.peer.host)
 
 	for {
-		if time.Now().After(deadline) {
+		if time.Now().UTC().After(deadline) {
 			return errors.New("handshake timeout")
 		}
 		if !sentCall && time.Since(start) > s.loginTimeout/2 {
@@ -536,10 +536,10 @@ func (s *session) runOutboundHandshake() error {
 func (s *session) runInboundHandshake() error {
 	s.pc9x = true
 	_ = s.sendLine("login:")
-	loginDeadline := time.Now().Add(s.loginTimeout)
+	loginDeadline := time.Now().UTC().Add(s.loginTimeout)
 	var call string
 	for {
-		if time.Now().After(loginDeadline) {
+		if time.Now().UTC().After(loginDeadline) {
 			return errors.New("login timeout")
 		}
 		line, err := s.reader.ReadLine(loginDeadline)
@@ -559,7 +559,7 @@ func (s *session) runInboundHandshake() error {
 	s.remoteCall = call
 	if s.password != "" {
 		_ = s.sendLine("password:")
-		passDeadline := time.Now().Add(s.loginTimeout)
+		passDeadline := time.Now().UTC().Add(s.loginTimeout)
 		line, err := s.reader.ReadLine(passDeadline)
 		if err != nil {
 			return err
@@ -572,9 +572,9 @@ func (s *session) runInboundHandshake() error {
 		return err
 	}
 
-	initDeadline := time.Now().Add(s.initTimeout)
+	initDeadline := time.Now().UTC().Add(s.initTimeout)
 	for {
-		if time.Now().After(initDeadline) {
+		if time.Now().UTC().After(initDeadline) {
 			return errors.New("init timeout")
 		}
 		line, err := s.reader.ReadLine(initDeadline)
@@ -698,7 +698,7 @@ type timestampGenerator struct {
 }
 
 func (g *timestampGenerator) Next() string {
-	now := time.Now().UTC()
+	now := time.Now().UTC().UTC()
 	sec := now.Hour()*3600 + now.Minute()*60 + now.Second()
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -734,3 +734,4 @@ type sessionSettings struct {
 	logKeepalive    bool
 	logLineTooLong  bool
 }
+

@@ -606,6 +606,7 @@ func main() {
 	dateFlag := flag.String("date", "", "Analysis date YYYY-MM-DD (defaults to yesterday)")
 	skipDownload := flag.Bool("skip-download", false, "Skip downloading RBN zip")
 	flag.Parse()
+	log.SetFlags(log.LstdFlags | log.LUTC)
 
 	// Load .env first so OPENAI_API_KEY (and other secrets) are available before reading config.
 	loadDotEnv(".env")
@@ -615,7 +616,7 @@ func main() {
 
 	cfg := readConfig(*configPath)
 
-	analysisDate := time.Now().AddDate(0, 0, -1)
+	analysisDate := time.Now().UTC().AddDate(0, 0, -1)
 	if *dateFlag != "" {
 		d, err := time.Parse("2006-01-02", *dateFlag)
 		must(err)

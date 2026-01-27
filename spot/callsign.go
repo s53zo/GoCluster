@@ -70,7 +70,7 @@ func (c *CallCache) Get(key string) (string, bool) {
 		return "", false
 	}
 	entry := elem.Value.(cacheEntry)
-	if c.ttl > 0 && time.Now().After(entry.expires) {
+	if c.ttl > 0 && time.Now().UTC().After(entry.expires) {
 		c.lru.Remove(elem)
 		delete(c.entries, key)
 		return "", false
@@ -96,11 +96,11 @@ func (c *CallCache) Add(key, val string) {
 		c.entries = make(map[string]*list.Element, c.capacity)
 	}
 	if elem, exists := c.entries[key]; exists && elem != nil {
-		elem.Value = cacheEntry{key: key, value: val, expires: time.Now().Add(c.ttl)}
+		elem.Value = cacheEntry{key: key, value: val, expires: time.Now().UTC().Add(c.ttl)}
 		c.lru.MoveToFront(elem)
 		return
 	}
-	elem := c.lru.PushFront(cacheEntry{key: key, value: val, expires: time.Now().Add(c.ttl)})
+	elem := c.lru.PushFront(cacheEntry{key: key, value: val, expires: time.Now().UTC().Add(c.ttl)})
 	c.entries[key] = elem
 	if c.lru.Len() > c.capacity {
 		oldest := c.lru.Back()

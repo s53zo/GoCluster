@@ -136,7 +136,7 @@ const (
 // Upstream: buildDatabase.
 // Downstream: replaceDBOnce, shouldRetryReplace.
 func replaceDBWithRetry(dbPath, tmpPath string) error {
-	start := time.Now()
+	start := time.Now().UTC()
 	delay := swapRetryInitial
 	for {
 		if err := replaceDBOnceFn(dbPath, tmpPath); err == nil {
@@ -326,3 +326,4 @@ func BuildOnce(cfg config.FCCULSConfig) error {
 func parseID(raw string) (uint64, error) {
 	return strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
 }
+

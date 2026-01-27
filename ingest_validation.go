@@ -141,7 +141,7 @@ func (v *ingestValidator) validateSpot(s *spot.Spot) bool {
 		deCall = s.DECall
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	dxLookupCall := normalizeCallForMetadata(dxCall)
 	deLookupCall := normalizeCallForMetadata(deCall)
 	if dxLookupCall == "" {
@@ -301,7 +301,7 @@ func (c *rateCounter) Inc() (uint64, bool) {
 	if c.interval <= 0 {
 		return total, true
 	}
-	now := time.Now().UnixNano()
+	now := time.Now().UTC().UnixNano()
 	for {
 		last := c.last.Load()
 		if now-last < c.interval.Nanoseconds() {

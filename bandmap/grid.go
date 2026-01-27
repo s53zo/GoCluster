@@ -105,7 +105,7 @@ func (bm *BandMap) Get(mode string, centerFreqHz uint32, windowHz uint32, maxAge
 
 	cutoff := int64(0)
 	if maxAgeSeconds > 0 {
-		cutoff = time.Now().Unix() - maxAgeSeconds
+		cutoff = time.Now().UTC().Unix() - maxAgeSeconds
 	}
 
 	results := make([]SpotEntry, 0, 64)
@@ -138,7 +138,7 @@ func (bm *BandMap) Prune(maxAgeSeconds int64) {
 	if maxAgeSeconds <= 0 {
 		return
 	}
-	cutoff := time.Now().Unix() - maxAgeSeconds
+	cutoff := time.Now().UTC().Unix() - maxAgeSeconds
 
 	bm.mu.RLock()
 	grids := make([]*ShardedGrid, 0, len(bm.grids))
@@ -197,3 +197,4 @@ func (bm *BandMap) getOrCreateGrid(mode string) *ShardedGrid {
 	bm.grids[mode] = grid
 	return grid
 }
+

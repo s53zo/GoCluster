@@ -31,7 +31,7 @@ type Tracker struct {
 // Downstream: Tracker methods.
 func NewTracker() *Tracker {
 	t := &Tracker{}
-	t.start.Store(time.Now().UnixNano())
+	t.start.Store(time.Now().UTC().UnixNano())
 	return t
 }
 
@@ -143,7 +143,7 @@ func (t *Tracker) Reset() {
 		t.sourceModeCounts.Delete(key)
 		return true
 	})
-	t.start.Store(time.Now().UnixNano())
+	t.start.Store(time.Now().UTC().UnixNano())
 }
 
 // Purpose: Format summary lines for console output.
@@ -294,3 +294,4 @@ func incrementCounter(m *sync.Map, key string) {
 	}
 	counter.Add(1)
 }
+

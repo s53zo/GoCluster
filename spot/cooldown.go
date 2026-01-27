@@ -97,7 +97,7 @@ func (c *CallCooldown) StartCleanup(interval time.Duration) {
 		for {
 			select {
 			case <-ticker.C:
-				c.cleanup(time.Now())
+				c.cleanup(time.Now().UTC())
 			case <-c.quit:
 				return
 			}
@@ -131,7 +131,7 @@ func (c *CallCooldown) Record(call string, freqHz float64, reporters map[string]
 		return
 	}
 	if now.IsZero() {
-		now = time.Now()
+		now = time.Now().UTC()
 	}
 	if recency <= 0 {
 		recency = 45 * time.Second
@@ -189,7 +189,7 @@ func (c *CallCooldown) ShouldBlock(call string, freqHz float64, minOverride int,
 		return false, 0
 	}
 	if now.IsZero() {
-		now = time.Now()
+		now = time.Now().UTC()
 	}
 	if recency <= 0 {
 		recency = 45 * time.Second
@@ -267,7 +267,7 @@ func (c *CallCooldown) cleanup(now time.Time) {
 		return
 	}
 	if now.IsZero() {
-		now = time.Now()
+		now = time.Now().UTC()
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

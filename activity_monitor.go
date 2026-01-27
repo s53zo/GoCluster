@@ -72,7 +72,7 @@ func (m *activityMonitor) Start() {
 		for {
 			select {
 			case <-ticker.C:
-				m.evaluate(time.Now())
+				m.evaluate(time.Now().UTC())
 			case <-m.stopCh:
 				return
 			}

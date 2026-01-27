@@ -71,7 +71,7 @@ func newDailyFileSink(dir string, retentionDays int) (*dailyFileSink, error) {
 	if err := os.MkdirAll(trimmed, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create log directory %q: %w", trimmed, err)
 	}
-	if err := cleanupOldLogs(trimmed, time.Now(), retentionDays); err != nil {
+	if err := cleanupOldLogs(trimmed, time.Now().UTC(), retentionDays); err != nil {
 		fmt.Fprintf(os.Stderr, "Logging: cleanup failed for %s: %v\n", trimmed, err)
 	}
 	return &dailyFileSink{
@@ -88,7 +88,7 @@ func (s *dailyFileSink) WriteLine(line string, now time.Time) {
 	if s == nil {
 		return
 	}
-	now = now.In(time.Local)
+	now = now.UTC()
 	date := now.Format(logFileDateLayout)
 
 	s.mu.Lock()
@@ -258,7 +258,7 @@ func (f *logFanout) Write(p []byte) (int, error) {
 	if len(lines) == 0 {
 		return len(p), nil
 	}
-	now := time.Now()
+	now := time.Now().UTC()
 	for _, line := range lines {
 		if console != nil {
 			console.WriteLine(line, now)
@@ -312,11 +312,11 @@ func (f *logFanout) WriteFileOnlyLine(line string, now time.Time) {
 }
 
 func formatLogTimestamp(now time.Time) string {
-	return now.In(time.Local).Format(logTimestampLayout)
+	return now.UTC().Format(logTimestampLayout)
 }
 
 func logFileNameForDate(now time.Time) string {
-	return now.In(time.Local).Format(logFileDateLayout) + ".log"
+	return now.UTC().Format(logFileDateLayout) + ".log"
 }
 
 func parseLogFileDate(name string) (time.Time, bool) {
@@ -324,7 +324,7 @@ func parseLogFileDate(name string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	base := strings.TrimSuffix(name, ".log")
-	parsed, err := time.ParseInLocation(logFileDateLayout, base, time.Local)
+	parsed, err := time.ParseInLocation(logFileDateLayout, base, time.UTC)
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -339,7 +339,7 @@ func cleanupOldLogs(dir string, now time.Time, retentionDays int) error {
 	if err != nil {
 		return err
 	}
-	cutoff := dateOnly(now.In(time.Local)).AddDate(0, 0, -(retentionDays - 1))
+	cutoff := dateOnly(now.UTC()).AddDate(0, 0, -(retentionDays - 1))
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue

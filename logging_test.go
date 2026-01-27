@@ -8,7 +8,7 @@ import (
 )
 
 func TestLogFileNameForDate(t *testing.T) {
-	when := time.Date(2026, time.January, 22, 12, 0, 0, 0, time.Local)
+	when := time.Date(2026, time.January, 22, 12, 0, 0, 0, time.UTC)
 	if got := logFileNameForDate(when); got != "22-Jan-2026.log" {
 		t.Fatalf("expected log filename to be 22-Jan-2026.log, got %q", got)
 	}
@@ -41,7 +41,7 @@ func TestCleanupOldLogs(t *testing.T) {
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
-	now := time.Date(2026, time.January, 22, 12, 0, 0, 0, time.Local)
+	now := time.Date(2026, time.January, 22, 12, 0, 0, 0, time.UTC)
 	if err := cleanupOldLogs(dir, now, 2); err != nil {
 		t.Fatalf("cleanup failed: %v", err)
 	}

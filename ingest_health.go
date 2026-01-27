@@ -65,7 +65,7 @@ func startIngestHealthMonitor(ctx context.Context, sources []ingestHealthSource)
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				now := time.Now()
+				now := time.Now().UTC()
 				for _, source := range sources {
 					if source.snapshot == nil {
 						continue

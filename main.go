@@ -173,7 +173,7 @@ func startLicenseCacheSweeper(ctx context.Context, lc *licenseCache) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				lc.sweepExpired(time.Now())
+				lc.sweepExpired(time.Now().UTC().UTC())
 			}
 		}
 	}()
@@ -420,7 +420,7 @@ func main() {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					pathPredictor.PurgeStale(time.Now().UTC())
+					pathPredictor.PurgeStale(time.Now().UTC().UTC())
 				}
 			}
 		}()
@@ -453,7 +453,7 @@ func main() {
 			log.Printf("Warning: unable to start call-correction decision logger: %v", err)
 		} else {
 			corrLogger = logger
-			path := spot.DecisionLogPath(cfg.CallCorrection.DebugLogFile, time.Now().UTC())
+			path := spot.DecisionLogPath(cfg.CallCorrection.DebugLogFile, time.Now().UTC().UTC())
 			log.Printf("Call correction decision logging to %s (SQLite, non-blocking)", path)
 		}
 	}
@@ -474,13 +474,13 @@ func main() {
 		if _, err := os.Stat(ctyPath); err != nil && errors.Is(err, os.ErrNotExist) && ctyURL != "" {
 			if fresh, updated, refreshErr := refreshCTYDatabase(cfg.CTY); refreshErr != nil {
 				log.Printf("Warning: CTY download failed: %v", refreshErr)
-				ctyState.recordFailure(time.Now().UTC(), refreshErr)
+				ctyState.recordFailure(time.Now().UTC().UTC(), refreshErr)
 			} else if updated && fresh != nil {
 				ctyDB.Store(fresh)
-				ctyState.recordSuccess(time.Now().UTC())
+				ctyState.recordSuccess(time.Now().UTC().UTC())
 				log.Printf("Downloaded CTY database from %s", ctyURL)
 			} else {
-				ctyState.recordSuccess(time.Now().UTC())
+				ctyState.recordSuccess(time.Now().UTC().UTC())
 				log.Printf("CTY database already up to date (%s)", ctyPath)
 			}
 		}
@@ -488,10 +488,10 @@ func main() {
 	if cfg.CTY.Enabled && ctyDB.Load() == nil && ctyPath != "" {
 		if loaded, loadErr := cty.LoadCTYDatabase(ctyPath); loadErr != nil {
 			log.Printf("Warning: failed to load CTY database: %v", loadErr)
-			ctyState.recordFailure(time.Now().UTC(), loadErr)
+			ctyState.recordFailure(time.Now().UTC().UTC(), loadErr)
 		} else {
 			ctyDB.Store(loaded)
-			ctyState.recordSuccess(time.Now().UTC())
+			ctyState.recordSuccess(time.Now().UTC().UTC())
 			log.Printf("Loaded CTY database from %s", ctyPath)
 		}
 	}
@@ -1667,7 +1667,7 @@ func processOutputSpots(
 			}
 
 			if !s.IsBeacon && harmonicDetector != nil && harmonicCfg.Enabled {
-				if drop, fundamental, corroborators, deltaDB := harmonicDetector.ShouldDrop(s, time.Now().UTC()); drop {
+				if drop, fundamental, corroborators, deltaDB := harmonicDetector.ShouldDrop(s, time.Now().UTC().UTC()); drop {
 					harmonicMsg := fmt.Sprintf("Harmonic suppressed: %s %.1f -> %.1f kHz (%d / %d dB)", s.DXCall, s.Frequency, fundamental, corroborators, deltaDB)
 					harmonicMsgDash := harmonicMsg
 					if dash != nil {
@@ -1692,7 +1692,7 @@ func processOutputSpots(
 				if dxCall == "" {
 					dxCall = s.DXCall
 				}
-				avg, corroborators, _ := freqAvg.Average(dxCall, s.Frequency, time.Now().UTC(), window, tolerance)
+				avg, corroborators, _ := freqAvg.Average(dxCall, s.Frequency, time.Now().UTC().UTC(), window, tolerance)
 				// Half-up rounding to 0.1 kHz to avoid banker's rounding at .x5 boundaries.
 				rounded := math.Floor(avg*10+0.5) / 10
 				// Apply the averaged frequency when we have enough corroborators and the rounded
@@ -1856,7 +1856,7 @@ func processOutputSpots(
 						}
 						spotTime := s.Time.UTC()
 						if spotTime.IsZero() {
-							spotTime = time.Now().UTC()
+							spotTime = time.Now().UTC().UTC()
 						}
 						bucket := pathreliability.BucketForIngest(mode)
 						if bucket != pathreliability.BucketNone {
@@ -1930,7 +1930,7 @@ func processOutputSpots(
 			}
 
 			if lastOutput != nil {
-				lastOutput.Store(time.Now().UTC().UnixNano())
+				lastOutput.Store(time.Now().UTC().UTC().UnixNano())
 			}
 
 			if archiveWriter != nil && allowMed && shouldArchiveSpot(s) {
@@ -2004,7 +2004,7 @@ func startPipelineHealthMonitor(ctx context.Context, dedup *dedup.Deduplicator, 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				now := time.Now().UTC()
+				now := time.Now().UTC().UTC()
 				if lastOutput != nil {
 					ns := lastOutput.Load()
 					if ns > 0 {
@@ -2116,7 +2116,7 @@ func startPathPredictionLogger(ctx context.Context, logMux *logFanout, srv *teln
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			now := time.Now().UTC()
+			now := time.Now().UTC().UTC()
 			fileOnly := func(line string) {
 				if logMux == nil {
 					return
@@ -2472,7 +2472,7 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, metaCache *callMetaC
 		dxLicenseInfo = effectivePrefixInfo(ctyDB, metaCache, dxLicenseCall)
 	}
 
-	now := time.Now()
+	now := time.Now().UTC().UTC()
 	if dxLicenseInfo != nil && dxLicenseInfo.ADIF == 291 {
 		callKey := dxLicenseCall
 		if callKey == "" {
@@ -2558,7 +2558,7 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 		return false
 	}
 
-	now := time.Now().UTC()
+	now := time.Now().UTC().UTC()
 	window := callCorrectionWindow(cfg)
 	defer idx.Add(spotEntry, now, window)
 
@@ -2922,7 +2922,7 @@ func startSkewScheduler(ctx context.Context, cfg config.SkewConfig, store *skew.
 	// Downstream: refreshSkewTable and time.NewTimer.
 	go func() {
 		for {
-			delay := nextSkewRefreshDelay(cfg, time.Now().UTC())
+			delay := nextSkewRefreshDelay(cfg, time.Now().UTC().UTC())
 			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
@@ -2983,7 +2983,7 @@ func startKnownCallScheduler(ctx context.Context, cfg config.KnownCallsConfig, k
 	// Downstream: refreshKnownCallsigns and time.NewTimer.
 	go func() {
 		for {
-			delay := nextKnownCallRefreshDelay(cfg, time.Now().UTC())
+			delay := nextKnownCallRefreshDelay(cfg, time.Now().UTC().UTC())
 			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
@@ -3094,7 +3094,7 @@ func startCTYScheduler(ctx context.Context, cfg config.CTYConfig, ctyPtr *atomic
 			ctyRetryMax  = 30 * time.Minute
 		)
 		for {
-			delay := nextCTYRefreshDelay(cfg, time.Now().UTC())
+			delay := nextCTYRefreshDelay(cfg, time.Now().UTC().UTC())
 			if !sleepWithContext(ctx, delay) {
 				return
 			}
@@ -3114,17 +3114,17 @@ func startCTYScheduler(ctx context.Context, cfg config.CTYConfig, ctyPtr *atomic
 						log.Printf("Scheduled CTY download: up to date (%s)", cfg.File)
 					}
 					if state != nil {
-						state.recordSuccess(time.Now().UTC())
+						state.recordSuccess(time.Now().UTC().UTC())
 					}
 					break
 				}
 				attempt++
 				if state != nil {
-					state.recordFailure(time.Now().UTC(), err)
+					state.recordFailure(time.Now().UTC().UTC(), err)
 				}
 				lastAge := "unknown"
 				if state != nil {
-					if age, ok := state.age(time.Now().UTC()); ok {
+					if age, ok := state.age(time.Now().UTC().UTC()); ok {
 						lastAge = formatDurationShort(age)
 					}
 				}
@@ -3247,7 +3247,7 @@ func formatGridLine(metrics *gridMetrics, store *gridStoreHandle, predictor *pat
 	hitPercent := int(math.Ceil(hitRate))
 
 	lookupsPerMin := int64(0)
-	now := time.Now().UTC()
+	now := time.Now().UTC().UTC()
 	metrics.rateMu.Lock()
 	if !metrics.lastSample.IsZero() {
 		elapsed := now.Sub(metrics.lastSample)
@@ -3262,7 +3262,7 @@ func formatGridLine(metrics *gridMetrics, store *gridStoreHandle, predictor *pat
 
 	var propPairs string
 	if predictor != nil {
-		stats := predictor.Stats(time.Now().UTC())
+		stats := predictor.Stats(time.Now().UTC().UTC())
 		if stats.CombinedFine > 0 || stats.CombinedCoarse > 0 {
 			propPairs = fmt.Sprintf(" | Pairs c %s/%s",
 				humanize.Comma(int64(stats.CombinedFine)),
@@ -3339,7 +3339,7 @@ func (s *ctyRefreshState) age(now time.Time) (time.Duration, bool) {
 		return 0, false
 	}
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = time.Now().UTC().UTC()
 	}
 	return now.Sub(time.Unix(ts, 0)), true
 }
@@ -3405,7 +3405,7 @@ func formatCTYLineOrPlaceholder(ctyLookup func() *cty.CTYDatabase, state *ctyRef
 	if state == nil {
 		return "CTY: loaded"
 	}
-	age, ok := state.age(time.Now().UTC())
+	age, ok := state.age(time.Now().UTC().UTC())
 	if !ok {
 		return "CTY: loaded (age unknown)"
 	}
@@ -3432,7 +3432,7 @@ func seedKnownCalls(store *gridstore.Store, known *spot.KnownCallsigns) error {
 		return nil
 	}
 	records := make([]gridstore.Record, 0, len(calls))
-	now := time.Now().UTC()
+	now := time.Now().UTC().UTC()
 	for _, call := range calls {
 		records = append(records, gridstore.Record{
 			Call:         call,
@@ -3576,7 +3576,7 @@ func startGridWriter(storeHandle *gridStoreHandle, flushInterval time.Duration, 
 			}
 			return nil, nil
 		}
-		now := time.Now().UTC()
+		now := time.Now().UTC().UTC()
 		derivedRec := gridstore.Record{
 			Call:         baseCall,
 			Grid:         sqlNullString(derivedGrid),
@@ -3644,7 +3644,7 @@ func startGridWriter(storeHandle *gridStoreHandle, flushInterval time.Duration, 
 				}
 				batch = append(batch, rec)
 			}
-			start := time.Now()
+			start := time.Now().UTC()
 			if err := store.UpsertBatch(batch); err != nil {
 				if gridstore.IsBusyError(err) {
 					// Keep the batch in-memory so a later flush can retry after the lock clears.
@@ -3691,7 +3691,7 @@ func startGridWriter(storeHandle *gridStoreHandle, flushInterval time.Duration, 
 				if store == nil {
 					continue
 				}
-				cutoff := time.Now().UTC().Add(-ttl)
+				cutoff := time.Now().UTC().UTC().Add(-ttl)
 				if removed, err := store.PurgeOlderThan(cutoff); err != nil {
 					log.Printf("Warning: gridstore TTL purge failed: %v", err)
 				} else if removed > 0 {
@@ -3717,7 +3717,7 @@ func startGridWriter(storeHandle *gridStoreHandle, flushInterval time.Duration, 
 		if !storeAvailable() {
 			return
 		}
-		now := time.Now().UTC()
+		now := time.Now().UTC().UTC()
 		rec := gridstore.Record{
 			Call:         call,
 			Grid:         sqlNullString(grid),
@@ -3747,7 +3747,7 @@ func startGridWriter(storeHandle *gridStoreHandle, flushInterval time.Duration, 
 		if !storeAvailable() {
 			return
 		}
-		now := time.Now().UTC()
+		now := time.Now().UTC().UTC()
 		rec := gridstore.Record{
 			Call:         call,
 			CTYValid:     true,
@@ -3905,7 +3905,7 @@ func startGridWriter(storeHandle *gridStoreHandle, flushInterval time.Duration, 
 			}
 			resp := make(chan gridLookupResult, 1)
 			req := gridLookupRequest{baseCall: baseCall, rawCall: rawCall, resp: resp}
-			deadline := time.Now().Add(gridSyncLookupTimeout)
+			deadline := time.Now().UTC().Add(gridSyncLookupTimeout)
 			timer := time.NewTimer(gridSyncLookupTimeout)
 			defer timer.Stop()
 
@@ -3946,7 +3946,7 @@ func startGridCheckpointScheduler(ctx context.Context, storeHandle *gridStoreHan
 	}
 	go func() {
 		for {
-			delay := nextGridCheckpointDelay(time.Now().UTC())
+			delay := nextGridCheckpointDelay(time.Now().UTC().UTC())
 			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
@@ -3964,7 +3964,7 @@ func startGridCheckpointScheduler(ctx context.Context, storeHandle *gridStoreHan
 				log.Printf("Gridstore: checkpoint mkdir failed: %v", err)
 				continue
 			}
-			ts := time.Now().UTC().Format(gridCheckpointNameLayoutUTC)
+			ts := time.Now().UTC().UTC().Format(gridCheckpointNameLayoutUTC)
 			tmp := filepath.Join(root, ".tmp-"+ts)
 			dest := filepath.Join(root, ts)
 			if err := store.Checkpoint(tmp); err != nil {
@@ -3978,7 +3978,7 @@ func startGridCheckpointScheduler(ctx context.Context, storeHandle *gridStoreHan
 				continue
 			}
 			log.Printf("Gridstore: checkpoint created at %s", dest)
-			if removed, err := cleanupGridCheckpoints(root, time.Now().UTC()); err != nil {
+			if removed, err := cleanupGridCheckpoints(root, time.Now().UTC().UTC()); err != nil {
 				log.Printf("Gridstore: checkpoint cleanup failed: %v", err)
 			} else if removed > 0 {
 				log.Printf("Gridstore: checkpoint cleanup removed %d old checkpoint(s)", removed)
@@ -3993,7 +3993,7 @@ func startGridIntegrityScheduler(ctx context.Context, storeHandle *gridStoreHand
 	}
 	go func() {
 		for {
-			delay := nextDailyUTC(gridIntegrityScanUTC, time.Now().UTC(), 5, 0)
+			delay := nextDailyUTC(gridIntegrityScanUTC, time.Now().UTC().UTC(), 5, 0)
 			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
@@ -4031,7 +4031,7 @@ func startGridStoreRecovery(ctx context.Context, storeHandle *gridStoreHandle, d
 	storeHandle.Set(nil)
 	log.Printf("Gridstore: running without persistence during checkpoint restore (updates dropped)")
 	go func() {
-		start := time.Now()
+		start := time.Now().UTC()
 		timer := time.NewTimer(gridRestoreWarnAfter)
 		defer timer.Stop()
 		restoreDone := make(chan struct{})
@@ -4210,7 +4210,7 @@ func restoreGridStoreFromPath(ctx context.Context, dbPath string, checkpointPath
 	if strings.TrimSpace(base) == "" || strings.TrimSpace(parent) == "" {
 		return fmt.Errorf("gridstore: invalid db path %q", dbPath)
 	}
-	ts := time.Now().UTC().Format(gridCheckpointNameLayoutUTC)
+	ts := time.Now().UTC().UTC().Format(gridCheckpointNameLayoutUTC)
 	tempDir := filepath.Join(parent, base+".restore-"+ts)
 	backupDir := filepath.Join(parent, base+".backup-"+ts)
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
@@ -4732,7 +4732,7 @@ func maybeStartDiagServer() {
 	// Upstream: HTTP /debug/heapdump request.
 	// Downstream: os.MkdirAll, os.Create, pprof.WriteHeapProfile.
 	mux.HandleFunc("/debug/heapdump", func(w http.ResponseWriter, r *http.Request) {
-		ts := time.Now().UTC().Format("2006-01-02T15-04-05Z")
+		ts := time.Now().UTC().UTC().Format("2006-01-02T15-04-05Z")
 		dir := filepath.Join("data", "diagnostics")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			http.Error(w, fmt.Sprintf("mkdir diagnostics: %v", err), http.StatusInternalServerError)
@@ -4769,3 +4769,4 @@ func maybeStartDiagServer() {
 		}
 	}()
 }
+

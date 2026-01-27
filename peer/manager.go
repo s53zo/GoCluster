@@ -187,7 +187,7 @@ func (m *Manager) HandleFrame(frame *Frame, sess *session) {
 	if frame == nil {
 		return
 	}
-	now := time.Now().UTC()
+	now := time.Now().UTC().UTC()
 	switch frame.Type {
 	case "PC92":
 		if m.topology != nil && m.pc92Ch != nil {
@@ -651,7 +651,7 @@ func (m *Manager) maintenanceLoop() {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
-			now := time.Now().UTC()
+			now := time.Now().UTC().UTC()
 			if m.topology != nil {
 				m.topology.prune(now)
 			}
@@ -674,7 +674,7 @@ func (m *Manager) topologyWorker() {
 			if m.topology == nil || work.frame == nil {
 				continue
 			}
-			start := time.Now()
+			start := time.Now().UTC()
 			m.topology.applyPC92Frame(work.frame, work.ts)
 			if dur := time.Since(start); dur > 2*time.Second {
 				log.Printf("Peering: PC92 apply slow (%s) from %s", dur.Truncate(time.Millisecond), pc92Origin(work.frame))
@@ -719,3 +719,4 @@ func sessionLabel(s *session) string {
 	}
 	return s.id
 }
+

@@ -74,7 +74,7 @@ func NewAdaptiveMinReports(cfg config.CallCorrectionConfig) *AdaptiveMinReports 
 			config:         g,
 			state:          "normal",
 			minReports:     g.NormalMinReports,
-			lastTransition: time.Now(),
+			lastTransition: time.Now().UTC(),
 		}
 		groupStates[g.Name] = state
 		for _, b := range g.Bands {
@@ -282,7 +282,7 @@ func (a *AdaptiveMinReports) ensureEvaluatedLocked(now time.Time) {
 	// Upstream: MinReportsForBand and HighestState.
 	// Downstream: evaluate.
 	if now.IsZero() {
-		now = time.Now()
+		now = time.Now().UTC()
 	}
 	if a.lastEval.IsZero() || now.Sub(a.lastEval) >= a.evalPeriod {
 		a.evaluate(now)

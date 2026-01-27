@@ -297,14 +297,14 @@ func (c *ansiConsole) refreshLoop() {
 		case <-c.renderCh:
 			if c.refresh <= 0 {
 				c.render()
-				lastRender = time.Now()
+				lastRender = time.Now().UTC()
 				pending = false
 				continue
 			}
-			now := time.Now()
+			now := time.Now().UTC()
 			if lastRender.IsZero() || now.Sub(lastRender) >= c.refresh {
 				c.render()
-				lastRender = time.Now()
+				lastRender = time.Now().UTC()
 				pending = false
 				continue
 			}
@@ -316,7 +316,7 @@ func (c *ansiConsole) refreshLoop() {
 		case <-timer.C:
 			pending = false
 			c.render()
-			lastRender = time.Now()
+			lastRender = time.Now().UTC()
 		case <-c.quit:
 			return
 		}
@@ -634,3 +634,4 @@ func termSize() (int, int, bool) {
 	}
 	return width, height, true
 }
+

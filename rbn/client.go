@@ -405,7 +405,7 @@ func (c *Client) readLoop() {
 			return
 		default:
 			// Set read timeout
-			c.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+			c.conn.SetReadDeadline(time.Now().UTC().Add(5 * time.Minute))
 
 			line, err := c.reader.ReadString('\n')
 			if err != nil {
@@ -417,7 +417,7 @@ func (c *Client) readLoop() {
 				return
 			}
 
-			now := time.Now()
+			now := time.Now().UTC().UTC()
 			line = strings.TrimSpace(line)
 
 			// Skip empty lines
@@ -494,7 +494,7 @@ const rbnMaxFutureSkew = 2 * time.Minute
 // Upstream: parseSpot.
 // Downstream: time.Date, time.Now.
 func parseTimeFromRBN(timeStr string) time.Time {
-	return parseTimeFromRBNAt(timeStr, time.Now().UTC())
+	return parseTimeFromRBNAt(timeStr, time.Now().UTC().UTC())
 }
 
 func parseTimeFromRBNAt(timeStr string, now time.Time) time.Time {
@@ -717,7 +717,7 @@ func (c *Client) parseSpot(line string) {
 	s.RefreshBeaconFlag()
 	s.EnsureNormalized()
 
-	c.lastSpotAt.Store(time.Now().UnixNano())
+	c.lastSpotAt.Store(time.Now().UTC().UTC().UnixNano())
 	select {
 	case c.spotChan <- s:
 	default:
@@ -870,3 +870,4 @@ func (c *Client) keepaliveLoop() {
 		}
 	}
 }
+
