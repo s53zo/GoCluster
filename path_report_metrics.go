@@ -78,10 +78,10 @@ func (m *pathReportMetrics) Observe(s *spot.Spot, now time.Time) {
 		set[deCall] = struct{}{}
 	}
 
-	deGrid2 := pathreliability.EncodeGrid2(s.DEMetadata.Grid)
-	dxGrid2 := pathreliability.EncodeGrid2(s.DXMetadata.Grid)
-	if deGrid2 != "" && dxGrid2 != "" {
-		key := fmt.Sprintf("%s|%s", deGrid2, dxGrid2)
+	deCoarse := pathreliability.EncodeCoarseCell(s.DEMetadata.Grid)
+	dxCoarse := pathreliability.EncodeCoarseCell(s.DXMetadata.Grid)
+	if deCoarse != pathreliability.InvalidCell && dxCoarse != pathreliability.InvalidCell {
+		key := fmt.Sprintf("%d|%d", deCoarse, dxCoarse)
 		set := m.gridPairs[band]
 		if set == nil {
 			set = make(map[string]struct{})

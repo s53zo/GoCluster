@@ -369,6 +369,13 @@ func main() {
 		}
 	}
 	pathPredictor := pathreliability.NewPredictor(pathCfg, spot.SupportedBandNames())
+	if pathCfg.Enabled {
+		if err := pathreliability.InitH3Mappings(); err != nil {
+			log.Printf("Path reliability H3 mapping init failed: %v; feature disabled", err)
+			pathCfg.Enabled = false
+			pathPredictor = pathreliability.NewPredictor(pathCfg, spot.SupportedBandNames())
+		}
+	}
 
 	uiMode := strings.ToLower(strings.TrimSpace(cfg.UI.Mode))
 	renderAllowed := isStdoutTTY()
@@ -1834,10 +1841,10 @@ func processOutputSpots(
 
 			if pathPredictor != nil && pathPredictor.Config().Enabled {
 				// Populate cached cells even when we skip updates so broadcast can reuse them.
-				if s.DXCellID == 0 || s.DXCellID == 0xffff {
+				if s.DXCellID == 0 {
 					s.DXCellID = uint16(pathreliability.EncodeCell(strings.TrimSpace(s.DXMetadata.Grid)))
 				}
-				if s.DECellID == 0 || s.DECellID == 0xffff {
+				if s.DECellID == 0 {
 					s.DECellID = uint16(pathreliability.EncodeCell(strings.TrimSpace(s.DEMetadata.Grid)))
 				}
 				if s.HasReport {
@@ -1848,8 +1855,8 @@ func processOutputSpots(
 					if ft8, ok := pathreliability.FT8Equivalent(mode, s.Report, pathPredictor.Config()); ok {
 						dxCell := pathreliability.CellID(s.DXCellID)
 						deCell := pathreliability.CellID(s.DECellID)
-						dxGrid2 := pathreliability.EncodeGrid2(s.DXMetadata.Grid)
-						deGrid2 := pathreliability.EncodeGrid2(s.DEMetadata.Grid)
+						dxCoarse := pathreliability.EncodeCoarseCell(s.DXMetadata.Grid)
+						deCoarse := pathreliability.EncodeCoarseCell(s.DEMetadata.Grid)
 						band := s.BandNorm
 						if strings.TrimSpace(band) == "" {
 							band = s.Band
@@ -1864,7 +1871,7 @@ func processOutputSpots(
 								pathReport.Observe(s, spotTime)
 							}
 							// Spot SNR reflects DX -> DE (spotter is the receiver).
-							pathPredictor.Update(bucket, deCell, dxCell, deGrid2, dxGrid2, band, ft8, 1.0, spotTime, s.IsBeacon)
+							pathPredictor.Update(bucket, deCell, dxCell, deCoarse, dxCoarse, band, ft8, 1.0, spotTime, s.IsBeacon)
 						}
 					}
 				}
@@ -4769,4 +4776,3 @@ func maybeStartDiagServer() {
 		}
 	}()
 }
-

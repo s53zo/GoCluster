@@ -108,12 +108,15 @@ func TestSelectSampleMinFineWeight(t *testing.T) {
 }
 
 func TestPredictUsesInsufficientGlyph(t *testing.T) {
+	requireH3Mappings(t)
 	cfg := DefaultConfig()
 	cfg.GlyphSymbols.Insufficient = "I"
 	predictor := NewPredictor(cfg, []string{"20m"})
 	userCell := EncodeCell("FN31")
 	dxCell := EncodeCell("FN32")
-	res := predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "FT8", 0, time.Now().UTC())
+	userCoarse := EncodeCoarseCell("FN31")
+	dxCoarse := EncodeCoarseCell("FN32")
+	res := predictor.Predict(userCell, dxCell, userCoarse, dxCoarse, "20m", "FT8", 0, time.Now().UTC())
 	if res.Glyph != "I" {
 		t.Fatalf("expected insufficient glyph I, got %q", res.Glyph)
 	}
@@ -166,16 +169,19 @@ func TestPowerFromDBClampsToRange(t *testing.T) {
 }
 
 func TestPredictUsesCombinedBuckets(t *testing.T) {
+	requireH3Mappings(t)
 	cfg := DefaultConfig()
 	cfg.MinEffectiveWeight = 0.1
 	predictor := NewPredictor(cfg, []string{"20m"})
 	userCell := EncodeCell("FN31")
 	dxCell := EncodeCell("FN32")
+	userCoarse := EncodeCoarseCell("FN31")
+	dxCoarse := EncodeCoarseCell("FN32")
 	now := time.Now().UTC()
 
-	predictor.Update(BucketCombined, userCell, dxCell, "FN", "FN", "20m", -5, 1.0, now, false)
+	predictor.Update(BucketCombined, userCell, dxCell, userCoarse, dxCoarse, "20m", -5, 1.0, now, false)
 
-	resCW := predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "CW", 0, now)
+	resCW := predictor.Predict(userCell, dxCell, userCoarse, dxCoarse, "20m", "CW", 0, now)
 	if resCW.Glyph == cfg.GlyphSymbols.Insufficient {
 		t.Fatalf("expected combined glyph for CW, got insufficient")
 	}
@@ -186,7 +192,7 @@ func TestPredictUsesCombinedBuckets(t *testing.T) {
 		t.Fatalf("expected combined source for CW, got %v", resCW.Source)
 	}
 
-	resFT8 := predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "FT8", 0, now)
+	resFT8 := predictor.Predict(userCell, dxCell, userCoarse, dxCoarse, "20m", "FT8", 0, now)
 	if resFT8.Glyph == cfg.GlyphSymbols.Insufficient {
 		t.Fatalf("expected combined glyph for FT8, got insufficient")
 	}
@@ -198,28 +204,21 @@ func TestPredictUsesCombinedBuckets(t *testing.T) {
 	}
 }
 
-func TestPredictCoarseFallbackToggle(t *testing.T) {
+func TestPredictUsesCoarseWhenFineMissing(t *testing.T) {
+	requireH3Mappings(t)
 	now := time.Now().UTC()
 	userCell := EncodeCell("FN31")
 	dxCell := EncodeCell("FN32")
+	userCoarse := EncodeCoarseCell("FN31")
+	dxCoarse := EncodeCoarseCell("FN32")
 
 	cfg := DefaultConfig()
 	cfg.MinEffectiveWeight = 0.1
-	cfg.CoarseFallbackEnabled = true
 	predictor := NewPredictor(cfg, []string{"20m"})
-	predictor.Update(BucketCombined, InvalidCell, InvalidCell, "FN", "FN", "20m", -5, 1.0, now, false)
+	predictor.Update(BucketCombined, InvalidCell, InvalidCell, userCoarse, dxCoarse, "20m", -5, 1.0, now, false)
 
-	res := predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "FT8", 0, now)
+	res := predictor.Predict(userCell, dxCell, userCoarse, dxCoarse, "20m", "FT8", 0, now)
 	if res.Glyph == cfg.GlyphSymbols.Insufficient {
 		t.Fatalf("expected coarse fallback glyph when enabled, got insufficient")
-	}
-
-	cfg.CoarseFallbackEnabled = false
-	predictor = NewPredictor(cfg, []string{"20m"})
-	predictor.Update(BucketCombined, InvalidCell, InvalidCell, "FN", "FN", "20m", -5, 1.0, now, false)
-
-	res = predictor.Predict(userCell, dxCell, "FN", "FN", "20m", "FT8", 0, now)
-	if res.Glyph != cfg.GlyphSymbols.Insufficient {
-		t.Fatalf("expected insufficient when coarse fallback disabled, got %q", res.Glyph)
 	}
 }

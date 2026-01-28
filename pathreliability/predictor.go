@@ -26,7 +26,7 @@ func (p *Predictor) Config() Config {
 }
 
 // Update ingests a spot contribution (FT8-equiv) with optional beacon weight cap.
-func (p *Predictor) Update(bucket BucketClass, receiverCell, senderCell CellID, receiverGrid2, senderGrid2 string, band string, ft8dB float64, weight float64, now time.Time, isBeacon bool) {
+func (p *Predictor) Update(bucket BucketClass, receiverCell, senderCell CellID, receiverCoarse, senderCoarse CellID, band string, ft8dB float64, weight float64, now time.Time, isBeacon bool) {
 	if p == nil || !p.cfg.Enabled {
 		return
 	}
@@ -38,7 +38,7 @@ func (p *Predictor) Update(bucket BucketClass, receiverCell, senderCell CellID, 
 	switch bucket {
 	case BucketCombined:
 		if p.combined != nil {
-			p.combined.Update(receiverCell, senderCell, receiverGrid2, senderGrid2, band, power, w, now)
+			p.combined.Update(receiverCell, senderCell, receiverCoarse, senderCoarse, band, power, w, now)
 		}
 	default:
 		return
@@ -62,7 +62,7 @@ type Result struct {
 }
 
 // Predict returns a single merged glyph for the path.
-func (p *Predictor) Predict(userCell, dxCell CellID, userGrid2, dxGrid2 string, band string, mode string, noisePenalty float64, now time.Time) Result {
+func (p *Predictor) Predict(userCell, dxCell CellID, userCoarse, dxCoarse CellID, band string, mode string, noisePenalty float64, now time.Time) Result {
 	insufficient := "?"
 	if p != nil && p.cfg.GlyphSymbols.Insufficient != "" {
 		insufficient = p.cfg.GlyphSymbols.Insufficient
@@ -79,7 +79,7 @@ func (p *Predictor) Predict(userCell, dxCell CellID, userGrid2, dxGrid2 string, 
 		return Result{Glyph: insufficient, Value: power, Weight: weight, Source: SourceInsufficient}
 	}
 
-	mergedPower, mergedWeight, ok := p.mergeFromStore(p.combined, userCell, dxCell, userGrid2, dxGrid2, band, noisePenalty, now)
+	mergedPower, mergedWeight, ok := p.mergeFromStore(p.combined, userCell, dxCell, userCoarse, dxCoarse, band, noisePenalty, now)
 	if ok && mergedWeight >= p.cfg.MinEffectiveWeight {
 		return makeResult(mergedPower, mergedWeight, SourceCombined)
 	}
@@ -110,16 +110,16 @@ func mergeSamples(receive Sample, transmit Sample, cfg Config, noisePenalty floa
 	return transmit.Value, transmit.Weight * cfg.ReverseHintDiscount, true
 }
 
-func (p *Predictor) mergeFromStore(store *Store, userCell, dxCell CellID, userGrid2, dxGrid2, band string, noisePenalty float64, now time.Time) (float64, float64, bool) {
+func (p *Predictor) mergeFromStore(store *Store, userCell, dxCell CellID, userCoarse, dxCoarse CellID, band string, noisePenalty float64, now time.Time) (float64, float64, bool) {
 	if store == nil {
 		return 0, 0, false
 	}
 	// Receive (DX->user): receiver=user, sender=dx.
-	rFine, rCoarse := store.Lookup(userCell, dxCell, userGrid2, dxGrid2, band, now)
+	rFine, rCoarse := store.Lookup(userCell, dxCell, userCoarse, dxCoarse, band, now)
 	receive := SelectSample(rFine, rCoarse, p.cfg.MinFineWeight)
 
 	// Transmit (user->DX): receiver=dx, sender=user.
-	tFine, tCoarse := store.Lookup(dxCell, userCell, dxGrid2, userGrid2, band, now)
+	tFine, tCoarse := store.Lookup(dxCell, userCell, dxCoarse, userCoarse, band, now)
 	transmit := SelectSample(tFine, tCoarse, p.cfg.MinFineWeight)
 
 	return mergeSamples(receive, transmit, p.cfg, noisePenalty)

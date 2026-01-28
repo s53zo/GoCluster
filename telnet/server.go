@@ -1821,7 +1821,7 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 		return ""
 	}
 	dxCell := pathreliability.InvalidCell
-	if sp.DXCellID != 0 && sp.DXCellID != 0xffff {
+	if sp.DXCellID != 0 {
 		dxCell = pathreliability.CellID(sp.DXCellID)
 	}
 	if dxCell == pathreliability.InvalidCell {
@@ -1830,8 +1830,8 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 	if dxCell == pathreliability.InvalidCell {
 		return ""
 	}
-	userGrid2 := pathreliability.EncodeGrid2(grid)
-	dxGrid2 := pathreliability.EncodeGrid2(sp.DXMetadata.Grid)
+	userCoarse := pathreliability.EncodeCoarseCell(grid)
+	dxCoarse := pathreliability.EncodeCoarseCell(sp.DXMetadata.Grid)
 
 	band := sp.BandNorm
 	if strings.TrimSpace(band) == "" {
@@ -1842,7 +1842,7 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 		mode = sp.Mode
 	}
 	now := time.Now().UTC().UTC()
-	res := s.pathPredictor.Predict(userCell, dxCell, userGrid2, dxGrid2, band, mode, noisePenalty, now)
+	res := s.pathPredictor.Predict(userCell, dxCell, userCoarse, dxCoarse, band, mode, noisePenalty, now)
 	s.recordPathPrediction(res, state.gridDerived, sp.DXMetadata.GridDerived)
 	g := res.Glyph
 	return g
@@ -1878,7 +1878,7 @@ func (s *Server) pathClassForClient(client *Client, sp *spot.Spot) string {
 		return filter.PathClassInsufficient
 	}
 	dxCell := pathreliability.InvalidCell
-	if sp.DXCellID != 0 && sp.DXCellID != 0xffff {
+	if sp.DXCellID != 0 {
 		dxCell = pathreliability.CellID(sp.DXCellID)
 	}
 	if dxCell == pathreliability.InvalidCell {
@@ -1887,8 +1887,8 @@ func (s *Server) pathClassForClient(client *Client, sp *spot.Spot) string {
 	if dxCell == pathreliability.InvalidCell {
 		return filter.PathClassInsufficient
 	}
-	userGrid2 := pathreliability.EncodeGrid2(grid)
-	dxGrid2 := pathreliability.EncodeGrid2(sp.DXMetadata.Grid)
+	userCoarse := pathreliability.EncodeCoarseCell(grid)
+	dxCoarse := pathreliability.EncodeCoarseCell(sp.DXMetadata.Grid)
 
 	band := strings.TrimSpace(sp.BandNorm)
 	if band == "" {
@@ -1904,7 +1904,7 @@ func (s *Server) pathClassForClient(client *Client, sp *spot.Spot) string {
 		mode = strings.TrimSpace(sp.Mode)
 	}
 	now := time.Now().UTC().UTC()
-	res := s.pathPredictor.Predict(userCell, dxCell, userGrid2, dxGrid2, band, mode, noisePenalty, now)
+	res := s.pathPredictor.Predict(userCell, dxCell, userCoarse, dxCoarse, band, mode, noisePenalty, now)
 	if res.Source == pathreliability.SourceInsufficient {
 		return filter.PathClassInsufficient
 	}
@@ -2716,4 +2716,3 @@ func (c *Client) logRejectedInput(context, reason string) {
 	}
 	log.Printf("Rejected %s input from %s: %s", context, id, reason)
 }
-

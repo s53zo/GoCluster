@@ -51,7 +51,7 @@ func NewStore(cfg Config, bands []string) *Store {
 
 // Update applies a new FT8-equiv reading to the directional path.
 // weight should normally be 1.0; beacons may be clamped by caller.
-func (s *Store) Update(receiverCell, senderCell CellID, receiverGrid2, senderGrid2 string, band string, power float64, weight float64, now time.Time) {
+func (s *Store) Update(receiverCell, senderCell CellID, receiverCoarse, senderCoarse CellID, band string, power float64, weight float64, now time.Time) {
 	if s == nil || !s.cfg.Enabled {
 		return
 	}
@@ -61,12 +61,12 @@ func (s *Store) Update(receiverCell, senderCell CellID, receiverGrid2, senderGri
 	}
 	halfLife := s.bandIndex.HalfLifeSeconds(band, s.cfg)
 	if receiverCell == InvalidCell || senderCell == InvalidCell {
-		// Still allow coarse update if enabled and grids are valid.
+		// Still allow coarse update when fine cells are missing.
 	} else {
 		s.updateBucket(packKey(receiverCell, senderCell, idx), power, weight, now, halfLife)
 	}
-	if s.cfg.CoarseFallbackEnabled && receiverGrid2 != "" && senderGrid2 != "" {
-		s.updateBucket(packGrid2Key(receiverGrid2, senderGrid2, idx), power, weight, now, halfLife)
+	if receiverCoarse != InvalidCell && senderCoarse != InvalidCell {
+		s.updateBucket(packCoarseKey(receiverCoarse, senderCoarse, idx), power, weight, now, halfLife)
 	}
 }
 
@@ -122,7 +122,7 @@ type weightHistogram struct {
 }
 
 // Lookup returns the decayed samples for the given keys.
-func (s *Store) Lookup(receiverCell, senderCell CellID, receiverGrid2, senderGrid2 string, band string, now time.Time) (fine Sample, coarse Sample) {
+func (s *Store) Lookup(receiverCell, senderCell CellID, receiverCoarse, senderCoarse CellID, band string, now time.Time) (fine Sample, coarse Sample) {
 	if s == nil || !s.cfg.Enabled {
 		return
 	}
@@ -134,8 +134,8 @@ func (s *Store) Lookup(receiverCell, senderCell CellID, receiverGrid2, senderGri
 	if receiverCell != InvalidCell && senderCell != InvalidCell {
 		fine = s.sample(packKey(receiverCell, senderCell, idx), halfLife, now)
 	}
-	if s.cfg.CoarseFallbackEnabled && receiverGrid2 != "" && senderGrid2 != "" {
-		coarse = s.sample(packGrid2Key(receiverGrid2, senderGrid2, idx), halfLife, now)
+	if receiverCoarse != InvalidCell && senderCoarse != InvalidCell {
+		coarse = s.sample(packCoarseKey(receiverCoarse, senderCoarse, idx), halfLife, now)
 	}
 	return
 }

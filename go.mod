@@ -49,6 +49,7 @@ require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/gdamore/tcell/v2 v2.8.1
 	github.com/json-iterator/go v1.1.12
+	github.com/uber/h3-go/v4 v4.4.0
 	github.com/zeebo/xxh3 v1.0.2
 	github.com/ziutek/telnet v0.1.0
 	golang.org/x/term v0.35.0

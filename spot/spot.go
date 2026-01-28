@@ -65,8 +65,8 @@ type Spot struct {
 	DEGridNorm      string
 	DXGrid2         string
 	DEGrid2         string
-	DXCellID        uint16 // Custom path reliability cell (0xffff when unknown)
-	DECellID        uint16 // Custom path reliability cell (0xffff when unknown)
+	DXCellID        uint16 // H3 res-2 proxy ID for path reliability (0 when unknown)
+	DECellID        uint16 // H3 res-2 proxy ID for path reliability (0 when unknown)
 	// Broadcast-only overrides (telnet/archive view); canonical calls remain raw.
 	DECallStripped     string
 	DECallNormStripped string
@@ -128,8 +128,8 @@ func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
 		IsHuman:    true,
 		DXCallNorm: dxNorm,
 		DECallNorm: deNorm,
-		DXCellID:   0xffff,
-		DECellID:   0xffff,
+		DXCellID:   0,
+		DECellID:   0,
 	}
 	spot.EnsureNormalized()
 	spot.RefreshBeaconFlag()
@@ -160,8 +160,8 @@ func NewSpotNormalized(dxCallNorm, deCallNorm string, freq float64, mode string)
 		IsHuman:    true,
 		DXCallNorm: dxCall,
 		DECallNorm: deCall,
-		DXCellID:   0xffff,
-		DECellID:   0xffff,
+		DXCellID:   0,
+		DECellID:   0,
 	}
 	spot.EnsureNormalized()
 	spot.RefreshBeaconFlag()

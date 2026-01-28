@@ -6,14 +6,14 @@ import (
 )
 
 func TestStoreStatsByBandCounts(t *testing.T) {
+	requireH3Mappings(t)
 	cfg := DefaultConfig()
 	cfg.StaleAfterSeconds = 600
-	cfg.CoarseFallbackEnabled = true
 	store := NewStore(cfg, []string{"160m", "80m"})
 	now := time.Now().UTC()
 
-	store.Update(EncodeCell("FN31"), EncodeCell("FN32"), "", "", "160m", dbToPower(-5), 1.0, now)
-	store.Update(InvalidCell, InvalidCell, "FN", "FN", "80m", dbToPower(-10), 1.0, now)
+	store.Update(EncodeCell("FN31"), EncodeCell("FN32"), InvalidCell, InvalidCell, "160m", dbToPower(-5), 1.0, now)
+	store.Update(InvalidCell, InvalidCell, EncodeCoarseCell("FN31"), EncodeCoarseCell("FN32"), "80m", dbToPower(-10), 1.0, now)
 
 	stats := store.StatsByBand(now)
 	if len(stats) != 2 {
@@ -28,14 +28,14 @@ func TestStoreStatsByBandCounts(t *testing.T) {
 }
 
 func TestPredictorStatsByBand(t *testing.T) {
+	requireH3Mappings(t)
 	cfg := DefaultConfig()
 	cfg.StaleAfterSeconds = 600
-	cfg.CoarseFallbackEnabled = true
 	predictor := NewPredictor(cfg, []string{"160m", "80m"})
 	now := time.Now().UTC()
 
-	predictor.Update(BucketCombined, EncodeCell("FN31"), EncodeCell("FN32"), "", "", "160m", -5, 1.0, now, false)
-	predictor.Update(BucketCombined, InvalidCell, InvalidCell, "FN", "FN", "80m", -7, 1.0, now, false)
+	predictor.Update(BucketCombined, EncodeCell("FN31"), EncodeCell("FN32"), InvalidCell, InvalidCell, "160m", -5, 1.0, now, false)
+	predictor.Update(BucketCombined, InvalidCell, InvalidCell, EncodeCoarseCell("FN31"), EncodeCoarseCell("FN32"), "80m", -7, 1.0, now, false)
 
 	stats := predictor.StatsByBand(now)
 	if len(stats) != 2 {
@@ -53,13 +53,14 @@ func TestPredictorStatsByBand(t *testing.T) {
 }
 
 func TestStoreWeightHistogramByBand(t *testing.T) {
+	requireH3Mappings(t)
 	cfg := DefaultConfig()
 	cfg.StaleAfterSeconds = 600
 	store := NewStore(cfg, []string{"160m"})
 	now := time.Now().UTC()
 
-	store.Update(EncodeCell("FN31"), EncodeCell("FN32"), "", "", "160m", dbToPower(-5), 0.5, now)
-	store.Update(EncodeCell("EM10"), EncodeCell("EM11"), "", "", "160m", dbToPower(-5), 2.5, now)
+	store.Update(EncodeCell("FN31"), EncodeCell("FN32"), InvalidCell, InvalidCell, "160m", dbToPower(-5), 0.5, now)
+	store.Update(EncodeCell("EM10"), EncodeCell("EM11"), InvalidCell, InvalidCell, "160m", dbToPower(-5), 2.5, now)
 
 	edges := []float64{1, 2, 3}
 	hist := store.WeightHistogramByBand(now, edges)
@@ -78,12 +79,13 @@ func TestStoreWeightHistogramByBand(t *testing.T) {
 }
 
 func TestPredictorWeightHistogramByBand(t *testing.T) {
+	requireH3Mappings(t)
 	cfg := DefaultConfig()
 	cfg.StaleAfterSeconds = 600
 	predictor := NewPredictor(cfg, []string{"160m"})
 	now := time.Now().UTC()
 
-	predictor.Update(BucketCombined, EncodeCell("FN31"), EncodeCell("FN32"), "", "", "160m", -5, 1.0, now, false)
+	predictor.Update(BucketCombined, EncodeCell("FN31"), EncodeCell("FN32"), InvalidCell, InvalidCell, "160m", -5, 1.0, now, false)
 
 	hist := predictor.WeightHistogramByBand(now)
 	if len(hist.Edges) == 0 {
