@@ -6,6 +6,7 @@ require gopkg.in/yaml.v3 v3.0.1
 
 require (
 	github.com/DataDog/zstd v1.4.5 // indirect
+	github.com/Kl1mn/h3-go v0.0.4 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/cockroachdb/errors v1.11.3 // indirect
@@ -43,6 +44,7 @@ require (
 )
 
 require (
+	github.com/ThingsIXFoundation/h3-light v0.0.0-20230404055559-b4bb7d4d9c47
 	github.com/agnivade/levenshtein v1.2.1
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/dustin/go-humanize v1.0.1

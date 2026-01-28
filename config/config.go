@@ -99,6 +99,7 @@ type Config struct {
 	GridL0Compaction    int                  `yaml:"grid_l0_compaction_threshold"`
 	GridL0StopWrites    int                  `yaml:"grid_l0_stop_writes_threshold"`
 	GridWriteQueueDepth int                  `yaml:"grid_write_queue_depth"`
+	H3TablePath         string               `yaml:"h3_table_path"`
 	// GridDBCheckOnMiss controls whether grid updates consult Pebble on cache miss
 	// to avoid redundant writes. When nil, Load defaults it to true to preserve
 	// historical behavior.
@@ -1413,6 +1414,9 @@ func Load(path string) (*Config, error) {
 	// Grid store defaults keep the local cache warm and bound persistence churn.
 	if strings.TrimSpace(cfg.GridDBPath) == "" {
 		cfg.GridDBPath = "data/grids/pebble"
+	}
+	if strings.TrimSpace(cfg.H3TablePath) == "" {
+		cfg.H3TablePath = "data/h3"
 	}
 	if cfg.GridFlushSec <= 0 {
 		cfg.GridFlushSec = 60

@@ -19,7 +19,7 @@ const (
 )
 
 func main() {
-	outDir := flag.String("out", "data/config/h3", "output directory for H3 tables")
+	outDir := flag.String("out", "data/h3", "output directory for H3 tables")
 	flag.Parse()
 
 	if err := os.MkdirAll(*outDir, 0o755); err != nil {

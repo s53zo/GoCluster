@@ -370,7 +370,7 @@ func main() {
 	}
 	pathPredictor := pathreliability.NewPredictor(pathCfg, spot.SupportedBandNames())
 	if pathCfg.Enabled {
-		if err := pathreliability.InitH3Mappings(); err != nil {
+		if err := pathreliability.InitH3MappingsFromDir(cfg.H3TablePath); err != nil {
 			log.Printf("Path reliability H3 mapping init failed: %v; feature disabled", err)
 			pathCfg.Enabled = false
 			pathPredictor = pathreliability.NewPredictor(pathCfg, spot.SupportedBandNames())
