@@ -12,7 +12,7 @@ const (
 // Modes not explicitly listed return BucketNone (no ingest).
 func BucketForIngest(mode string) BucketClass {
 	switch normalizeMode(mode) {
-	case "FT8", "FT4", "CW", "RTTY", "PSK":
+	case "FT8", "FT4", "CW", "RTTY", "PSK", "WSPR":
 		return BucketCombined
 	default:
 		return BucketNone

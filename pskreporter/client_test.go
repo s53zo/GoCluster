@@ -33,7 +33,7 @@ func TestDecorateSpotterCall(t *testing.T) {
 }
 
 func TestConvertToSpotOmitsCommentAndCarriesGrids(t *testing.T) {
-	client := NewClient("localhost", 1883, nil, nil, "", 1, 0, 0, 0, nil, false, 16, 0)
+	client := NewClient("localhost", 1883, nil, nil, nil, "", 1, 0, 0, 0, nil, false, 16, 0)
 
 	msg := &PSKRMessage{
 		SequenceNumber:  1,
@@ -77,7 +77,7 @@ func (m testMessage) Payload() []byte { return m.payload }
 func (m testMessage) Ack()            {}
 
 func TestMessageHandlerDropsOversizePayload(t *testing.T) {
-	client := NewClient("localhost", 1883, nil, nil, "", 1, 0, 0, 0, nil, false, 16, 4)
+	client := NewClient("localhost", 1883, nil, nil, nil, "", 1, 0, 0, 0, nil, false, 16, 4)
 	client.processingMu.Lock()
 	client.processing = make(chan []byte, 1)
 	client.processingMu.Unlock()
@@ -93,7 +93,7 @@ func TestMessageHandlerDropsOversizePayload(t *testing.T) {
 
 func TestHandlePayloadFiltersModes(t *testing.T) {
 	// Allow only FT8.
-	client := NewClient("localhost", 1883, nil, []string{"FT8"}, "", 1, 0, 0, 0, nil, false, 2, 0)
+	client := NewClient("localhost", 1883, nil, []string{"FT8"}, nil, "", 1, 0, 0, 0, nil, false, 2, 0)
 	allowed := PSKRMessage{
 		Frequency:    14074000,
 		Mode:         "FT8",
@@ -127,7 +127,7 @@ func TestHandlePayloadFiltersModes(t *testing.T) {
 }
 
 func TestHandlePayloadDropsZeroSNR(t *testing.T) {
-	client := NewClient("localhost", 1883, nil, nil, "", 1, 0, 0, 0, nil, false, 2, 0)
+	client := NewClient("localhost", 1883, nil, nil, nil, "", 1, 0, 0, 0, nil, false, 2, 0)
 	msg := PSKRMessage{
 		Frequency:    14074000,
 		Mode:         "FT8",
@@ -147,7 +147,7 @@ func TestHandlePayloadDropsZeroSNR(t *testing.T) {
 }
 
 func TestHandlePayloadDropsMissingReport(t *testing.T) {
-	client := NewClient("localhost", 1883, nil, nil, "", 1, 0, 0, 0, nil, false, 2, 0)
+	client := NewClient("localhost", 1883, nil, nil, nil, "", 1, 0, 0, 0, nil, false, 2, 0)
 	msg := PSKRMessage{
 		Frequency:    14074000,
 		Mode:         "FT8",
@@ -166,7 +166,7 @@ func TestHandlePayloadDropsMissingReport(t *testing.T) {
 }
 
 func TestHandlePayloadAllowsPSKVariantsWithCanonicalAllowlist(t *testing.T) {
-	client := NewClient("localhost", 1883, nil, []string{"PSK"}, "", 1, 0, 0, 0, nil, false, 2, 0)
+	client := NewClient("localhost", 1883, nil, []string{"PSK"}, nil, "", 1, 0, 0, 0, nil, false, 2, 0)
 	psk31 := PSKRMessage{
 		Frequency:    14074000,
 		Mode:         "PSK31",
@@ -185,5 +185,37 @@ func TestHandlePayloadAllowsPSKVariantsWithCanonicalAllowlist(t *testing.T) {
 		}
 	default:
 		t.Fatalf("expected PSK31 to be accepted when PSK is allowed")
+	}
+}
+
+func TestHandlePayloadRoutesPathOnlyMode(t *testing.T) {
+	client := NewClient("localhost", 1883, nil, []string{"FT8"}, []string{"WSPR"}, "", 1, 0, 0, 0, nil, false, 2, 0)
+	msg := PSKRMessage{
+		Frequency:       14097000,
+		Mode:            "WSPR",
+		Report:          intPtr(5),
+		Timestamp:       time.Now().Unix(),
+		SenderCall:      "K1ABC",
+		ReceiverCall:    "N0CALL",
+		SenderLocator:   "FN42",
+		ReceiverLocator: "EM10",
+	}
+	payload, _ := json.Marshal(msg)
+
+	client.handlePayload(payload)
+
+	select {
+	case spot := <-client.GetPathOnlyChannel():
+		if spot.Mode != "WSPR" {
+			t.Fatalf("expected WSPR path-only spot, got %q", spot.Mode)
+		}
+	default:
+		t.Fatalf("expected WSPR to be routed to path-only channel")
+	}
+
+	select {
+	case <-client.spotChan:
+		t.Fatalf("expected path-only WSPR to bypass spot channel")
+	default:
 	}
 }

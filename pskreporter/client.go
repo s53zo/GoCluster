@@ -40,6 +40,7 @@ type Client struct {
 	name         string
 	client       mqtt.Client
 	spotChan     chan *spot.Spot
+	pathOnlyChan chan *spot.Spot
 	shutdown     chan struct{}
 	workers      int
 	processing   chan []byte
@@ -62,9 +63,12 @@ type Client struct {
 	payloadTooLargeCounter rateCounter
 	spotDropCounter        rateCounter
 	parseErrorCounter      rateCounter
+	pathOnlyDropCounter    rateCounter
 
 	allowAllModes bool
 	allowedModes  map[string]struct{}
+	pathOnlyModes map[string]struct{}
+	hasPathOnly   bool
 }
 
 var (
@@ -123,7 +127,7 @@ func ConfigureCallCache(size int, ttl time.Duration) {
 // Key aspects: Initializes channels, caches, and worker settings.
 // Upstream: main.go startup.
 // Downstream: Client.Connect, worker pool.
-func NewClient(broker string, port int, topics []string, allowedModes []string, name string, workers int, mqttInboundWorkers int, mqttInboundQueueDepth int, mqttQoS12EnqueueTimeout time.Duration, skewStore *skew.Store, appendSSID bool, spotBuffer int, maxPayloadBytes int) *Client {
+func NewClient(broker string, port int, topics []string, allowedModes []string, pathOnlyModes []string, name string, workers int, mqttInboundWorkers int, mqttInboundQueueDepth int, mqttQoS12EnqueueTimeout time.Duration, skewStore *skew.Store, appendSSID bool, spotBuffer int, maxPayloadBytes int) *Client {
 	if spotBuffer <= 0 {
 		spotBuffer = defaultSpotBuffer
 	}
@@ -139,15 +143,31 @@ func NewClient(broker string, port int, topics []string, allowedModes []string, 
 		}
 		modeSet[m] = struct{}{}
 	}
+	pathOnlySet := make(map[string]struct{}, len(pathOnlyModes))
+	for _, m := range pathOnlyModes {
+		m = strings.ToUpper(strings.TrimSpace(m))
+		if m == "" {
+			continue
+		}
+		pathOnlySet[m] = struct{}{}
+	}
 	allowAll := len(modeSet) == 0
+	hasPathOnly := len(pathOnlySet) > 0
+	var pathOnlyChan chan *spot.Spot
+	if hasPathOnly {
+		pathOnlyChan = make(chan *spot.Spot, spotBuffer)
+	}
 	return &Client{
 		broker:                  broker,
 		port:                    port,
 		topics:                  append([]string{}, topics...),
 		allowedModes:            modeSet,
 		allowAllModes:           allowAll,
+		pathOnlyModes:           pathOnlySet,
+		hasPathOnly:             hasPathOnly,
 		name:                    name,
 		spotChan:                make(chan *spot.Spot, spotBuffer), // Buffered ingest to absorb bursts
+		pathOnlyChan:            pathOnlyChan,
 		shutdown:                make(chan struct{}),
 		workers:                 workers,
 		mqttInboundWorkers:      mqttInboundWorkers,
@@ -162,6 +182,7 @@ func NewClient(broker string, port int, topics []string, allowedModes []string, 
 		payloadTooLargeCounter: newRateCounter(logInterval),
 		spotDropCounter:        newRateCounter(logInterval),
 		parseErrorCounter:      newRateCounter(logInterval),
+		pathOnlyDropCounter:    newRateCounter(logInterval),
 	}
 }
 
@@ -296,7 +317,7 @@ func (c *Client) onConnect(client mqtt.Client) {
 func (c *Client) onConnectionLost(client mqtt.Client, err error) {
 	snap := c.HealthSnapshot()
 	now := time.Now().UTC()
-	log.Printf("PSKReporter: Connection lost: %v (last_payload=%s last_spot=%s last_parse_err=%s processing=%d/%d mqtt_q=%d/%d spot_queue=%d/%d drops payload=%d oversize=%d spot=%d parse=%d mqtt_drop=%d mqtt_qos12_timeout=%d mqtt_qos12_disconnect=%d)",
+	log.Printf("PSKReporter: Connection lost: %v (last_payload=%s last_spot=%s last_parse_err=%s processing=%d/%d mqtt_q=%d/%d spot_queue=%d/%d path_only_q=%d/%d drops payload=%d oversize=%d spot=%d path_only=%d parse=%d mqtt_drop=%d mqtt_qos12_timeout=%d mqtt_qos12_disconnect=%d)",
 		err,
 		formatAge(now, snap.LastPayloadAt),
 		formatAge(now, snap.LastSpotAt),
@@ -307,9 +328,12 @@ func (c *Client) onConnectionLost(client mqtt.Client, err error) {
 		snap.MQTTInboundQueueCap,
 		snap.SpotQueueLen,
 		snap.SpotQueueCap,
+		snap.PathOnlyQueueLen,
+		snap.PathOnlyQueueCap,
 		snap.PayloadDrops,
 		snap.PayloadTooLarge,
 		snap.SpotDrops,
+		snap.PathOnlyDrops,
 		snap.ParseErrors,
 		snap.MQTTInboundDropsQoS0,
 		snap.MQTTInboundQoS12Timeouts,
@@ -438,22 +462,28 @@ func (c *Client) handlePayload(payload []byte) {
 	}
 	modeUpper := strings.ToUpper(strings.TrimSpace(pskrMsg.Mode))
 	canonical, variant, isPSK := spot.CanonicalPSKMode(modeUpper)
+	pathOnly := c.modeMatchesList(canonical, variant, isPSK, c.pathOnlyModes)
 	if !c.allowAllModes {
-		if canonical == "" {
+		if canonical == "" && !pathOnly {
 			return
 		}
-		if _, ok := c.allowedModes[canonical]; !ok {
-			// Accept explicit variant allowlists as a fallback for operators who still list them.
-			if !isPSK || variant == "" {
-				return
-			}
-			if _, variantOK := c.allowedModes[variant]; !variantOK {
-				return
-			}
+		if !pathOnly && !c.modeMatchesList(canonical, variant, isPSK, c.allowedModes) {
+			return
 		}
 	}
 	s := c.convertToSpot(&pskrMsg)
 	if s == nil {
+		return
+	}
+	if pathOnly {
+		c.lastSpotAt.Store(time.Now().UTC().UnixNano())
+		select {
+		case c.pathOnlyChan <- s:
+		default:
+			if count, ok := c.pathOnlyDropCounter.Inc(); ok {
+				log.Printf("PSKReporter: Path-only channel full, dropped %d spot(s) total", count)
+			}
+		}
 		return
 	}
 	c.lastSpotAt.Store(time.Now().UTC().UnixNano())
@@ -687,6 +717,27 @@ func (c *Client) stopWorkerPool() {
 	c.processingMu.Unlock()
 }
 
+// Purpose: Decide if a normalized mode is present in a mode list.
+// Key aspects: Supports canonical + variant matching for PSK-family modes.
+// Upstream: handlePayload allowlist and path-only routing.
+// Downstream: map lookups only.
+func (c *Client) modeMatchesList(canonical string, variant string, isPSK bool, allowed map[string]struct{}) bool {
+	if len(allowed) == 0 {
+		return false
+	}
+	if canonical != "" {
+		if _, ok := allowed[canonical]; ok {
+			return true
+		}
+	}
+	if isPSK && variant != "" {
+		if _, ok := allowed[variant]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // Purpose: Choose a default worker count for PSKReporter ingest.
 // Key aspects: Uses NumCPU with a minimum of 4.
 // Upstream: startWorkerPool.
@@ -706,6 +757,17 @@ func defaultPSKReporterWorkers() int {
 // Downstream: None.
 func (c *Client) GetSpotChannel() <-chan *spot.Spot {
 	return c.spotChan
+}
+
+// Purpose: Expose the output path-only channel.
+// Key aspects: Returns nil when path-only modes are disabled.
+// Upstream: main.go path-only processor.
+// Downstream: None.
+func (c *Client) GetPathOnlyChannel() <-chan *spot.Spot {
+	if c == nil || !c.hasPathOnly {
+		return nil
+	}
+	return c.pathOnlyChan
 }
 
 // Purpose: Report whether the MQTT client is connected.
@@ -739,9 +801,12 @@ type HealthSnapshot struct {
 	MQTTInboundQueueCap         int
 	SpotQueueLen                int
 	SpotQueueCap                int
+	PathOnlyQueueLen            int
+	PathOnlyQueueCap            int
 	PayloadDrops                uint64
 	PayloadTooLarge             uint64
 	SpotDrops                   uint64
+	PathOnlyDrops               uint64
 	ParseErrors                 uint64
 	MQTTInboundDropsQoS0        uint64
 	MQTTInboundQoS12Timeouts    uint64
@@ -757,12 +822,25 @@ func (c *Client) HealthSnapshot() HealthSnapshot {
 		return HealthSnapshot{}
 	}
 	snap := HealthSnapshot{
-		Connected:       c.IsConnected(),
-		SpotQueueLen:    len(c.spotChan),
-		SpotQueueCap:    cap(c.spotChan),
+		Connected:    c.IsConnected(),
+		SpotQueueLen: len(c.spotChan),
+		SpotQueueCap: cap(c.spotChan),
+		PathOnlyQueueLen: func() int {
+			if c.pathOnlyChan == nil {
+				return 0
+			}
+			return len(c.pathOnlyChan)
+		}(),
+		PathOnlyQueueCap: func() int {
+			if c.pathOnlyChan == nil {
+				return 0
+			}
+			return cap(c.pathOnlyChan)
+		}(),
 		PayloadDrops:    c.payloadDropCounter.count.Load(),
 		PayloadTooLarge: c.payloadTooLargeCounter.count.Load(),
 		SpotDrops:       c.spotDropCounter.count.Load(),
+		PathOnlyDrops:   c.pathOnlyDropCounter.count.Load(),
 		ParseErrors:     c.parseErrorCounter.count.Load(),
 	}
 	mqttStats := c.mqttInboundStats()

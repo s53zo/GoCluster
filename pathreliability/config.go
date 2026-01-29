@@ -46,6 +46,7 @@ type ModeOffsets struct {
 	CW   float64 `yaml:"cw"`
 	RTTY float64 `yaml:"rtty"`
 	PSK  float64 `yaml:"psk"`
+	WSPR float64 `yaml:"wspr"`
 }
 
 // GlyphThresholds defines FT8-equiv dB cutoffs for glyphs.
@@ -180,6 +181,7 @@ func DefaultConfig() Config {
 			CW:   -7,
 			RTTY: -7,
 			PSK:  -7,
+			WSPR: 26,
 		},
 		ModeThresholds: map[string]GlyphThresholds{
 			"FT8":  {High: -13, Medium: -17, Low: -21, Unlikely: -21, hasHigh: true, hasMedium: true, hasLow: true, hasUnlikely: true},
@@ -284,6 +286,9 @@ func (c *Config) normalize() {
 	}
 	if c.ModeOffsets.PSK == 0 {
 		c.ModeOffsets.PSK = def.ModeOffsets.PSK
+	}
+	if c.ModeOffsets.WSPR == 0 {
+		c.ModeOffsets.WSPR = def.ModeOffsets.WSPR
 	}
 	if c.ModeThresholds == nil {
 		c.ModeThresholds = map[string]GlyphThresholds{}

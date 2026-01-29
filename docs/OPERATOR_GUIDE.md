@@ -35,6 +35,10 @@ Every 5 minutes, the server logs:
 - `Path predictions (5m)` — combined vs insufficient, and no‑sample vs low‑weight.
 - `Path buckets (5m)` — per‑band bucket counts.
 - `Path weight dist (5m)` — per‑band weight histogram.
+Stats ticker adds:
+- `Data` — last updated timestamps for CTY and FCC ULS.
+- `Calls` — correction/unlicensed/frequency/harmonic counts plus reputation drops `(R)`.
+- `Path only` — per‑interval path‑only updates with drop reasons for WSPR (U=updated, S=stale, N=no SNR, G=no grid, H=bad H3, B=bad band, M=mode).
 
 ## Common Troubleshooting
 - **All paths show Insufficient**: verify `SET GRID`, confirm spot ingestion, and check H3 tables in `data/h3`.

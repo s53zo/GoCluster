@@ -918,6 +918,7 @@ func main() {
 	// Upstream: main startup after wiring dependencies.
 	// Downstream: processOutputSpots.
 	pathReport := newPathReportMetrics()
+	pskrPathOnlyStats := &pathOnlyStats{}
 	go processOutputSpots(deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor, pathReport)
 	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
@@ -1023,6 +1024,7 @@ func main() {
 			cfg.PSKReporter.Port,
 			pskrTopics,
 			cfg.PSKReporter.Modes,
+			cfg.PSKReporter.PathOnlyModes,
 			cfg.PSKReporter.Name,
 			cfg.PSKReporter.Workers,
 			cfg.PSKReporter.MQTTInboundWorkers,
@@ -1042,6 +1044,11 @@ func main() {
 			// Upstream: main startup after PSKReporter connect.
 			// Downstream: processPSKRSpots.
 			go processPSKRSpots(pskrClient, ingestInput, cfg.SpotPolicy)
+			// Purpose: Pump PSKReporter path-only spots into the path predictor.
+			// Key aspects: Runs in its own goroutine; never touches dedup/broadcast.
+			// Upstream: main startup after PSKReporter connect.
+			// Downstream: processPSKRPathOnlySpots.
+			go processPSKRPathOnlySpots(pskrClient, pathPredictor, pathReport, pskrPathOnlyStats, cfg.SpotPolicy)
 			log.Println("PSKReporter client feeding spots into unified dedup engine")
 		}
 	}
@@ -1067,7 +1074,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor)
+	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor, pskrClient, pskrPathOnlyStats)
 	if pathCfg.Enabled {
 		go startPathPredictionLogger(ctx, logMux, telnetServer, pathPredictor, pathReport)
 	}
@@ -1358,7 +1365,7 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor, pskrClient *pskreporter.Client, pskrPathOnly *pathOnlyStats) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -1367,6 +1374,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 
 	prevSourceCounts := make(map[string]uint64)
 	prevSourceModeCounts := make(map[string]uint64)
+	var prevPathOnly pathOnlySnapshot
 	var fccSnap *fccSnapshot
 	if !uls.RefreshInProgress() {
 		fccSnap = loadFCCSnapshot(fccDBPath)
@@ -1403,7 +1411,6 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 		totalFreqCorrections := tracker.FrequencyCorrections()
 		totalHarmonics := tracker.HarmonicSuppressions()
 		reputationTotal := tracker.ReputationDrops()
-		reputationReasons := tracker.ReputationDropReasons()
 
 		ingestTotal := uint64(0)
 		if ingestStats != nil {
@@ -1490,12 +1497,31 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 		}
 
 		combinedRBN := rbnTotal + rbnFTTotal
+		pathOnlyLine := ""
+		if pskrClient != nil {
+			snap := pskrClient.HealthSnapshot()
+			if snap.PathOnlyQueueCap > 0 {
+				current := snapshotPathOnly(pskrPathOnly)
+				delta := diffPathOnly(current, prevPathOnly)
+				prevPathOnly = current
+				_ = snap
+				pathOnlyLine = fmt.Sprintf("Path only: %s (U) / %s (S) / %s (N) / %s (G) / %s (H) / %s (B) / %s (M)",
+					humanize.Comma(int64(delta.updates)),
+					humanize.Comma(int64(delta.stale)),
+					humanize.Comma(int64(delta.noSNR)),
+					humanize.Comma(int64(delta.noGrid)),
+					humanize.Comma(int64(delta.badH3)),
+					humanize.Comma(int64(delta.badBand)),
+					humanize.Comma(int64(delta.mode)),
+				)
+			}
+		}
+
 		lines := []string{
 			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, secondaryFast, secondaryMed, secondarySlow, metaCache, knownPtr)), // 1
 			formatGridLineOrPlaceholder(gridStats, gridDB, pathPredictor),                                                 // 2
-			formatCTYLineOrPlaceholder(ctyLookup, ctyState),                                                               // 3
-			formatFCCLineOrPlaceholder(fccSnap),                                                                           // 4
-			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4), // 5
+			formatDataLineOrPlaceholder(ctyLookup, ctyState, fccSnap),                                                     // 3
+			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4), // 4
 			fmt.Sprintf("PSKReporter: %s TOTAL / %s CW / %s RTTY / %s FT8 / %s FT4 / %s MSK144",
 				humanize.Comma(int64(pskTotal)),
 				humanize.Comma(int64(pskCW)),
@@ -1503,12 +1529,16 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 				humanize.Comma(int64(pskFT8)),
 				humanize.Comma(int64(pskFT4)),
 				humanize.Comma(int64(pskMSK144)),
-			), // 6
-			fmt.Sprintf("Corrected calls: %d (C) / %d (U) / %d (F) / %d (H)", totalCorrections, totalUnlicensed, totalFreqCorrections, totalHarmonics), // 7
-			formatReputationDropSummary(reputationTotal, reputationReasons),                                                                            // 8
-			pipelineLine, // 9
-			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C) / %d (W)", clientCount, queueDrops, clientDrops, senderFailures), // 10
+			), // 5
 		}
+		if pathOnlyLine != "" {
+			lines = append(lines, pathOnlyLine)
+		}
+		lines = append(lines,
+			fmt.Sprintf("Calls: %d (C) / %d (U) / %d (F) / %d (H) / %d (R)", totalCorrections, totalUnlicensed, totalFreqCorrections, totalHarmonics, reputationTotal), // 6
+			pipelineLine, // 7
+			fmt.Sprintf("Telnet: %d clients. Drops: %d (Q) / %d (C) / %d (W)", clientCount, queueDrops, clientDrops, senderFailures), // 8
+		)
 
 		prevSourceCounts = sourceTotals
 		prevSourceModeCounts = sourceModeTotals
@@ -1611,6 +1641,185 @@ func processPSKRSpots(client *pskreporter.Client, ingest chan<- *spot.Spot, spot
 				log.Printf("PSKReporter: Ingest input full, dropping spot (total drops=%d)", count)
 			}
 		}
+	}
+}
+
+type pathOnlyStats struct {
+	updates atomic.Uint64
+	drops   atomic.Uint64
+	stale   atomic.Uint64
+	noSNR   atomic.Uint64
+	noGrid  atomic.Uint64
+	badH3   atomic.Uint64
+	badBand atomic.Uint64
+	off     atomic.Uint64
+	mode    atomic.Uint64
+}
+
+type pathOnlySnapshot struct {
+	updates uint64
+	drops   uint64
+	stale   uint64
+	noSNR   uint64
+	noGrid  uint64
+	badH3   uint64
+	badBand uint64
+	off     uint64
+	mode    uint64
+}
+
+type pathOnlyDropReason uint8
+
+const (
+	pathOnlyDropStale pathOnlyDropReason = iota
+	pathOnlyDropNoSNR
+	pathOnlyDropNoGrid
+	pathOnlyDropBadH3
+	pathOnlyDropBadBand
+	pathOnlyDropOff
+	pathOnlyDropMode
+)
+
+func snapshotPathOnly(stats *pathOnlyStats) pathOnlySnapshot {
+	if stats == nil {
+		return pathOnlySnapshot{}
+	}
+	return pathOnlySnapshot{
+		updates: stats.updates.Load(),
+		drops:   stats.drops.Load(),
+		stale:   stats.stale.Load(),
+		noSNR:   stats.noSNR.Load(),
+		noGrid:  stats.noGrid.Load(),
+		badH3:   stats.badH3.Load(),
+		badBand: stats.badBand.Load(),
+		off:     stats.off.Load(),
+		mode:    stats.mode.Load(),
+	}
+}
+
+func diffPathOnly(current, prev pathOnlySnapshot) pathOnlySnapshot {
+	return pathOnlySnapshot{
+		updates: diffCounterRaw(current.updates, prev.updates),
+		drops:   diffCounterRaw(current.drops, prev.drops),
+		stale:   diffCounterRaw(current.stale, prev.stale),
+		noSNR:   diffCounterRaw(current.noSNR, prev.noSNR),
+		noGrid:  diffCounterRaw(current.noGrid, prev.noGrid),
+		badH3:   diffCounterRaw(current.badH3, prev.badH3),
+		badBand: diffCounterRaw(current.badBand, prev.badBand),
+		off:     diffCounterRaw(current.off, prev.off),
+		mode:    diffCounterRaw(current.mode, prev.mode),
+	}
+}
+
+// processPSKRPathOnlySpots receives path-only spots from PSKReporter and updates the path predictor.
+// Purpose: Use WSPR (and other path-only modes) exclusively for path reliability ingestion.
+// Key aspects: No CTY validation, no dedup/broadcast/archive; drops on missing grids or disabled predictor.
+// Upstream: PSKReporter path-only channel.
+// Downstream: pathreliability.Predictor.Update, pathReportMetrics.
+func processPSKRPathOnlySpots(client *pskreporter.Client, predictor *pathreliability.Predictor, pathReport *pathReportMetrics, stats *pathOnlyStats, spotPolicy config.SpotPolicy) {
+	if client == nil {
+		return
+	}
+	spotChan := client.GetPathOnlyChannel()
+	if spotChan == nil {
+		return
+	}
+	for s := range spotChan {
+		if s == nil {
+			continue
+		}
+		if isStale(s, spotPolicy) {
+			recordPathOnlyDrop(stats, pathOnlyDropStale)
+			continue
+		}
+		if predictor == nil || !predictor.Config().Enabled {
+			recordPathOnlyDrop(stats, pathOnlyDropOff)
+			continue
+		}
+		if !s.HasReport {
+			recordPathOnlyDrop(stats, pathOnlyDropNoSNR)
+			continue
+		}
+		mode := s.ModeNorm
+		if strings.TrimSpace(mode) == "" {
+			mode = s.Mode
+		}
+		ft8, ok := pathreliability.FT8Equivalent(mode, s.Report, predictor.Config())
+		if !ok {
+			recordPathOnlyDrop(stats, pathOnlyDropMode)
+			continue
+		}
+		bucket := pathreliability.BucketForIngest(mode)
+		if bucket == pathreliability.BucketNone {
+			recordPathOnlyDrop(stats, pathOnlyDropMode)
+			continue
+		}
+		dxGrid := strings.TrimSpace(s.DXMetadata.Grid)
+		deGrid := strings.TrimSpace(s.DEMetadata.Grid)
+		if dxGrid == "" || deGrid == "" {
+			recordPathOnlyDrop(stats, pathOnlyDropNoGrid)
+			continue
+		}
+		dxCell := pathreliability.EncodeCell(dxGrid)
+		deCell := pathreliability.EncodeCell(deGrid)
+		dxCoarse := pathreliability.EncodeCoarseCell(dxGrid)
+		deCoarse := pathreliability.EncodeCoarseCell(deGrid)
+		if (dxCell == pathreliability.InvalidCell || deCell == pathreliability.InvalidCell) &&
+			(dxCoarse == pathreliability.InvalidCell || deCoarse == pathreliability.InvalidCell) {
+			recordPathOnlyDrop(stats, pathOnlyDropBadH3)
+			continue
+		}
+		band := s.BandNorm
+		if strings.TrimSpace(band) == "" {
+			band = s.Band
+		}
+		if strings.TrimSpace(band) == "" || band == "???" {
+			band = spot.FreqToBand(s.Frequency)
+		}
+		band = strings.TrimSpace(spot.NormalizeBand(band))
+		if band == "" || band == "???" {
+			recordPathOnlyDrop(stats, pathOnlyDropBadBand)
+			continue
+		}
+		spotTime := s.Time.UTC()
+		if spotTime.IsZero() {
+			spotTime = time.Now().UTC()
+		}
+		if pathReport != nil {
+			pathReport.Observe(s, spotTime)
+		}
+		// Spot SNR reflects DX -> DE (spotter is the receiver).
+		predictor.Update(bucket, pathreliability.CellID(deCell), pathreliability.CellID(dxCell), deCoarse, dxCoarse, band, ft8, 1.0, spotTime, s.IsBeacon)
+		if stats != nil {
+			stats.updates.Add(1)
+		}
+	}
+}
+
+// Purpose: Record a path-only drop and its reason.
+// Key aspects: Increments total drop counter alongside reason-specific counter.
+// Upstream: processPSKRPathOnlySpots drop paths.
+// Downstream: atomic counters in pathOnlyStats.
+func recordPathOnlyDrop(stats *pathOnlyStats, reason pathOnlyDropReason) {
+	if stats == nil {
+		return
+	}
+	stats.drops.Add(1)
+	switch reason {
+	case pathOnlyDropStale:
+		stats.stale.Add(1)
+	case pathOnlyDropNoSNR:
+		stats.noSNR.Add(1)
+	case pathOnlyDropNoGrid:
+		stats.noGrid.Add(1)
+	case pathOnlyDropBadH3:
+		stats.badH3.Add(1)
+	case pathOnlyDropBadBand:
+		stats.badBand.Add(1)
+	case pathOnlyDropOff:
+		stats.off.Add(1)
+	case pathOnlyDropMode:
+		stats.mode.Add(1)
 	}
 }
 
@@ -3327,7 +3536,7 @@ func formatGridLine(metrics *gridMetrics, store *gridStoreHandle, predictor *pat
 	if predictor != nil {
 		stats := predictor.Stats(time.Now().UTC().UTC())
 		if stats.CombinedFine > 0 || stats.CombinedCoarse > 0 {
-			propPairs = fmt.Sprintf(" | Pairs c %s/%s",
+			propPairs = fmt.Sprintf(" | Path pairs %s (L2) / %s (L1)",
 				humanize.Comma(int64(stats.CombinedFine)),
 				humanize.Comma(int64(stats.CombinedCoarse)))
 		}
@@ -3433,6 +3642,40 @@ func formatFCCLine(fcc *fccSnapshot) string {
 		ts = fcc.UpdatedAt.UTC().Format("01-02-2006 15:04:05")
 	}
 	return fmt.Sprintf("FCC ULS: %s records. Last updated %s", humanize.Comma(fcc.HDCount), ts)
+}
+
+// Purpose: Format combined CTY + FCC last-updated line for stats output.
+// Key aspects: Omits FCC record counts; always uses UTC timestamps.
+// Upstream: displayStatsWithFCC.
+// Downstream: time formatting.
+func formatDataLineOrPlaceholder(ctyLookup func() *cty.CTYDatabase, state *ctyRefreshState, fcc *fccSnapshot) string {
+	ctyPart := "CTY (not loaded)"
+	if ctyLookup != nil && ctyLookup() != nil {
+		ctyPart = "CTY (loaded)"
+		if state != nil {
+			if ts := state.lastSuccess.Load(); ts > 0 {
+				ctyPart = "CTY " + formatUpdatedTimestamp(time.Unix(ts, 0))
+			} else {
+				ctyPart = "CTY (loaded, time unknown)"
+			}
+		}
+	}
+	fccPart := "FCC ULS (not available)"
+	if fcc != nil {
+		if !fcc.UpdatedAt.IsZero() {
+			fccPart = "FCC ULS " + formatUpdatedTimestamp(fcc.UpdatedAt)
+		} else {
+			fccPart = "FCC ULS (time unknown)"
+		}
+	}
+	return fmt.Sprintf("Data: %s | %s", ctyPart, fccPart)
+}
+
+func formatUpdatedTimestamp(ts time.Time) string {
+	if ts.IsZero() {
+		return "unknown"
+	}
+	return ts.UTC().Format("01-02-2006 15:04Z")
 }
 
 // Purpose: Format grid status or a placeholder when disabled/unavailable.
@@ -4624,6 +4867,17 @@ func diffCounter(current, previous map[string]uint64, key string) uint64 {
 		return cur - prev
 	}
 	return cur
+}
+
+// Purpose: Compute per-interval delta for a monotonic counter.
+// Key aspects: Returns current when counter resets.
+// Upstream: path-only stats deltas.
+// Downstream: arithmetic only.
+func diffCounterRaw(current, previous uint64) uint64 {
+	if current >= previous {
+		return current - previous
+	}
+	return current
 }
 
 // Purpose: Compute per-interval delta for a source+mode counter.

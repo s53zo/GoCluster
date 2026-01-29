@@ -145,6 +145,9 @@ func TestFT8EquivalentBandwidthOffsets(t *testing.T) {
 	if got, ok := FT8Equivalent("PSK", 0, cfg); !ok || got != -7 {
 		t.Fatalf("expected PSK 0 dB to map to -7 dB, got %v (ok=%v)", got, ok)
 	}
+	if got, ok := FT8Equivalent("WSPR", 0, cfg); !ok || got != 26 {
+		t.Fatalf("expected WSPR 0 dB to map to 26 dB, got %v (ok=%v)", got, ok)
+	}
 	if got, ok := FT8Equivalent("FT4", 0, cfg); !ok || got != -3 {
 		t.Fatalf("expected FT4 0 dB to map to -3 dB, got %v (ok=%v)", got, ok)
 	}
@@ -159,6 +162,9 @@ func TestBucketForIngest(t *testing.T) {
 	}
 	if got := BucketForIngest("CW"); got != BucketCombined {
 		t.Fatalf("expected CW to map to combined bucket")
+	}
+	if got := BucketForIngest("WSPR"); got != BucketCombined {
+		t.Fatalf("expected WSPR to map to combined bucket")
 	}
 	if got := BucketForIngest("USB"); got != BucketNone {
 		t.Fatalf("expected USB to skip ingest")

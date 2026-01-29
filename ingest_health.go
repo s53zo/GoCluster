@@ -28,9 +28,12 @@ type ingestHealthSnapshot struct {
 	MQTTQueueCap         int
 	SpotQueueLen         int
 	SpotQueueCap         int
+	PathOnlyQueueLen     int
+	PathOnlyQueueCap     int
 	PayloadDrops         uint64
 	PayloadTooLarge      uint64
 	SpotDrops            uint64
+	PathOnlyDrops        uint64
 	ParseErrors          uint64
 	MQTTDropsQoS0        uint64
 	MQTTQoS12Timeouts    uint64
@@ -133,6 +136,10 @@ func formatIngestHealthLine(name string, snap ingestHealthSnapshot, idle bool, n
 		b.WriteString(" spot_q=")
 		b.WriteString(fmt.Sprintf("%d/%d", snap.SpotQueueLen, snap.SpotQueueCap))
 	}
+	if snap.PathOnlyQueueCap > 0 {
+		b.WriteString(" path_only_q=")
+		b.WriteString(fmt.Sprintf("%d/%d", snap.PathOnlyQueueLen, snap.PathOnlyQueueCap))
+	}
 	var dropParts []string
 	if snap.PayloadDrops > 0 {
 		dropParts = append(dropParts, fmt.Sprintf("payload=%d", snap.PayloadDrops))
@@ -142,6 +149,9 @@ func formatIngestHealthLine(name string, snap ingestHealthSnapshot, idle bool, n
 	}
 	if snap.SpotDrops > 0 {
 		dropParts = append(dropParts, fmt.Sprintf("spot=%d", snap.SpotDrops))
+	}
+	if snap.PathOnlyDrops > 0 {
+		dropParts = append(dropParts, fmt.Sprintf("path_only=%d", snap.PathOnlyDrops))
 	}
 	if snap.ParseErrors > 0 {
 		dropParts = append(dropParts, fmt.Sprintf("parse=%d", snap.ParseErrors))
@@ -219,9 +229,12 @@ func pskReporterHealthSource(name string, client *pskreporter.Client) ingestHeal
 				MQTTQueueCap:         snap.MQTTInboundQueueCap,
 				SpotQueueLen:         snap.SpotQueueLen,
 				SpotQueueCap:         snap.SpotQueueCap,
+				PathOnlyQueueLen:     snap.PathOnlyQueueLen,
+				PathOnlyQueueCap:     snap.PathOnlyQueueCap,
 				PayloadDrops:         snap.PayloadDrops,
 				PayloadTooLarge:      snap.PayloadTooLarge,
 				SpotDrops:            snap.SpotDrops,
+				PathOnlyDrops:        snap.PathOnlyDrops,
 				ParseErrors:          snap.ParseErrors,
 				MQTTDropsQoS0:        snap.MQTTInboundDropsQoS0,
 				MQTTQoS12Timeouts:    snap.MQTTInboundQoS12Timeouts,

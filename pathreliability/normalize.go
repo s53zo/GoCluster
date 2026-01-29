@@ -19,6 +19,8 @@ func FT8Equivalent(mode string, snr int, cfg Config) (float64, bool) {
 		return float64(snr) + cfg.ModeOffsets.RTTY, true
 	case "PSK":
 		return float64(snr) + cfg.ModeOffsets.PSK, true
+	case "WSPR":
+		return float64(snr) + cfg.ModeOffsets.WSPR, true
 	default:
 		return 0, false
 	}
