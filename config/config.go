@@ -69,6 +69,7 @@ type Config struct {
 	Telnet              TelnetConfig         `yaml:"telnet"`
 	UI                  UIConfig             `yaml:"ui"`
 	Logging             LoggingConfig        `yaml:"logging"`
+	PropReport          PropReportConfig     `yaml:"prop_report"`
 	RBN                 RBNConfig            `yaml:"rbn"`
 	RBNDigital          RBNConfig            `yaml:"rbn_digital"`
 	HumanTelnet         RBNConfig            `yaml:"human_telnet"`
@@ -272,6 +273,11 @@ type LoggingConfig struct {
 	Enabled       bool   `yaml:"enabled"`
 	Dir           string `yaml:"dir"`
 	RetentionDays int    `yaml:"retention_days"`
+}
+
+// PropReportConfig controls automatic propagation report generation on log rotation.
+type PropReportConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // UIPaneLines bounds history depth for ANSI and visible pane heights for tview.

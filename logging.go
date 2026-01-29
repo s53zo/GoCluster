@@ -51,8 +51,10 @@ type dailyFileSink struct {
 	dir           string
 	retentionDays int
 	currentDate   string
+	currentPath   string
 	file          *os.File
 	lastErrorAt   time.Time
+	rotateHook    logRotateHook
 	mu            sync.Mutex
 }
 
@@ -91,17 +93,27 @@ func (s *dailyFileSink) WriteLine(line string, now time.Time) {
 	now = now.UTC()
 	date := now.Format(logFileDateLayout)
 
+	var hook logRotateHook
+	var prevDate time.Time
+	var prevPath string
+	var newPath string
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if s.file == nil || s.currentDate != date {
-		s.rotateLocked(date, now)
+		hook, prevDate, prevPath, newPath = s.rotateLocked(date, now)
 	}
 	if s.file == nil {
+		s.mu.Unlock()
 		return
 	}
 	if _, err := s.file.WriteString(formatLogTimestamp(now) + " " + line + "\n"); err != nil {
 		s.reportErrorLocked(now, fmt.Errorf("write failed: %w", err))
+	}
+	s.mu.Unlock()
+
+	if hook != nil && !prevDate.IsZero() {
+		hook(prevDate, prevPath, newPath)
 	}
 }
 
@@ -121,29 +133,56 @@ func (s *dailyFileSink) Close() error {
 	err := s.file.Close()
 	s.file = nil
 	s.currentDate = ""
+	s.currentPath = ""
 	return err
 }
 
-func (s *dailyFileSink) rotateLocked(date string, now time.Time) {
+type logRotateHook func(prevDate time.Time, prevPath, newPath string)
+
+func (s *dailyFileSink) SetRotateHook(hook logRotateHook) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.rotateHook = hook
+	s.mu.Unlock()
+}
+
+func (s *dailyFileSink) rotateLocked(date string, now time.Time) (logRotateHook, time.Time, string, string) {
+	var hook logRotateHook
+	var prevDate time.Time
+	var prevPath string
+	var newPath string
+	if s.currentDate != "" && s.currentDate != date {
+		parsed, err := time.ParseInLocation(logFileDateLayout, s.currentDate, time.UTC)
+		if err == nil {
+			prevDate = parsed
+		}
+		prevPath = s.currentPath
+		hook = s.rotateHook
+	}
 	if s.file != nil {
 		_ = s.file.Close()
 		s.file = nil
 	}
 	if err := os.MkdirAll(s.dir, 0755); err != nil {
 		s.reportErrorLocked(now, fmt.Errorf("failed to create log directory %q: %w", s.dir, err))
-		return
+		return nil, time.Time{}, "", ""
 	}
 	path := filepath.Join(s.dir, logFileNameForDate(now))
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		s.reportErrorLocked(now, fmt.Errorf("open failed for %s: %w", path, err))
-		return
+		return nil, time.Time{}, "", ""
 	}
 	s.file = file
 	s.currentDate = date
+	s.currentPath = path
+	newPath = path
 	if err := cleanupOldLogs(s.dir, now, s.retentionDays); err != nil {
 		s.reportErrorLocked(now, fmt.Errorf("cleanup failed: %w", err))
 	}
+	return hook, prevDate, prevPath, newPath
 }
 
 func (s *dailyFileSink) reportErrorLocked(now time.Time, err error) {
@@ -220,6 +259,26 @@ func (f *logFanout) SetFileSink(sink lineSink) {
 	f.mu.Lock()
 	f.file = sink
 	f.mu.Unlock()
+}
+
+type rotateHookSetter interface {
+	SetRotateHook(hook logRotateHook)
+}
+
+// Purpose: Attach a rotate hook to the file sink if supported.
+// Key aspects: No-op when file logging is disabled or sink does not support hooks.
+// Upstream: main when enabling async prop report generation on rotation.
+// Downstream: dailyFileSink.SetRotateHook.
+func (f *logFanout) SetRotateHook(hook logRotateHook) {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	sink := f.file
+	f.mu.Unlock()
+	if setter, ok := sink.(rotateHookSetter); ok {
+		setter.SetRotateHook(hook)
+	}
 }
 
 // Purpose: Fan out log output to console/UI and file sinks.

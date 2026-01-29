@@ -416,7 +416,35 @@ func main() {
 
 	log.Printf("DX Cluster Server v%s starting...", Version)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	var propScheduler *propReportScheduler
+	if cfg.PropReport.Enabled {
+		if !cfg.Logging.Enabled {
+			log.Printf("Prop report enabled, but logging is disabled; no log rotation events will trigger reports")
+		}
+		propRunner := newPropReportGenerator(configSource, log.Default())
+		propScheduler = newPropReportScheduler(true, propRunner, log.Default(), propReportTimeout)
+		propScheduler.Start(ctx)
+		if logMux != nil {
+			logMux.SetRotateHook(func(prevDate time.Time, prevPath, newPath string) {
+				if prevDate.IsZero() {
+					return
+				}
+				propScheduler.Enqueue(propReportJob{
+					Date:    prevDate,
+					LogPath: prevPath,
+				})
+			})
+		}
+		log.Printf("Prop report scheduler enabled")
+	} else {
+		log.Printf("Prop report scheduler disabled")
+	}
+	defer func() {
+		cancel()
+		if propScheduler != nil {
+			propScheduler.Wait()
+		}
+	}()
 	startLicenseCacheSweeper(ctx, licCache)
 	if pathCfg.Enabled && pathPredictor != nil {
 		go func() {

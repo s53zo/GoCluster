@@ -116,11 +116,11 @@ func (p *Predictor) mergeFromStore(store *Store, userCell, dxCell CellID, userCo
 	}
 	// Receive (DX->user): receiver=user, sender=dx.
 	rFine, rCoarse := store.Lookup(userCell, dxCell, userCoarse, dxCoarse, band, now)
-	receive := SelectSample(rFine, rCoarse, p.cfg.MinFineWeight)
+	receive := SelectSample(rFine, rCoarse, p.cfg.MinFineWeight, p.cfg.FineOnlyWeight)
 
 	// Transmit (user->DX): receiver=dx, sender=user.
 	tFine, tCoarse := store.Lookup(dxCell, userCell, dxCoarse, userCoarse, band, now)
-	transmit := SelectSample(tFine, tCoarse, p.cfg.MinFineWeight)
+	transmit := SelectSample(tFine, tCoarse, p.cfg.MinFineWeight, p.cfg.FineOnlyWeight)
 
 	return mergeSamples(receive, transmit, p.cfg, noisePenalty)
 }

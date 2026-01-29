@@ -20,6 +20,7 @@ type Config struct {
 	StaleAfterHalfLifeMultiplier float64                    `yaml:"stale_after_half_life_multiplier"` // stale = k * half-life (per band)
 	MinEffectiveWeight           float64                    `yaml:"min_effective_weight"`             // minimum decayed weight to report
 	MinFineWeight                float64                    `yaml:"min_fine_weight"`                  // minimum fine weight to blend with coarse
+	FineOnlyWeight               float64                    `yaml:"fine_only_weight"`                 // minimum fine weight to use fine only
 	ReverseHintDiscount          float64                    `yaml:"reverse_hint_discount"`            // multiplier when using reverse direction
 	MergeReceiveWeight           float64                    `yaml:"merge_receive_weight"`             // merge weight for DX->user
 	MergeTransmitWeight          float64                    `yaml:"merge_transmit_weight"`            // merge weight for user->DX
@@ -168,6 +169,7 @@ func DefaultConfig() Config {
 		StaleAfterHalfLifeMultiplier: 5,
 		MinEffectiveWeight:           1.0,
 		MinFineWeight:                5.0,
+		FineOnlyWeight:               20.0,
 		ReverseHintDiscount:          0.5,
 		MergeReceiveWeight:           0.6,
 		MergeTransmitWeight:          0.4,
@@ -241,6 +243,12 @@ func (c *Config) normalize() {
 	}
 	if c.MinFineWeight <= 0 {
 		c.MinFineWeight = def.MinFineWeight
+	}
+	if c.FineOnlyWeight <= 0 {
+		c.FineOnlyWeight = def.FineOnlyWeight
+	}
+	if c.FineOnlyWeight < c.MinFineWeight {
+		c.FineOnlyWeight = c.MinFineWeight
 	}
 	if c.ReverseHintDiscount <= 0 || c.ReverseHintDiscount > 1 {
 		c.ReverseHintDiscount = def.ReverseHintDiscount

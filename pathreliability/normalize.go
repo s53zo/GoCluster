@@ -90,10 +90,11 @@ func thresholdsForModePower(mode string, cfg Config) GlyphThresholdsPower {
 	return cfg.glyphThresholdsPower
 }
 
-// SelectSample blends fine/coarse samples by confidence weight.
+// SelectSample chooses or blends fine/coarse samples by confidence weight.
 // If fine is below minFineWeight, coarse wins to prevent weak fine data
-// from overriding stronger regional evidence.
-func SelectSample(fine Sample, coarse Sample, minFineWeight float64) Sample {
+// from overriding stronger regional evidence. If fine meets fineOnlyWeight,
+// fine wins outright to preserve local detail.
+func SelectSample(fine Sample, coarse Sample, minFineWeight float64, fineOnlyWeight float64) Sample {
 	coarseCandidate := coarse
 	hasFine := fine.Weight > 0
 	hasCoarse := coarseCandidate.Weight > 0
@@ -104,6 +105,9 @@ func SelectSample(fine Sample, coarse Sample, minFineWeight float64) Sample {
 		return coarseCandidate
 	case !hasFine && !hasCoarse:
 		return Sample{}
+	}
+	if fineOnlyWeight > 0 && fine.Weight >= fineOnlyWeight {
+		return fine
 	}
 	if minFineWeight > 0 && fine.Weight < minFineWeight {
 		return coarseCandidate

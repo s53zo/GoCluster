@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"dxcluster/internal/propreport"
 )
 
 func TestParseLogAllowsLargeLines(t *testing.T) {
@@ -15,7 +17,7 @@ func TestParseLogAllowsLargeLines(t *testing.T) {
 	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
 	}
-	entries, err := parseLog(path)
+	entries, err := propreport.ParseLog(path)
 	if err != nil {
 		t.Fatalf("parse log: %v", err)
 	}
@@ -38,7 +40,7 @@ func TestParseLogPreservesLineBoundaries(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
 	}
-	entries, err := parseLog(path)
+	entries, err := propreport.ParseLog(path)
 	if err != nil {
 		t.Fatalf("parse log: %v", err)
 	}

@@ -60,3 +60,43 @@ func TestCleanupOldLogs(t *testing.T) {
 		}
 	}
 }
+
+func TestDailyFileSinkRotateHook(t *testing.T) {
+	dir := t.TempDir()
+	sink, err := newDailyFileSink(dir, 1)
+	if err != nil {
+		t.Fatalf("newDailyFileSink: %v", err)
+	}
+	defer sink.Close()
+
+	var gotPrevDate time.Time
+	var gotPrevPath string
+	var gotNewPath string
+	sink.SetRotateHook(func(prevDate time.Time, prevPath, newPath string) {
+		gotPrevDate = prevDate
+		gotPrevPath = prevPath
+		gotNewPath = newPath
+	})
+
+	day1 := time.Date(2026, time.January, 22, 12, 0, 0, 0, time.UTC)
+	day2 := day1.Add(24 * time.Hour)
+
+	sink.WriteLine("first", day1)
+	sink.WriteLine("second", day2)
+
+	if gotPrevDate.IsZero() {
+		t.Fatalf("expected rotate hook to capture previous date")
+	}
+	if gotPrevDate.Year() != day1.Year() || gotPrevDate.Month() != day1.Month() || gotPrevDate.Day() != day1.Day() {
+		t.Fatalf("unexpected prev date: %s", gotPrevDate.Format(time.RFC3339))
+	}
+	if gotPrevPath == "" || gotNewPath == "" {
+		t.Fatalf("expected prev/new log paths to be set")
+	}
+	if filepath.Base(gotPrevPath) != "22-Jan-2026.log" {
+		t.Fatalf("unexpected prev log path: %s", gotPrevPath)
+	}
+	if filepath.Base(gotNewPath) != "23-Jan-2026.log" {
+		t.Fatalf("unexpected new log path: %s", gotNewPath)
+	}
+}
