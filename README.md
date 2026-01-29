@@ -177,6 +177,7 @@ Telnet clients can issue commands via the prompt once logged in. The processor, 
 - `SHOW DX [N]` / `SHOW/DX [N]` - alias of `SHOW MYDX`, streaming the most recent `N` filtered spots (`N` ranges from 1-250, default 50). Archive-only: if the Pebble archive is unavailable, the command returns `No spots available.` The command accepts the alias `SH DX` (or `SH/DX` in cc) as well.
 - `SHOW MYDX [N]` - stream the most recent `N` spots that match your filters (self-spots always pass; `N` ranges from 1-250, default 50). Archive-only: if the Pebble archive is unavailable, the command returns `No spots available.` Very narrow filters may return fewer than `N` results.
 - `SET DIAG <ON|OFF>` - replace the comment field with a diagnostic tag: `<source><DEDXCC><DEGRID2><band><policy>`, where source is `R` (RBN), `P` (PSK), or `H` (human/peer) and policy is `F`/`S`.
+- `SET SOLAR <15|30|60|OFF>` - opt into wall-clock aligned solar summaries (OFF by default).
 - `BYE`, `QUIT`, `EXIT` - request a graceful logout; the server replies with `73!` and closes the connection.
 
 Filter management commands use a table-driven engine in `telnet/server.go` with explicit dialect selection. The default `go` dialect uses `PASS`/`REJECT`/`SHOW FILTER`. A CC-style subset is available via `DIALECT cc` (aliases: `SET/ANN`, `SET/NOANN`, `SET/BEACON`, `SET/NOBEACON`, `SET/WWV`, `SET/NOWWV`, `SET/WCY`, `SET/NOWCY`, `SET/SELF`, `SET/NOSELF`, `SET/SKIMMER`, `SET/NOSKIMMER`, `SET/<MODE>`, `SET/NO<MODE>`, `SET/FILTER DXBM/PASS|REJECT <band>` mapping CC DXBM bands to our band filters, `SET/NOFILTER`, plus `SET/FILTER`/`UNSET/FILTER`/`SHOW/FILTER`). `DIALECT LIST` shows the available dialects, the chosen dialect is persisted per callsign along with filter state, and HELP renders the verbs for the active dialect. Classic/go commands operate on each client's `filter.Filter` and fall into `PASS`, `REJECT`, and `SHOW FILTER` groups:
@@ -469,10 +470,26 @@ Operational guidance: enable `auto_delete_corrupt_db` only if the archive is tru
 
 - Maintains a single directional FT8-equivalent bucket family per path: FT8/FT4/CW/RTTY/PSK all feed the same buckets. Voice modes (LSB/USB) are display-only. Buckets store linear power (FT8-equivalent) with exponential decay, using H3 res-2 buckets plus coarse H3 res-1 buckets, per-band half-lives, and staleness purging (per-band stale window).
 - H3 size reference (average edge length): res-2 ≈ 158 km; res-1 ≈ 418 km.
+- Maidenhead grids (4–6 chars) are converted to a representative lat/lon by taking the center of the grid square (4‑char: 2° × 1°). That point is mapped into H3 res‑2 (fine/local) and res‑1 (coarse/regional) cells so we can blend local and regional evidence deterministically.
+- H3 cells are stored as stable 16‑bit proxy IDs via precomputed tables in `data/h3`. If grids are invalid or H3 tables are unavailable, the path is treated as insufficient data.
 - Telnet lines show a single glyph in the comment area when enabled, reflecting a merged path estimate adjusted for the user's noise class. Glyph symbols are configurable via `glyph_symbols` (defaults: `+` high, `=` medium, `-` low, `!` unlikely); insufficient data uses `glyph_symbols.insufficient` (default `?`).
 - Commands: `SET GRID <grid>` to set/confirm your location (4-6 char), `SET NOISE <QUIET|RURAL|SUBURBAN|URBAN|INDUSTRIAL>` to apply a DX->you noise penalty. Defaults: QUIET/0 dB.
 - System log: every 5 minutes emits `Path predictions (5m)` (combined vs insufficient, with no-sample vs low-weight split), `Path buckets (5m)` (per-band bucket counts), and `Path weight dist (5m)` (per-band combined weight histogram).
 - Config: `data/config/path_reliability.yaml` controls clamps (-25..15 dB FT8-equiv), per-band half-life, stale window multiplier (`stale_after_half_life_multiplier`), min effective weights (`min_effective_weight`), min fine weight blending (`min_fine_weight`), reverse hint discount, merge weights, per-mode glyph thresholds (`mode_thresholds` with `high/medium/low/unlikely` keys, including LSB/USB), fallback `glyph_thresholds`, glyph symbols (`glyph_symbols`), beacon weight cap (default 1), mode offsets (FT4/CW/RTTY/PSK; CW/RTTY/PSK defaults assume 500 Hz -> 2500 Hz bandwidth correction of -7 dB), and noise offsets.
+
+## Propagation Glyphs (operator meaning)
+- We build a path score from recent spots on each band, weighted so newer reports matter most and noise environment (QUIET/RURAL/SUBURBAN/URBAN/INDUSTRIAL) is accounted for.
+- The score maps to a likelihood glyph: High / Medium / Low / Unlikely. If there is not enough data, we show the Insufficient glyph instead of guessing.
+- Only after a normal glyph is chosen do we check for rare space‑weather overrides.
+- `R` (radio blackout) appears only when the path is mostly sunlit and the X‑ray level meets the configured R‑threshold; it is band‑specific.
+- `G` (geomagnetic storm) appears only when the path is high‑latitude and Kp meets the configured G‑threshold; it is band‑specific.
+- Overrides are intentional and rare: they mean strong, path‑relevant space weather is likely to invalidate the normal estimate.
+
+## Solar Weather Overrides (optional)
+- Optional single-slot glyph overrides for strong space-weather events: `R` (radio blackout, R2+ thresholds) and `G` (geomagnetic storm, G2+ thresholds). Overrides only appear when the event is active *and* the path is relevant (sunlit fraction for `R`, high-latitude exposure for `G`), and they never replace the insufficient-data symbol.
+- Overrides are band-aware: each R/G severity level has an explicit band list, and unknown/empty bands never receive overrides. R has precedence per-band; if a band is not eligible for the active R level, an eligible G can still apply.
+- Inputs: GOES X-ray primary feed (corrected 0.1–0.8 nm flux) and observed 3-hour Kp. Fetches run every 60 seconds with conditional GET and in-memory caching.
+- Config: `data/config/solarweather.yaml` (disabled by default) pins thresholds, band lists, hold-down windows, hysteresis rules, and gating tolerances with detailed operator notes.
 
 ## Configuration Loader Defaults
 

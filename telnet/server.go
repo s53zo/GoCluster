@@ -49,6 +49,7 @@ import (
 	"dxcluster/filter"
 	"dxcluster/pathreliability"
 	"dxcluster/reputation"
+	"dxcluster/solarweather"
 	"dxcluster/spot"
 	ztelnet "github.com/ziutek/telnet"
 )
@@ -167,6 +168,7 @@ type Server struct {
 	startTime            time.Time                         // Process start time for uptime tokens
 	pathPredictor        *pathreliability.Predictor        // Optional path reliability predictor
 	pathDisplay          bool                              // Toggle glyph rendering
+	solarWeather         *solarweather.Manager             // Optional solar/geomagnetic override evaluator
 	noiseOffsets         map[string]float64                // Noise class lookup
 	gridLookup           func(string) (string, bool, bool) // Optional grid lookup from store
 	dedupeFastEnabled    bool                              // Fast secondary dedupe policy enabled
@@ -178,6 +180,8 @@ type Server struct {
 	pathPredInsufficient atomic.Uint64                     // Predictions with insufficient data
 	pathPredNoSample     atomic.Uint64                     // Insufficient predictions with no samples
 	pathPredLowWeight    atomic.Uint64                     // Insufficient predictions below min weight
+	pathPredOverrideR    atomic.Uint64                     // R overrides applied
+	pathPredOverrideG    atomic.Uint64                     // G overrides applied
 }
 
 // Client represents a connected telnet client session.
@@ -210,6 +214,10 @@ type Client struct {
 	skipNextEOL  bool                   // Consume a single LF/NUL after CR (RFC 854 compliance)
 	dedupePolicy atomic.Uint32          // Secondary dedupe policy (fast/med/slow)
 	diagEnabled  atomic.Bool            // Diagnostic comment override enabled
+	// solarMu guards solar summary settings shared across goroutines.
+	solarMu             sync.Mutex
+	solarSummaryMinutes int
+	solarNextSummaryAt  time.Time
 
 	// filterMu guards filter, which is read by telnet broadcast workers while the
 	// client session goroutine mutates it in response to PASS/REJECT commands.
@@ -267,6 +275,7 @@ func (c *Client) saveFilter() error {
 		Grid:         strings.ToUpper(strings.TrimSpace(state.grid)),
 		NoiseClass:   strings.ToUpper(strings.TrimSpace(state.noiseClass)),
 	}
+	record.SolarSummaryMinutes = c.getSolarSummaryMinutes()
 	if existing, err := filter.LoadUserRecord(callsign); err == nil {
 		record.RecentIPs = filter.MergeRecentIPs(record.RecentIPs, existing.RecentIPs)
 	}
@@ -290,6 +299,58 @@ func (c *Client) getDedupePolicy() dedupePolicy {
 		return dedupePolicyFast
 	}
 	return dedupePolicy(c.dedupePolicy.Load())
+}
+
+func (c *Client) getSolarSummaryMinutes() int {
+	if c == nil {
+		return 0
+	}
+	c.solarMu.Lock()
+	defer c.solarMu.Unlock()
+	return c.solarSummaryMinutes
+}
+
+func (c *Client) setSolarSummaryMinutes(minutes int, now time.Time) {
+	if c == nil {
+		return
+	}
+	c.solarMu.Lock()
+	defer c.solarMu.Unlock()
+	if minutes <= 0 {
+		c.solarSummaryMinutes = 0
+		c.solarNextSummaryAt = time.Time{}
+		return
+	}
+	c.solarSummaryMinutes = minutes
+	c.solarNextSummaryAt = nextSolarSummaryAt(now, minutes)
+}
+
+func (c *Client) nextSolarSummaryAt(now time.Time) (time.Time, bool) {
+	if c == nil {
+		return time.Time{}, false
+	}
+	c.solarMu.Lock()
+	defer c.solarMu.Unlock()
+	if c.solarSummaryMinutes <= 0 {
+		return time.Time{}, false
+	}
+	if c.solarNextSummaryAt.IsZero() {
+		c.solarNextSummaryAt = nextSolarSummaryAt(now, c.solarSummaryMinutes)
+	}
+	return c.solarNextSummaryAt, true
+}
+
+func (c *Client) advanceSolarSummaryAt(now time.Time) {
+	if c == nil {
+		return
+	}
+	c.solarMu.Lock()
+	defer c.solarMu.Unlock()
+	if c.solarSummaryMinutes <= 0 {
+		c.solarNextSummaryAt = time.Time{}
+		return
+	}
+	c.solarNextSummaryAt = nextSolarSummaryAt(now, c.solarSummaryMinutes)
 }
 
 // updateFilter applies a mutation to the per-client Filter while holding the
@@ -595,6 +656,36 @@ func (s *Server) handleDiagCommand(client *Client, line string) (string, bool) {
 	}
 }
 
+// handleSolarCommand processes SET SOLAR commands.
+func (s *Server) handleSolarCommand(client *Client, line string) (string, bool) {
+	if client == nil {
+		return "", false
+	}
+	upper := strings.Fields(strings.ToUpper(strings.TrimSpace(line)))
+	if len(upper) < 2 || upper[0] != "SET" || upper[1] != "SOLAR" {
+		return "", false
+	}
+	if len(upper) < 3 {
+		return "Usage: SET SOLAR <15|30|60|OFF>\n", true
+	}
+	minutes, ok := parseSolarSummaryMinutes(upper[2])
+	if !ok {
+		return "Usage: SET SOLAR <15|30|60|OFF>\n", true
+	}
+	now := time.Now().UTC()
+	client.setSolarSummaryMinutes(minutes, now)
+	if err := client.saveFilter(); err != nil {
+		if minutes == 0 {
+			return fmt.Sprintf("Solar summaries: OFF (warning: failed to persist: %v)\n", err), true
+		}
+		return fmt.Sprintf("Solar summaries: every %d minutes (warning: failed to persist: %v)\n", minutes, err), true
+	}
+	if minutes == 0 {
+		return "Solar summaries: OFF\n", true
+	}
+	return fmt.Sprintf("Solar summaries: every %d minutes\n", minutes), true
+}
+
 // handleDedupeCommand processes SET/SHOW DEDUPE commands.
 func (s *Server) handleDedupeCommand(client *Client, line string) (string, bool) {
 	if client == nil || s == nil {
@@ -648,6 +739,32 @@ func (s *Server) handleDedupeCommand(client *Client, line string) (string, bool)
 
 func shouldLogQueueDrop(total uint64) bool {
 	return total == 1 || total%100 == 0
+}
+
+func parseSolarSummaryMinutes(token string) (int, bool) {
+	switch strings.TrimSpace(strings.ToUpper(token)) {
+	case "OFF":
+		return 0, true
+	case "15":
+		return 15, true
+	case "30":
+		return 30, true
+	case "60":
+		return 60, true
+	default:
+		return 0, false
+	}
+}
+
+func nextSolarSummaryAt(now time.Time, minutes int) time.Time {
+	if minutes <= 0 {
+		return time.Time{}
+	}
+	now = now.UTC()
+	minute := now.Minute()
+	alignedMinute := (minute / minutes) * minutes
+	aligned := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), alignedMinute, 0, 0, time.UTC)
+	return aligned.Add(time.Duration(minutes) * time.Minute)
 }
 
 // Telnet protocol IAC (Interpret As Command) constants.
@@ -725,6 +842,7 @@ type ServerOptions struct {
 	ReputationGate          *reputation.Gate
 	PathPredictor           *pathreliability.Predictor
 	PathDisplayEnabled      bool
+	SolarWeather            *solarweather.Manager
 	NoiseOffsets            map[string]float64
 	GridLookup              func(string) (string, bool, bool)
 	CTYLookup               func() *cty.CTYDatabase
@@ -774,6 +892,7 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		startTime:         time.Now().UTC().UTC(),
 		pathPredictor:     opts.PathPredictor,
 		pathDisplay:       opts.PathDisplayEnabled,
+		solarWeather:      opts.SolarWeather,
 		noiseOffsets:      opts.NoiseOffsets,
 		gridLookup:        opts.GridLookup,
 		dedupeFastEnabled: config.DedupeFastEnabled,
@@ -846,6 +965,9 @@ func (s *Server) Start() error {
 	if s.keepaliveInterval > 0 {
 		go s.keepaliveLoop()
 	}
+	if s.solarWeather != nil {
+		go s.solarSummaryLoop()
+	}
 
 	// Accept connections in a goroutine
 	go s.acceptConnections()
@@ -904,6 +1026,48 @@ func (s *Server) keepaliveLoop() {
 			}
 			s.clientsMutex.RUnlock()
 		}
+	}
+}
+
+// solarSummaryLoop emits wall-clock aligned solar summaries to opted-in clients.
+func (s *Server) solarSummaryLoop() {
+	nextTick := nextMinuteBoundary(time.Now().UTC())
+	timer := time.NewTimer(time.Until(nextTick))
+	defer timer.Stop()
+	for {
+		select {
+		case <-s.shutdown:
+			return
+		case <-timer.C:
+			now := time.Now().UTC().Truncate(time.Minute)
+			s.emitSolarSummaries(now)
+			nextTick = nextMinuteBoundary(now)
+			timer.Reset(time.Until(nextTick))
+		}
+	}
+}
+
+func nextMinuteBoundary(now time.Time) time.Time {
+	now = now.UTC()
+	return now.Truncate(time.Minute).Add(time.Minute)
+}
+
+func (s *Server) emitSolarSummaries(now time.Time) {
+	if s == nil || s.solarWeather == nil {
+		return
+	}
+	message := s.solarWeather.Summary(now)
+	s.clientsMutex.RLock()
+	defer s.clientsMutex.RUnlock()
+	for _, client := range s.clients {
+		nextAt, ok := client.nextSolarSummaryAt(now)
+		if !ok || now.Before(nextAt) {
+			continue
+		}
+		if message != "" {
+			s.enqueueBulletin(client, "SOLAR", message)
+		}
+		client.advanceSolarSummaryAt(now)
 	}
 }
 
@@ -1323,6 +1487,8 @@ type pathPredictionStats struct {
 	Insufficient uint64
 	NoSample     uint64
 	LowWeight    uint64
+	OverrideR    uint64
+	OverrideG    uint64
 }
 
 func (s *Server) recordPathPrediction(res pathreliability.Result, userDerived, dxDerived bool) {
@@ -1357,6 +1523,8 @@ func (s *Server) PathPredictionStatsSnapshot() pathPredictionStats {
 		Insufficient: s.pathPredInsufficient.Swap(0),
 		NoSample:     s.pathPredNoSample.Swap(0),
 		LowWeight:    s.pathPredLowWeight.Swap(0),
+		OverrideR:    s.pathPredOverrideR.Swap(0),
+		OverrideG:    s.pathPredOverrideG.Swap(0),
 	}
 }
 
@@ -1516,6 +1684,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		client.gridCell = pathreliability.EncodeCell(client.grid)
 		client.noiseClass = strings.ToUpper(strings.TrimSpace(record.NoiseClass))
 		client.noisePenalty = s.noisePenaltyForClass(client.noiseClass)
+		client.setSolarSummaryMinutes(record.SolarSummaryMinutes, loginTime)
 		if created {
 			log.Printf("Created default filter for %s", client.callsign)
 		} else {
@@ -1625,6 +1794,13 @@ func (s *Server) handleClient(conn net.Conn) {
 		}
 
 		if resp, handled := s.handleDiagCommand(client, line); handled {
+			if resp != "" {
+				client.Send(resp)
+			}
+			continue
+		}
+
+		if resp, handled := s.handleSolarCommand(client, line); handled {
 			if resp != "" {
 				client.Send(resp)
 			}
@@ -1844,7 +2020,28 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 	now := time.Now().UTC().UTC()
 	res := s.pathPredictor.Predict(userCell, dxCell, userCoarse, dxCoarse, band, mode, noisePenalty, now)
 	s.recordPathPrediction(res, state.gridDerived, sp.DXMetadata.GridDerived)
+	if res.Source == pathreliability.SourceInsufficient {
+		return res.Glyph
+	}
 	g := res.Glyph
+	if s.solarWeather != nil {
+		override, kind := s.solarWeather.OverrideGlyph(now, solarweather.PathInput{
+			UserGrid: grid,
+			DXGrid:   sp.DXMetadata.Grid,
+			UserCell: userCell,
+			DXCell:   dxCell,
+			Band:     band,
+		})
+		if kind != solarweather.OverrideNone && override != "" {
+			g = override
+			switch kind {
+			case solarweather.OverrideR:
+				s.pathPredOverrideR.Add(1)
+			case solarweather.OverrideG:
+				s.pathPredOverrideG.Add(1)
+			}
+		}
+	}
 	return g
 }
 

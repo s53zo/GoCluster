@@ -15,8 +15,8 @@ const (
 	squareCenterLat = squareLatSize / 2.0
 )
 
-// gridCenterLatLon returns the center lat/lon for a 4-6 char Maidenhead grid.
-func gridCenterLatLon(grid string) (lat float64, lon float64, ok bool) {
+// GridCenterLatLon returns the center lat/lon for a 4-6 char Maidenhead grid.
+func GridCenterLatLon(grid string) (lat float64, lon float64, ok bool) {
 	g := strings.ToUpper(strings.TrimSpace(grid))
 	if len(g) < 4 {
 		return 0, 0, false
@@ -52,4 +52,9 @@ func gridCenterLatLon(grid string) (lat float64, lon float64, ok bool) {
 	lon += squareCenterLon
 	lat += squareCenterLat
 	return lat, lon, true
+}
+
+// gridCenterLatLon is retained for internal compatibility.
+func gridCenterLatLon(grid string) (lat float64, lon float64, ok bool) {
+	return GridCenterLatLon(grid)
 }

@@ -1,0 +1,51 @@
+# Operator Guide (One Page)
+
+## Purpose
+This server aggregates real-time spotting data and publishes a single per-band propagation glyph for each path. Think of the glyph as a quick operational hint, not a guarantee.
+
+## Quick Start
+- Run the server from the repo root: `go run .`
+- Default config directory: `data/config`
+- Main config files:
+  - `data/config/ingest.yaml` (spot sources)
+  - `data/config/path_reliability.yaml` (glyph thresholds, decay, noise)
+  - `data/config/solarweather.yaml` (optional R/G overrides)
+  - `data/config/peering.yaml` (optional cluster peering)
+
+## Operator Commands (telnet)
+- `SET GRID <grid>`: set your location (4–6 chars).
+- `SET NOISE <QUIET|RURAL|SUBURBAN|URBAN|INDUSTRIAL>`: adjusts local noise penalty.
+- `SET SOLAR 15|30|60|OFF`: opt‑in cadence for solar summaries (wall‑clock aligned).
+
+## What the Glyphs Mean
+- **High / Medium / Low / Unlikely**: chance of a usable path *right now*, based on recent spots and decay.
+- **Insufficient**: we just don’t have enough recent evidence to rate the path.
+- **R**: radio‑blackout override — strong flare/X‑ray activity on a **sunlit** path.
+- **G**: geomagnetic‑storm override — high Kp on a **high‑latitude** path.
+- Overrides are rare and band‑specific; they only show up when the path geometry makes them relevant.
+
+## How Location Is Used
+- We start with your 4‑digit Maidenhead grid and convert it to the center lat/lon (a 2° × 1° square).
+- That point maps to **H3 res‑2** (local) and **res‑1** (regional) cells so local + regional evidence can be blended.
+- H3 cells are a global hex‑grid index—a consistent way to bucket nearby locations.
+- If H3 tables are missing or grids are invalid, the path will show **Insufficient**.
+
+## Health Signals (logs)
+Every 5 minutes, the server logs:
+- `Path predictions (5m)` — combined vs insufficient, and no‑sample vs low‑weight.
+- `Path buckets (5m)` — per‑band bucket counts.
+- `Path weight dist (5m)` — per‑band weight histogram.
+
+## Common Troubleshooting
+- **All paths show Insufficient**: verify `SET GRID`, confirm spot ingestion, and check H3 tables in `data/h3`.
+- **No R/G overrides**: check `solarweather.yaml` enabled flag, feed freshness, and that the band is eligible.
+- **Over‑aggressive overrides**: tighten thresholds or band lists in `solarweather.yaml`.
+
+## Data Sources (when overrides enabled)
+- GOES X‑ray (corrected 0.1–0.8 nm) for R levels.
+- Observed 3‑hour Kp for G levels and auroral boundary gating.
+
+## Operator Principles
+- Treat glyphs as **probabilistic hints**.
+- Trust **Insufficient** rather than forcing a decision.
+- R/G overrides are **rare by design** — they signal strong, path‑relevant space weather.

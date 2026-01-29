@@ -294,6 +294,17 @@ func buildHelpCatalog(dialect string) helpCatalog {
 	)
 	add("SET NOISE", "SET NOISE - Set noise class.", setNoiseLines)
 
+	setSolarLines := helpEntryLines(
+		"SET SOLAR - Opt into solar summaries.",
+		[]string{"SET SOLAR <15|30|60|OFF>"},
+		nil,
+		[]string{
+			"Summaries are wall-clock aligned and start at the next tick.",
+			"OFF disables summaries.",
+		},
+	)
+	add("SET SOLAR", "SET SOLAR - Solar summary cadence.", setSolarLines)
+
 	resetFilterLines := helpEntryLines(
 		"RESET FILTER - Reset filters to configured defaults.",
 		[]string{"RESET FILTER"},

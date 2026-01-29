@@ -24,6 +24,8 @@ type UserRecord struct {
 	LastLoginUTC time.Time `yaml:"last_login_utc,omitempty"`
 	Grid         string    `yaml:"grid,omitempty"`        // Optional user-supplied grid (uppercased)
 	NoiseClass   string    `yaml:"noise_class,omitempty"` // Optional noise class token (uppercased)
+	// SolarSummaryMinutes controls opt-in solar summary cadence (0=off).
+	SolarSummaryMinutes int `yaml:"solar_summary_minutes,omitempty"`
 }
 
 // Purpose: Load a persisted user record by callsign.
@@ -53,6 +55,7 @@ func LoadUserRecord(callsign string) (*UserRecord, error) {
 	record.DedupePolicy = NormalizeDedupePolicy(record.DedupePolicy)
 	record.Grid = strings.ToUpper(strings.TrimSpace(record.Grid))
 	record.NoiseClass = strings.ToUpper(strings.TrimSpace(record.NoiseClass))
+	record.SolarSummaryMinutes = normalizeSolarSummaryMinutes(record.SolarSummaryMinutes)
 	return &record, nil
 }
 
@@ -125,6 +128,7 @@ func SaveUserRecord(callsign string, record *UserRecord) error {
 	}
 	record.RecentIPs = trimRecentIPs(record.RecentIPs, maxRecentIPs)
 	record.DedupePolicy = NormalizeDedupePolicy(record.DedupePolicy)
+	record.SolarSummaryMinutes = normalizeSolarSummaryMinutes(record.SolarSummaryMinutes)
 	bs, err := yaml.Marshal(record)
 	if err != nil {
 		return err
@@ -213,4 +217,13 @@ func trimRecentIPs(recent []string, limit int) []string {
 // Downstream: filepath.Join, strings.ToUpper.
 func userRecordPath(callsign string) string {
 	return filepath.Join(UserDataDir, fmt.Sprintf("%s.yaml", strings.ToUpper(callsign)))
+}
+
+func normalizeSolarSummaryMinutes(minutes int) int {
+	switch minutes {
+	case 15, 30, 60:
+		return minutes
+	default:
+		return 0
+	}
 }

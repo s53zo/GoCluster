@@ -44,6 +44,7 @@ import (
 	"dxcluster/rbn"
 	"dxcluster/reputation"
 	"dxcluster/skew"
+	"dxcluster/solarweather"
 	"dxcluster/spot"
 	"dxcluster/stats"
 	"dxcluster/telnet"
@@ -61,6 +62,7 @@ const (
 	sourceModeDelimiter       = "|"
 	defaultConfigPath         = "data/config"
 	pathReliabilityConfigFile = "path_reliability.yaml"
+	solarWeatherConfigFile    = "solarweather.yaml"
 	envConfigPath             = "DXC_CONFIG_PATH"
 
 	// envGridDBCheckOnMiss overrides the config-driven grid_db_check_on_miss at runtime.
@@ -377,6 +379,23 @@ func main() {
 		}
 	}
 
+	solarCfgPath := filepath.Join(configSource, solarWeatherConfigFile)
+	solarCfg, solarCfgErr := solarweather.LoadFile(solarCfgPath)
+	if solarCfgErr != nil {
+		if os.IsNotExist(solarCfgErr) {
+			solarCfg = solarweather.DefaultConfig()
+			solarCfg.Enabled = false
+			log.Printf("Solar weather config not found at %s; overrides disabled", solarCfgPath)
+		} else {
+			log.Printf("Warning: failed to load solar weather config (%s): %v", solarCfgPath, solarCfgErr)
+			solarCfg = solarweather.DefaultConfig()
+		}
+	}
+	if err := solarCfg.Validate(); err != nil {
+		log.Printf("Warning: invalid solar weather config: %v; overrides disabled", err)
+		solarCfg.Enabled = false
+	}
+
 	uiMode := strings.ToLower(strings.TrimSpace(cfg.UI.Mode))
 	renderAllowed := isStdoutTTY()
 
@@ -416,6 +435,12 @@ func main() {
 
 	log.Printf("DX Cluster Server v%s starting...", Version)
 	ctx, cancel := context.WithCancel(context.Background())
+	var solarMgr *solarweather.Manager
+	if solarCfg.Enabled {
+		solarMgr = solarweather.NewManager(solarCfg, log.Default())
+		solarMgr.Start(ctx)
+		log.Printf("Solar weather overrides enabled")
+	}
 	var propScheduler *propReportScheduler
 	if cfg.PropReport.Enabled {
 		if !cfg.Logging.Enabled {
@@ -869,6 +894,7 @@ func main() {
 		DedupeFastEnabled:       secondaryFastWindow > 0,
 		DedupeMedEnabled:        secondaryMedWindow > 0,
 		DedupeSlowEnabled:       secondarySlowWindow > 0,
+		SolarWeather:            solarMgr,
 	}, processor)
 
 	err = telnetServer.Start()
@@ -2162,13 +2188,15 @@ func startPathPredictionLogger(ctx context.Context, logMux *logFanout, srv *teln
 				stats := srv.PathPredictionStatsSnapshot()
 				if stats.Total > 0 {
 					fileOnly(fmt.Sprintf(
-						"Path predictions (5m): total=%s derived=%s combined=%s insufficient=%s no_sample=%s low_weight=%s",
+						"Path predictions (5m): total=%s derived=%s combined=%s insufficient=%s no_sample=%s low_weight=%s override_r=%s override_g=%s",
 						humanize.Comma(int64(stats.Total)),
 						humanize.Comma(int64(stats.Derived)),
 						humanize.Comma(int64(stats.Combined)),
 						humanize.Comma(int64(stats.Insufficient)),
 						humanize.Comma(int64(stats.NoSample)),
 						humanize.Comma(int64(stats.LowWeight)),
+						humanize.Comma(int64(stats.OverrideR)),
+						humanize.Comma(int64(stats.OverrideG)),
 					))
 				}
 			}
