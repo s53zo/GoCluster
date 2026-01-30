@@ -2,6 +2,7 @@ package uls
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -315,7 +316,7 @@ func resolveFile(dir string, candidates []string) string {
 // Upstream: Manual invocation or tooling (not used in the main pipeline).
 // Downstream: Refresh in uls/downloader.go.
 func BuildOnce(cfg config.FCCULSConfig) error {
-	_, err := Refresh(cfg, true)
+	_, err := Refresh(context.Background(), cfg, true)
 	return err
 }
 
@@ -326,4 +327,3 @@ func BuildOnce(cfg config.FCCULSConfig) error {
 func parseID(raw string) (uint64, error) {
 	return strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
 }
-

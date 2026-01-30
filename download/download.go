@@ -45,14 +45,15 @@ type Metadata struct {
 
 // Request configures a download with optional metadata and legacy fallbacks.
 type Request struct {
-	URL                  string
-	Destination          string
-	Timeout              time.Duration
-	Force                bool
-	MetadataPath         string
-	LegacyMetadataPaths  []string
-	UserAgent            string
-	DisableLegacyCleanup bool
+	URL                     string
+	Destination             string
+	Timeout                 time.Duration
+	Force                   bool
+	AllowMissingDestination bool
+	MetadataPath            string
+	LegacyMetadataPaths     []string
+	UserAgent               string
+	DisableLegacyCleanup    bool
 }
 
 // Result summarizes the download outcome.
@@ -104,7 +105,7 @@ func Download(ctx context.Context, req Request) (Result, error) {
 		}
 	}
 
-	force := req.Force || !destExists
+	force := req.Force || (!destExists && !req.AllowMissingDestination)
 
 	client := &http.Client{}
 	if req.Timeout > 0 {

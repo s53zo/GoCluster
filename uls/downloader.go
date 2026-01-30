@@ -17,8 +17,10 @@ import (
 )
 
 const (
-	downloadTimeout  = 30 * time.Minute
-	legacyMetaSuffix = ".meta.json"
+	downloadTimeout     = 30 * time.Minute
+	legacyMetaSuffix    = ".meta.json"
+	tempCleanupMaxFiles = 10
+	tempCleanupMinAge   = 30 * time.Minute
 )
 
 // Purpose: Start a background refresh loop for the FCC ULS database.
@@ -31,12 +33,20 @@ func StartBackground(ctx context.Context, cfg config.FCCULSConfig) {
 	}
 	// Run refresh/scheduler without blocking the caller.
 	go func() {
-		if updated, err := Refresh(cfg, false); err != nil {
-			log.Printf("Warning: FCC ULS refresh failed: %v", err)
-		} else if updated {
-			log.Printf("FCC ULS database updated")
-		} else {
-			log.Printf("FCC ULS archive/database already up to date (db=%s)", cfg.DBPath)
+		archiveDir := filepath.Dir(strings.TrimSpace(cfg.Archive))
+		cleanupDownloadTemps(archiveDir, time.Now().UTC())
+		dbExists, err := fileExists(cfg.DBPath)
+		if err != nil {
+			log.Printf("Warning: FCC ULS db stat failed: %v", err)
+		}
+		if err != nil || !dbExists {
+			if updated, err := Refresh(ctx, cfg, true); err != nil {
+				log.Printf("Warning: FCC ULS refresh failed: %v", err)
+			} else if updated {
+				log.Printf("FCC ULS database updated")
+			} else {
+				log.Printf("FCC ULS archive/database already up to date (db=%s)", cfg.DBPath)
+			}
 		}
 		startScheduler(ctx, cfg)
 	}()
@@ -46,7 +56,7 @@ func StartBackground(ctx context.Context, cfg config.FCCULSConfig) {
 // Key aspects: Uses conditional HTTP headers unless forced; rebuilds only when needed.
 // Upstream: StartBackground, BuildOnce/manual refresh triggers.
 // Downstream: downloadArchive, extractArchive, buildDatabase, ResetLicenseDB.
-func Refresh(cfg config.FCCULSConfig, force bool) (bool, error) {
+func Refresh(ctx context.Context, cfg config.FCCULSConfig, force bool) (bool, error) {
 	url := strings.TrimSpace(cfg.URL)
 	dest := strings.TrimSpace(cfg.Archive)
 	dbPath := strings.TrimSpace(cfg.DBPath)
@@ -68,21 +78,20 @@ func Refresh(cfg config.FCCULSConfig, force bool) (bool, error) {
 		}
 	}
 
-	archiveUpdated, err := downloadArchive(url, dest, metaPath, force)
+	dbExists, err := fileExists(dbPath)
+	if err != nil {
+		return false, fmt.Errorf("fcc uls: stat db: %w", err)
+	}
+	if !dbExists {
+		force = true
+	}
+
+	archiveUpdated, err := downloadArchive(ctx, url, dest, metaPath, force, dbExists)
 	if err != nil {
 		return false, err
 	}
 
-	needBuild := archiveUpdated
-	if !needBuild {
-		if _, err := os.Stat(dbPath); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				needBuild = true
-			} else {
-				return false, fmt.Errorf("fcc uls: stat db: %w", err)
-			}
-		}
-	}
+	needBuild := archiveUpdated || force || !dbExists
 
 	if !needBuild && !force {
 		return false, nil
@@ -113,6 +122,7 @@ func Refresh(cfg config.FCCULSConfig, force bool) (bool, error) {
 	if err := os.Remove(dest); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("Warning: could not remove archive %s: %v", dest, err)
 	}
+	cleanupDownloadTemps(filepath.Dir(dest), time.Now().UTC())
 
 	return true, nil
 }
@@ -131,7 +141,7 @@ func startScheduler(ctx context.Context, cfg config.FCCULSConfig) {
 			return
 		case <-timer.C:
 		}
-		if updated, err := Refresh(cfg, false); err != nil {
+		if updated, err := Refresh(ctx, cfg, false); err != nil {
 			log.Printf("Warning: scheduled FCC ULS download failed: %v", err)
 		} else if updated {
 			log.Printf("FCC ULS database updated")
@@ -173,19 +183,20 @@ func refreshHourMinute(cfg config.FCCULSConfig) (int, int) {
 // Key aspects: Uses conditional HTTP download and sidecar metadata.
 // Upstream: Refresh.
 // Downstream: download.Download.
-func downloadArchive(url, destination, metaPath string, force bool) (bool, error) {
+func downloadArchive(ctx context.Context, url, destination, metaPath string, force bool, dbExists bool) (bool, error) {
 	if err := ensureDir(destination); err != nil {
 		return false, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
 	res, err := download.Download(ctx, download.Request{
-		URL:                 url,
-		Destination:         destination,
-		Timeout:             downloadTimeout,
-		Force:               force,
-		MetadataPath:        metaPath,
-		LegacyMetadataPaths: []string{destination + legacyMetaSuffix},
+		URL:                     url,
+		Destination:             destination,
+		Timeout:                 downloadTimeout,
+		Force:                   force,
+		AllowMissingDestination: dbExists && !force,
+		MetadataPath:            metaPath,
+		LegacyMetadataPaths:     []string{destination + legacyMetaSuffix},
 	})
 	if err != nil {
 		return false, fmt.Errorf("fcc uls: %w", err)
@@ -202,4 +213,57 @@ func ensureDir(path string) error {
 		return fmt.Errorf("fcc uls: create directory: %w", err)
 	}
 	return nil
+}
+
+func fileExists(path string) (bool, error) {
+	if strings.TrimSpace(path) == "" {
+		return false, nil
+	}
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+func cleanupDownloadTemps(dir string, now time.Time) {
+	if strings.TrimSpace(dir) == "" || dir == "." {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := now.Add(-tempCleanupMinAge)
+	removed := 0
+	for _, entry := range entries {
+		if removed >= tempCleanupMaxFiles {
+			break
+		}
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "download-") || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("Warning: FCC ULS temp cleanup failed for %s: %v", name, err)
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		log.Printf("FCC ULS temp cleanup removed %d file(s) in %s", removed, dir)
+	}
 }

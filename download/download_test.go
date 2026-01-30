@@ -143,6 +143,46 @@ func TestDownloadSameContent(t *testing.T) {
 	}
 }
 
+func TestDownloadAllowMissingDestination(t *testing.T) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		t.Fatalf("expected conditional request")
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "l_amat.zip")
+	metaPath := MetadataPath(dest)
+
+	meta := Metadata{
+		URL:  server.URL,
+		ETag: `"v1"`,
+	}
+	if err := WriteMetadata(metaPath, meta); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	res, err := Download(testContext(t), Request{
+		URL:                     server.URL,
+		Destination:             dest,
+		Timeout:                 5 * time.Second,
+		AllowMissingDestination: true,
+	})
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if res.Status != StatusNotModified {
+		t.Fatalf("expected not modified status, got %s", res.Status)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("expected destination to remain missing")
+	}
+}
+
 func testContext(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

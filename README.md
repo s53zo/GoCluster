@@ -327,9 +327,9 @@ fcc_uls:
   refresh_utc: "02:15"
 ```
 
-2. On startup the cluster launches a background job that downloads the archive if it is missing or stale (using conditional requests when a metadata file exists), extracts the AM/EN/HD tables, and builds a fresh SQLite database at `fcc_uls.db_path`. Both the ZIP and DB are written via temp files and swapped atomically; metadata/status is stored at `archive_path + ".status.json"` (the previous `.meta.json` is still read for compatibility).
+2. On startup the cluster launches a background job that checks for the SQLite DB. If the DB is missing, it immediately downloads the archive (ignoring cache headers), extracts the AM/EN/HD tables, and builds a fresh SQLite database at `fcc_uls.db_path`. If the DB is present, it waits for the scheduled refresh time. Both the ZIP and DB are written via temp files and swapped atomically; metadata/status is stored at `archive_path + ".status.json"` (the previous `.meta.json` is still read for compatibility).
 3. During the load, only active licenses are kept (`HD.license_status = 'A'`). HD is slimmed to a few useful fields (unique ID, call sign, status, service, grant/expire/cancel/last-action dates), and AM is reduced to just unique ID + call sign for active records. EN is not loaded. The downloaded ZIP is deleted after a successful build to save space.
-4. When `fcc_uls.enabled` is true, a built-in scheduler refreshes the archive and rebuilds the database once per day at `fcc_uls.refresh_utc` (UTC). The job runs independently of spot processing, so the rest of the cluster continues handling spots while the download, unzip, and load proceed.
+4. When `fcc_uls.enabled` is true, a built-in scheduler refreshes the archive and rebuilds the database once per day at `fcc_uls.refresh_utc` (UTC). The refresh uses conditional requests when metadata is present, even if the archive was deleted after the prior build. The job runs independently of spot processing, so the rest of the cluster continues handling spots while the download, unzip, and load proceed.
 5. The console/TUI stats include an FCC line showing active-record counts and the DB size.
 
 ## Grid Persistence and Caching
