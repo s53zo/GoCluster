@@ -265,12 +265,13 @@ func main() {
 			pathCfg = pathreliability.DefaultConfig()
 		}
 	}
-	pathPredictor := pathreliability.NewPredictor(pathCfg, spot.SupportedBandNames())
+	allowedBands, allowedBandSet := normalizeAllowedBands(pathCfg.AllowedBands)
+	pathPredictor := pathreliability.NewPredictor(pathCfg, allowedBands)
 	if pathCfg.Enabled {
 		if err := pathreliability.InitH3MappingsFromDir(cfg.H3TablePath); err != nil {
 			log.Printf("Path reliability H3 mapping init failed: %v; feature disabled", err)
 			pathCfg.Enabled = false
-			pathPredictor = pathreliability.NewPredictor(pathCfg, spot.SupportedBandNames())
+			pathPredictor = pathreliability.NewPredictor(pathCfg, allowedBands)
 		}
 	}
 
@@ -815,7 +816,7 @@ func main() {
 	// Downstream: processOutputSpots.
 	pathReport := newPathReportMetrics()
 	pskrPathOnlyStats := &pathOnlyStats{}
-	go processOutputSpots(deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor, pathReport)
+	go processOutputSpots(deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor, pathReport, allowedBandSet)
 	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
@@ -944,7 +945,7 @@ func main() {
 			// Key aspects: Runs in its own goroutine; never touches dedup/broadcast.
 			// Upstream: main startup after PSKReporter connect.
 			// Downstream: processPSKRPathOnlySpots.
-			go processPSKRPathOnlySpots(pskrClient, pathPredictor, pathReport, pskrPathOnlyStats, cfg.SpotPolicy)
+			go processPSKRPathOnlySpots(pskrClient, pathPredictor, pathReport, pskrPathOnlyStats, cfg.SpotPolicy, allowedBandSet)
 			log.Println("PSKReporter client feeding spots into unified dedup engine")
 		}
 	}
@@ -1612,7 +1613,7 @@ func diffPathOnly(current, prev pathOnlySnapshot) pathOnlySnapshot {
 // Key aspects: No CTY validation, no dedup/broadcast/archive; drops on missing grids or disabled predictor.
 // Upstream: PSKReporter path-only channel.
 // Downstream: pathreliability.Predictor.Update, pathReportMetrics.
-func processPSKRPathOnlySpots(client *pskreporter.Client, predictor *pathreliability.Predictor, pathReport *pathReportMetrics, stats *pathOnlyStats, spotPolicy config.SpotPolicy) {
+func processPSKRPathOnlySpots(client *pskreporter.Client, predictor *pathreliability.Predictor, pathReport *pathReportMetrics, stats *pathOnlyStats, spotPolicy config.SpotPolicy, allowedBands map[string]struct{}) {
 	if client == nil {
 		return
 	}
@@ -1674,6 +1675,10 @@ func processPSKRPathOnlySpots(client *pskreporter.Client, predictor *pathreliabi
 		}
 		band = strings.TrimSpace(spot.NormalizeBand(band))
 		if band == "" || band == "???" {
+			recordPathOnlyDrop(stats, pathOnlyDropBadBand)
+			continue
+		}
+		if !allowedBand(allowedBands, band) {
 			recordPathOnlyDrop(stats, pathOnlyDropBadBand)
 			continue
 		}
@@ -1776,6 +1781,7 @@ func processOutputSpots(
 	lastOutput *atomic.Int64,
 	pathPredictor *pathreliability.Predictor,
 	pathReport *pathReportMetrics,
+	allowedBands map[string]struct{},
 ) {
 	outputChan := deduplicator.GetOutputChannel()
 	secondaryActive := secondaryFast != nil || secondaryMed != nil || secondarySlow != nil
@@ -2020,17 +2026,23 @@ func processOutputSpots(
 						if strings.TrimSpace(band) == "" {
 							band = s.Band
 						}
-						spotTime := s.Time.UTC()
-						if spotTime.IsZero() {
-							spotTime = time.Now().UTC().UTC()
+						band = strings.TrimSpace(spot.NormalizeBand(band))
+						if band == "" || band == "???" {
+							band = strings.TrimSpace(spot.NormalizeBand(spot.FreqToBand(s.Frequency)))
 						}
-						bucket := pathreliability.BucketForIngest(mode)
-						if bucket != pathreliability.BucketNone {
-							if pathReport != nil {
-								pathReport.Observe(s, spotTime)
+						if band != "" && band != "???" && allowedBand(allowedBands, band) {
+							spotTime := s.Time.UTC()
+							if spotTime.IsZero() {
+								spotTime = time.Now().UTC().UTC()
 							}
-							// Spot SNR reflects DX -> DE (spotter is the receiver).
-							pathPredictor.Update(bucket, deCell, dxCell, deCoarse, dxCoarse, band, ft8, 1.0, spotTime, s.IsBeacon)
+							bucket := pathreliability.BucketForIngest(mode)
+							if bucket != pathreliability.BucketNone {
+								if pathReport != nil {
+									pathReport.Observe(s, spotTime)
+								}
+								// Spot SNR reflects DX -> DE (spotter is the receiver).
+								pathPredictor.Update(bucket, deCell, dxCell, deCoarse, dxCoarse, band, ft8, 1.0, spotTime, s.IsBeacon)
+							}
 						}
 					}
 				}
@@ -4777,6 +4789,48 @@ func diffCounterRaw(current, previous uint64) uint64 {
 		return current - previous
 	}
 	return current
+}
+
+// Purpose: Normalize allowed bands list and build a fast lookup set.
+// Key aspects: Filters invalid bands and preserves canonical ordering.
+// Upstream: Path reliability predictor setup.
+// Downstream: processOutputSpots and path-only ingest gates.
+func normalizeAllowedBands(raw []string) ([]string, map[string]struct{}) {
+	allowed := make(map[string]struct{}, len(raw))
+	for _, band := range raw {
+		normalized := spot.NormalizeBand(band)
+		if normalized == "" || !spot.IsValidBand(normalized) {
+			continue
+		}
+		allowed[normalized] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		all := spot.SupportedBandNames()
+		for _, band := range all {
+			allowed[spot.NormalizeBand(band)] = struct{}{}
+		}
+		return all, allowed
+	}
+	out := make([]string, 0, len(allowed))
+	for _, band := range spot.SupportedBandNames() {
+		normalized := spot.NormalizeBand(band)
+		if _, ok := allowed[normalized]; ok {
+			out = append(out, band)
+		}
+	}
+	return out, allowed
+}
+
+func allowedBand(allowed map[string]struct{}, band string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	normalized := spot.NormalizeBand(band)
+	if normalized == "" {
+		return false
+	}
+	_, ok := allowed[normalized]
+	return ok
 }
 
 // Purpose: Compute per-interval delta for a source+mode counter.

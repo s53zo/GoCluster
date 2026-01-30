@@ -12,6 +12,7 @@ import (
 // Config holds tuning knobs for path reliability aggregation and display.
 type Config struct {
 	Enabled                      bool                       `yaml:"enabled"`
+	AllowedBands                 []string                   `yaml:"allowed_bands"`
 	ClampMin                     float64                    `yaml:"clamp_min"`                        // FT8-equiv floor (dB)
 	ClampMax                     float64                    `yaml:"clamp_max"`                        // FT8-equiv ceiling (dB)
 	DefaultHalfLifeSec           int                        `yaml:"default_half_life_seconds"`        // fallback half-life when band not listed
@@ -162,6 +163,7 @@ func (s *GlyphSymbols) UnmarshalYAML(value *yaml.Node) error {
 func DefaultConfig() Config {
 	cfg := Config{
 		Enabled:                      true,
+		AllowedBands:                 []string{"160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m"},
 		ClampMin:                     -25,
 		ClampMax:                     15,
 		DefaultHalfLifeSec:           300,
@@ -227,6 +229,9 @@ func (c *Config) normalize() {
 		return
 	}
 	def := DefaultConfig()
+	if len(c.AllowedBands) == 0 {
+		c.AllowedBands = append([]string(nil), def.AllowedBands...)
+	}
 	if c.ClampMax <= c.ClampMin {
 		c.ClampMin = def.ClampMin
 		c.ClampMax = def.ClampMax
