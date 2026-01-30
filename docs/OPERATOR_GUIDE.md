@@ -45,6 +45,12 @@ Stats ticker adds:
 - **No R/G overrides**: check `solarweather.yaml` enabled flag, feed freshness, and that the band is eligible.
 - **Over‑aggressive overrides**: tighten thresholds or band lists in `solarweather.yaml`.
 
+## FCC ULS Allowlist
+- Optional regex allowlist file is configured in `data/config/data.yaml` under `fcc_uls.allowlist_path`.
+- Patterns are matched against the normalized base callsign (SSID/slash stripped).
+- Prefix a line with `US:` or `ADIF291:` to target a jurisdiction; lines without a prefix default to `US`.
+- Calls with **3+ leading letters before the first digit** are dropped by CTY gating unless allowlisted.
+
 ## Data Sources (when overrides enabled)
 - GOES X‑ray (corrected 0.1–0.8 nm) for R levels.
 - Observed 3‑hour Kp for G levels and auroral boundary gating.

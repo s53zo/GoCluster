@@ -16,15 +16,16 @@ import (
 )
 
 var (
-	licenseDBPath  string
-	licenseDB      *sql.DB
-	licenseOnce    sync.Once
-	licenseCache   sync.Map // call (uppercased) -> bool
-	licenseMu      sync.Mutex
-	licenseDead    atomic.Bool
-	licenseEnabled atomic.Bool
-	refreshActive  atomic.Bool
-	loggedDBError  atomic.Bool
+	licenseDBPath   string
+	licenseDB       *sql.DB
+	licenseOnce     sync.Once
+	licenseMu       sync.Mutex
+	licenseDead     atomic.Bool
+	licenseEnabled  atomic.Bool
+	refreshActive   atomic.Bool
+	loggedDBError   atomic.Bool
+	licenseCacheTTL atomic.Int64
+	licenseCache    atomic.Pointer[ttlCache]
 )
 
 // Purpose: Enable license checks by default when the package loads.
@@ -33,6 +34,8 @@ var (
 // Downstream: licenseEnabled flag read by IsLicensedUS.
 func init() {
 	licenseEnabled.Store(true)
+	licenseCacheTTL.Store(int64(defaultLicenseCacheTTL))
+	licenseCache.Store(newLicenseCache(defaultLicenseCacheTTL, defaultLicenseCacheMaxEntries))
 }
 
 // Purpose: Toggle FCC ULS license checks on or off.
@@ -41,6 +44,18 @@ func init() {
 // Downstream: licenseEnabled flag read by IsLicensedUS.
 func SetLicenseChecksEnabled(enabled bool) {
 	licenseEnabled.Store(enabled)
+}
+
+// Purpose: Configure the TTL for license lookup caching.
+// Key aspects: Resets the cache with the new TTL and a fixed safety cap.
+// Upstream: Config load or operator overrides.
+// Downstream: IsLicensedUS cache behavior.
+func SetLicenseCacheTTL(ttl time.Duration) {
+	if ttl <= 0 {
+		ttl = defaultLicenseCacheTTL
+	}
+	licenseCacheTTL.Store(int64(ttl))
+	licenseCache.Store(newLicenseCache(ttl, defaultLicenseCacheMaxEntries))
 }
 
 // Purpose: Mark whether a refresh/swap is in progress to fail open on lookups.
@@ -101,8 +116,12 @@ func IsLicensedUS(call string) bool {
 		return true
 	}
 
-	if cached, ok := licenseCache.Load(canonical); ok {
-		return cached.(bool)
+	now := time.Now().UTC()
+	cacheKey := licenseCacheKey("US", canonical)
+	if cache := licenseCache.Load(); cache != nil {
+		if cached, ok := cache.get(cacheKey, now); ok {
+			return cached
+		}
 	}
 
 	allow := true
@@ -148,7 +167,9 @@ func IsLicensedUS(call string) bool {
 		}
 	}
 
-	licenseCache.Store(canonical, allow)
+	if cache := licenseCache.Load(); cache != nil {
+		cache.set(cacheKey, allow, now)
+	}
 	return allow
 }
 
@@ -193,9 +214,24 @@ func ResetLicenseDB() {
 		licenseDB = nil
 	}
 	licenseOnce = sync.Once{}
-	licenseCache = sync.Map{}
+	resetLicenseCache()
 	licenseDead.Store(false)
 	loggedDBError.Store(false)
+}
+
+func resetLicenseCache() {
+	ttl := time.Duration(licenseCacheTTL.Load())
+	if ttl <= 0 {
+		ttl = defaultLicenseCacheTTL
+	}
+	licenseCache.Store(newLicenseCache(ttl, defaultLicenseCacheMaxEntries))
+}
+
+func licenseCacheKey(jurisdiction, call string) string {
+	if jurisdiction == "" {
+		return call
+	}
+	return jurisdiction + ":" + call
 }
 
 // Purpose: Normalize callsigns for FCC ULS lookup.

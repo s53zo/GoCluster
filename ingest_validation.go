@@ -32,6 +32,8 @@ type ingestValidator struct {
 	requireCTY         bool
 	ctyDropDXCounter   rateCounter
 	ctyDropDECounter   rateCounter
+	invalidDropDX      rateCounter
+	invalidDropDE      rateCounter
 	dedupDropCounter   rateCounter
 	ingestTotal        atomic.Uint64 // total spots received (includes those dropped by validation)
 }
@@ -64,6 +66,8 @@ func newIngestValidator(
 		requireCTY:         requireCTY,
 		ctyDropDXCounter:   newRateCounter(defaultIngestCTYLogInterval),
 		ctyDropDECounter:   newRateCounter(defaultIngestCTYLogInterval),
+		invalidDropDX:      newRateCounter(defaultIngestDropLogInterval),
+		invalidDropDE:      newRateCounter(defaultIngestDropLogInterval),
 		dedupDropCounter:   newRateCounter(defaultIngestDropLogInterval),
 	}
 }
@@ -141,7 +145,15 @@ func (v *ingestValidator) validateSpot(s *spot.Spot) bool {
 		deCall = s.DECall
 	}
 
-	now := time.Now().UTC()
+	if shouldRejectCTYCall(dxCall) {
+		v.logInvalidDrop("DX", dxCall, s)
+		return false
+	}
+	if shouldRejectCTYCall(deCall) {
+		v.logInvalidDrop("DE", deCall, s)
+		return false
+	}
+
 	dxLookupCall := normalizeCallForMetadata(dxCall)
 	deLookupCall := normalizeCallForMetadata(deCall)
 	if dxLookupCall == "" {
@@ -152,14 +164,22 @@ func (v *ingestValidator) validateSpot(s *spot.Spot) bool {
 	}
 	dxInfo, ok := v.lookupCTY(ctyDB, dxLookupCall)
 	if !ok {
+		if uls.AllowlistMatchAny(strings.TrimSpace(uls.NormalizeForLicense(dxCall))) {
+			goto deLookup
+		}
 		v.logCTYDrop("DX", dxCall, s)
 		return false
 	}
+deLookup:
 	deInfo, ok := v.lookupCTY(ctyDB, deLookupCall)
 	if !ok {
+		if uls.AllowlistMatchAny(strings.TrimSpace(uls.NormalizeForLicense(deCall))) {
+			goto afterLookup
+		}
 		v.logCTYDrop("DE", deCall, s)
 		return false
 	}
+afterLookup:
 
 	dxGrid := strings.TrimSpace(s.DXMetadata.Grid)
 	deGrid := strings.TrimSpace(s.DEMetadata.Grid)
@@ -190,26 +210,20 @@ func (v *ingestValidator) validateSpot(s *spot.Spot) bool {
 	if v.isLicensedUS != nil {
 		deLicenseCall := strings.TrimSpace(uls.NormalizeForLicense(deCall))
 		if deLicenseCall != "" {
+			// License checks key off the normalized base call; jurisdiction derives from that base.
 			if info, ok := v.lookupCTY(ctyDB, deLicenseCall); ok && info.ADIF == 291 {
 				callKey := deLicenseCall
 				if callKey == "" {
 					callKey = deCall
 				}
-				if licensed, ok := licCache.get(callKey, now); ok {
-					if !licensed {
-						if v.unlicensedReporter != nil {
-							v.unlicensedReporter(ingestSourceLabel(s), "DE", callKey, s.ModeNorm, s.Frequency)
-						}
-						return false
-					}
-				} else if !v.isLicensedUS(callKey) {
-					licCache.set(callKey, false, now)
+				if uls.AllowlistMatch(info.ADIF, callKey) {
+					return true
+				}
+				if !v.isLicensedUS(callKey) {
 					if v.unlicensedReporter != nil {
 						v.unlicensedReporter(ingestSourceLabel(s), "DE", callKey, s.ModeNorm, s.Frequency)
 					}
 					return false
-				} else {
-					licCache.set(callKey, true, now)
 				}
 			}
 		}
@@ -242,6 +256,9 @@ func (v *ingestValidator) lookupCTY(db *cty.CTYDatabase, call string) (*cty.Pref
 	if db == nil || call == "" {
 		return nil, false
 	}
+	if shouldRejectCTYCall(call) {
+		return nil, false
+	}
 	if v.metaCache != nil {
 		info, ok, cached := v.metaCache.LookupCTY(call, db)
 		if ok && !cached && v.ctyUpdater != nil {
@@ -259,6 +276,21 @@ func (v *ingestValidator) logCTYDrop(role, call string, s *spot.Spot) {
 	}
 	if count, ok := counter.Inc(); ok {
 		line := fmt.Sprintf("CTY drop: unknown %s %s at %.1f kHz (source=%s total=%d)", role, call, s.Frequency, ingestSourceLabel(s), count)
+		if v.dropReporter != nil {
+			v.dropReporter(line)
+			return
+		}
+		log.Print(line)
+	}
+}
+
+func (v *ingestValidator) logInvalidDrop(role, call string, s *spot.Spot) {
+	counter := &v.invalidDropDX
+	if role == "DE" {
+		counter = &v.invalidDropDE
+	}
+	if count, ok := counter.Inc(); ok {
+		line := fmt.Sprintf("CTY drop: invalid %s %s (>=3 leading letters) at %.1f kHz (source=%s total=%d)", role, call, s.Frequency, ingestSourceLabel(s), count)
 		if v.dropReporter != nil {
 			v.dropReporter(line)
 			return

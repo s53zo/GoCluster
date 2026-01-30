@@ -76,111 +76,6 @@ const (
 	envMutexProfileFraction = "DXC_MUTEX_PROFILE_FRACTION"
 )
 
-var licCache = newLicenseCache(5 * time.Minute)
-
-// licenseCache caches FCC license checks to avoid repeated lookups on hot paths.
-type licenseCache struct {
-	mu      sync.Mutex
-	ttl     time.Duration
-	entries map[string]licenseEntry
-}
-
-type licenseEntry struct {
-	licensed bool
-	at       time.Time
-}
-
-// Purpose: Construct a licenseCache with a bounded TTL.
-// Key aspects: Normalizes non-positive TTL to a safe default.
-// Upstream: package init for licCache and main wiring.
-// Downstream: map allocation for cache entries.
-func newLicenseCache(ttl time.Duration) *licenseCache {
-	if ttl <= 0 {
-		ttl = 5 * time.Minute
-	}
-	return &licenseCache{
-		ttl:     ttl,
-		entries: make(map[string]licenseEntry),
-	}
-}
-
-// Purpose: Lookup a cached FCC license decision for a callsign.
-// Key aspects: Enforces TTL expiration and returns (value, ok).
-// Upstream: applyLicenseGate.
-// Downstream: time comparisons and map access under lock.
-func (lc *licenseCache) get(call string, now time.Time) (bool, bool) {
-	if lc == nil || call == "" {
-		return false, false
-	}
-	lc.mu.Lock()
-	defer lc.mu.Unlock()
-	entry, ok := lc.entries[call]
-	if !ok {
-		return false, false
-	}
-	if lc.ttl > 0 && now.Sub(entry.at) > lc.ttl {
-		delete(lc.entries, call)
-		return false, false
-	}
-	return entry.licensed, true
-}
-
-// Purpose: Store a callsign license decision in the cache.
-// Key aspects: Overwrites existing entries with updated timestamp.
-// Upstream: applyLicenseGate.
-// Downstream: map assignment under lock.
-func (lc *licenseCache) set(call string, licensed bool, now time.Time) {
-	if lc == nil || call == "" {
-		return
-	}
-	lc.mu.Lock()
-	lc.entries[call] = licenseEntry{licensed: licensed, at: now}
-	lc.mu.Unlock()
-}
-
-// sweepExpired removes entries older than ttl. Returns the number removed.
-func (lc *licenseCache) sweepExpired(now time.Time) int {
-	if lc == nil || lc.ttl <= 0 {
-		return 0
-	}
-	lc.mu.Lock()
-	defer lc.mu.Unlock()
-	if len(lc.entries) == 0 {
-		return 0
-	}
-	var removed int
-	for k, v := range lc.entries {
-		if now.Sub(v.at) > lc.ttl {
-			delete(lc.entries, k)
-			removed++
-		}
-	}
-	return removed
-}
-
-// startLicenseCacheSweeper launches a periodic TTL sweep that stops when ctx is done.
-func startLicenseCacheSweeper(ctx context.Context, lc *licenseCache) {
-	if lc == nil || lc.ttl <= 0 {
-		return
-	}
-	interval := lc.ttl / 2
-	if interval < time.Minute {
-		interval = time.Minute
-	}
-	ticker := time.NewTicker(interval)
-	go func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				lc.sweepExpired(time.Now().UTC().UTC())
-			}
-		}
-	}()
-}
-
 // Version will be set at build time
 var Version = "dev"
 
@@ -470,7 +365,6 @@ func main() {
 			propScheduler.Wait()
 		}
 	}()
-	startLicenseCacheSweeper(ctx, licCache)
 	if pathCfg.Enabled && pathPredictor != nil {
 		go func() {
 			ticker := time.NewTicker(time.Minute)
@@ -521,6 +415,8 @@ func main() {
 	// Toggle FCC ULS lookups independently of the downloader so disabled configs
 	// can keep the DB on disk without performing license checks.
 	uls.SetLicenseChecksEnabled(cfg.FCCULS.Enabled)
+	uls.SetLicenseCacheTTL(time.Duration(cfg.FCCULS.CacheTTLSeconds) * time.Second)
+	uls.SetAllowlistPath(cfg.FCCULS.AllowlistPath)
 
 	// Start the FCC ULS downloader in the background (does not block spot processing)
 	uls.StartBackground(ctx, cfg.FCCULS)
@@ -2686,10 +2582,10 @@ func cloneSpotForPeerPublish(src *spot.Spot) *spot.Spot {
 }
 
 // applyLicenseGate runs the FCC license check after all corrections and returns true when the spot should be dropped.
-// Purpose: Enforce FCC ULS licensing gates for US calls (DX only; DE checked at ingest).
-// Key aspects: Uses cache, CTY metadata refresh for corrected calls, and reporter callback on drops.
+// Purpose: Enforce FCC ULS licensing gates for US base calls (DX only; DE checked at ingest).
+// Key aspects: Jurisdiction is derived from the normalized base call; reporter callback on drops.
 // Upstream: processOutputSpots before broadcast.
-// Downstream: licCache, uls.IsLicensedUS, reporter.
+// Downstream: uls.IsLicensedUS, reporter.
 func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, metaCache *callMetaCache, reporter func(source, role, call, mode string, freq float64)) bool {
 	if s == nil {
 		return false
@@ -2744,27 +2640,19 @@ func applyLicenseGate(s *spot.Spot, ctyDB *cty.CTYDatabase, metaCache *callMetaC
 		dxLicenseInfo = effectivePrefixInfo(ctyDB, metaCache, dxLicenseCall)
 	}
 
-	now := time.Now().UTC().UTC()
 	if dxLicenseInfo != nil && dxLicenseInfo.ADIF == 291 {
 		callKey := dxLicenseCall
 		if callKey == "" {
 			callKey = dxCall
 		}
-		if licensed, ok := licCache.get(callKey, now); ok {
-			if !licensed {
-				if reporter != nil {
-					reporter(s.SourceNode, "DX", callKey, s.ModeNorm, s.Frequency)
-				}
-				return true
-			}
-		} else if !uls.IsLicensedUS(callKey) {
-			licCache.set(callKey, false, now)
+		if uls.AllowlistMatch(dxLicenseInfo.ADIF, callKey) {
+			return false
+		}
+		if !uls.IsLicensedUS(callKey) {
 			if reporter != nil {
 				reporter(s.SourceNode, "DX", callKey, s.ModeNorm, s.Frequency)
 			}
 			return true
-		} else {
-			licCache.set(callKey, true, now)
 		}
 	}
 	return false
@@ -2779,6 +2667,9 @@ func effectivePrefixInfo(ctyDB *cty.CTYDatabase, metaCache *callMetaCache, call 
 		return nil
 	}
 	if call == "" {
+		return nil
+	}
+	if shouldRejectCTYCall(call) {
 		return nil
 	}
 	if metaCache != nil {
@@ -2920,9 +2811,18 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 			spotEntry.DXCall, corrected, spotEntry.Frequency, supporters, correctedConfidence)
 	}
 
-	correctedNorm := ""
+	correctedNorm := spot.NormalizeCallsign(corrected)
+	if shouldRejectCTYCall(correctedNorm) {
+		log.Printf("Call correction rejected (invalid base call): suggested %s at %.1f kHz", corrected, spotEntry.Frequency)
+		if strings.EqualFold(cfg.InvalidAction, "suppress") {
+			log.Printf("Call correction suppression engaged: dropping spot from %s at %.1f kHz", spotEntry.DXCall, spotEntry.Frequency)
+			return true
+		}
+		spotEntry.Confidence = "B"
+		return false
+	}
+
 	if ctyDB != nil {
-		correctedNorm = spot.NormalizeCallsign(corrected)
 		if info := effectivePrefixInfo(ctyDB, metaCache, correctedNorm); info != nil {
 			if dash != nil {
 				dash.AppendCall(messageDash)
@@ -2951,7 +2851,6 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 	} else {
 		log.Println(message)
 	}
-	correctedNorm = spot.NormalizeCallsign(corrected)
 	spotEntry.DXCall = correctedNorm
 	spotEntry.DXCallNorm = correctedNorm
 	spotEntry.Confidence = "C"

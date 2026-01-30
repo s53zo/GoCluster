@@ -737,6 +737,10 @@ type FCCULSConfig struct {
 	DBPath     string `yaml:"db_path"`
 	TempDir    string `yaml:"temp_dir"`
 	RefreshUTC string `yaml:"refresh_utc"`
+	// AllowlistPath points to a file containing regex patterns of calls to skip ULS checks.
+	AllowlistPath string `yaml:"allowlist_path"`
+	// CacheTTLSeconds controls how long license lookup decisions remain cached.
+	CacheTTLSeconds int `yaml:"cache_ttl_seconds"`
 }
 
 // CTYConfig controls downloading of the CTY prefix plist.
@@ -1410,11 +1414,17 @@ func Load(path string) (*Config, error) {
 	if strings.TrimSpace(cfg.FCCULS.DBPath) == "" {
 		cfg.FCCULS.DBPath = "data/fcc/fcc_uls.db"
 	}
+	if strings.TrimSpace(cfg.FCCULS.AllowlistPath) == "" {
+		cfg.FCCULS.AllowlistPath = "data/fcc/allowlist.txt"
+	}
 	if strings.TrimSpace(cfg.FCCULS.TempDir) == "" {
 		cfg.FCCULS.TempDir = filepath.Dir(cfg.FCCULS.DBPath)
 	}
 	if strings.TrimSpace(cfg.FCCULS.RefreshUTC) == "" {
 		cfg.FCCULS.RefreshUTC = "02:15"
+	}
+	if cfg.FCCULS.CacheTTLSeconds <= 0 {
+		cfg.FCCULS.CacheTTLSeconds = 21600
 	}
 	if _, err := time.Parse("15:04", cfg.FCCULS.RefreshUTC); err != nil {
 		return nil, fmt.Errorf("invalid FCC ULS refresh time %q: %w", cfg.FCCULS.RefreshUTC, err)
@@ -1946,7 +1956,13 @@ func (c *Config) Print() {
 		fmt.Printf("Known calls refresh: %s UTC (source=%s)\n", c.KnownCalls.RefreshUTC, c.KnownCalls.URL)
 	}
 	if c.FCCULS.Enabled && c.FCCULS.URL != "" {
-		fmt.Printf("FCC ULS: refresh %s UTC (source=%s archive=%s db=%s)\n", c.FCCULS.RefreshUTC, c.FCCULS.URL, c.FCCULS.Archive, c.FCCULS.DBPath)
+		fmt.Printf("FCC ULS: refresh %s UTC (source=%s archive=%s db=%s allowlist=%s cache_ttl=%ds)\n",
+			c.FCCULS.RefreshUTC,
+			c.FCCULS.URL,
+			c.FCCULS.Archive,
+			c.FCCULS.DBPath,
+			c.FCCULS.AllowlistPath,
+			c.FCCULS.CacheTTLSeconds)
 	}
 	if strings.TrimSpace(c.GridDBPath) != "" {
 		dbCheckOnMiss := true

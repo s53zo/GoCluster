@@ -1,12 +1,14 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"dxcluster/cty"
 	"dxcluster/spot"
+	"dxcluster/uls"
 )
 
 const ingestSamplePLIST = `<?xml version="1.0" encoding="UTF-8"?>
@@ -46,6 +48,40 @@ const ingestSamplePLIST = `<?xml version="1.0" encoding="UTF-8"?>
 		<key>ExactCallsign</key>
 		<false/>
 	</dict>
+<key>N2</key>
+	<dict>
+		<key>Country</key>
+		<string>United States</string>
+		<key>Prefix</key>
+		<string>N2</string>
+		<key>ADIF</key>
+		<integer>291</integer>
+		<key>CQZone</key>
+		<integer>5</integer>
+		<key>ITUZone</key>
+		<integer>8</integer>
+		<key>Continent</key>
+		<string>NA</string>
+		<key>ExactCallsign</key>
+		<false/>
+	</dict>
+<key>LZ</key>
+	<dict>
+		<key>Country</key>
+		<string>Bulgaria</string>
+		<key>Prefix</key>
+		<string>LZ</string>
+		<key>ADIF</key>
+		<integer>212</integer>
+		<key>CQZone</key>
+		<integer>20</integer>
+		<key>ITUZone</key>
+		<integer>28</integer>
+		<key>Continent</key>
+		<string>EU</string>
+		<key>ExactCallsign</key>
+		<false/>
+	</dict>
 </dict>
 </plist>`
 
@@ -59,7 +95,6 @@ func loadIngestCTY(t *testing.T) *cty.CTYDatabase {
 }
 
 func TestIngestValidatorPreservesGrids(t *testing.T) {
-	licCache = newLicenseCache(5 * time.Minute)
 	db := loadIngestCTY(t)
 	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, nil, make(chan *spot.Spot, 1), nil, nil, true)
 	v.isLicensedUS = func(call string) bool { return true }
@@ -87,7 +122,6 @@ func TestIngestValidatorPreservesGrids(t *testing.T) {
 }
 
 func TestIngestValidatorDropsUnlicensedUSSpotter(t *testing.T) {
-	licCache = newLicenseCache(5 * time.Minute)
 	db := loadIngestCTY(t)
 	var gotSource, gotRole, gotCall, gotMode string
 	var gotFreq float64
@@ -131,7 +165,6 @@ func TestIngestValidatorDropsUnlicensedUSSpotter(t *testing.T) {
 }
 
 func TestIngestValidatorSkipsULSForTestSpotter(t *testing.T) {
-	licCache = newLicenseCache(5 * time.Minute)
 	db := loadIngestCTY(t)
 	reported := false
 
@@ -150,5 +183,63 @@ func TestIngestValidatorSkipsULSForTestSpotter(t *testing.T) {
 	}
 	if reported {
 		t.Fatalf("did not expect unlicensed reporter for test spotter")
+	}
+}
+
+func TestIngestValidatorUsesBaseCallForLicenseJurisdiction(t *testing.T) {
+	db := loadIngestCTY(t)
+	checked := make([]string, 0, 2)
+
+	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, nil, make(chan *spot.Spot, 1), nil, nil, true)
+	v.isLicensedUS = func(call string) bool {
+		checked = append(checked, call)
+		return true
+	}
+
+	spotUSBase := spot.NewSpotNormalized("DL1ABC", "HR9/N2WQ", 14074.0, "FT8")
+	if !v.validateSpot(spotUSBase) {
+		t.Fatalf("expected HR9/N2WQ to pass validation")
+	}
+	if len(checked) != 1 || checked[0] != "N2WQ" {
+		t.Fatalf("expected license check on base call N2WQ, got %v", checked)
+	}
+
+	checked = checked[:0]
+	spotForeignBase := spot.NewSpotNormalized("DL1ABC", "K1/LZ5VV", 14074.0, "FT8")
+	if !v.validateSpot(spotForeignBase) {
+		t.Fatalf("expected K1/LZ5VV to pass validation")
+	}
+	if len(checked) != 0 {
+		t.Fatalf("expected no license check for foreign base call, got %v", checked)
+	}
+}
+
+func TestIngestValidatorDropsInvalidLeadingLetters(t *testing.T) {
+	db := loadIngestCTY(t)
+	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, nil, make(chan *spot.Spot, 1), nil, nil, true)
+	v.isLicensedUS = func(call string) bool { return true }
+
+	s := spot.NewSpotNormalized("ABC1", "K1ABC", 14074.0, "FT8")
+	if v.validateSpot(s) {
+		t.Fatalf("expected invalid leading letters to be dropped")
+	}
+}
+
+func TestIngestValidatorAllowlistOverridesInvalidLeadingLetters(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "allowlist.txt")
+	if err := os.WriteFile(path, []byte("(?i)^ABC1$\n"), 0o644); err != nil {
+		t.Fatalf("write allowlist: %v", err)
+	}
+	uls.SetAllowlistPath(path)
+	defer uls.SetAllowlistPath("")
+
+	db := loadIngestCTY(t)
+	v := newIngestValidator(func() *cty.CTYDatabase { return db }, nil, nil, nil, make(chan *spot.Spot, 1), nil, nil, true)
+	v.isLicensedUS = func(call string) bool { return true }
+
+	s := spot.NewSpotNormalized("ABC1", "K1ABC", 14074.0, "FT8")
+	if !v.validateSpot(s) {
+		t.Fatalf("expected allowlisted invalid call to pass validation")
 	}
 }

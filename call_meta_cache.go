@@ -141,6 +141,9 @@ func (c *callMetaCache) LookupCTY(call string, db *cty.CTYDatabase) (*cty.Prefix
 		if db == nil {
 			return nil, false, false
 		}
+		if shouldRejectCTYCall(call) {
+			return nil, false, false
+		}
 		info, ok := db.LookupCallsignPortable(call)
 		return info, ok, false
 	}
@@ -163,6 +166,16 @@ func (c *callMetaCache) LookupCTY(call string, db *cty.CTYDatabase) (*cty.Prefix
 		}
 	}
 	shard.mu.Unlock()
+
+	if shouldRejectCTYCall(call) {
+		shard.mu.Lock()
+		entry := shard.getOrCreate(call)
+		entry.ctyChecked = true
+		entry.ctyValid = false
+		entry.cty = nil
+		shard.mu.Unlock()
+		return nil, false, false
+	}
 
 	info, ok := db.LookupCallsignPortable(call)
 
