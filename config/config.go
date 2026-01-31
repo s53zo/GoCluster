@@ -277,7 +277,8 @@ type LoggingConfig struct {
 
 // PropReportConfig controls automatic propagation report generation on log rotation.
 type PropReportConfig struct {
-	Enabled bool `yaml:"enabled"`
+	Enabled    bool   `yaml:"enabled"`
+	RefreshUTC string `yaml:"refresh_utc"`
 }
 
 // UIPaneLines bounds history depth for ANSI and visible pane heights for tview.
@@ -856,6 +857,12 @@ func Load(path string) (*Config, error) {
 		}
 	} else if cfg.Logging.RetentionDays < 0 {
 		cfg.Logging.RetentionDays = 0
+	}
+	if strings.TrimSpace(cfg.PropReport.RefreshUTC) == "" {
+		cfg.PropReport.RefreshUTC = "00:05"
+	}
+	if _, err := time.Parse("15:04", cfg.PropReport.RefreshUTC); err != nil {
+		return nil, fmt.Errorf("invalid prop report refresh time %q: %w", cfg.PropReport.RefreshUTC, err)
 	}
 
 	// RBN ingest buffers should be sized to absorb decode bursts; fall back to
@@ -1798,6 +1805,11 @@ func (c *Config) Print() {
 		fmt.Printf("Logging: enabled (dir=%s retention_days=%d)\n", c.Logging.Dir, c.Logging.RetentionDays)
 	} else {
 		fmt.Printf("Logging: disabled\n")
+	}
+	if c.PropReport.Enabled {
+		fmt.Printf("Prop report: enabled (refresh=%s UTC)\n", c.PropReport.RefreshUTC)
+	} else {
+		fmt.Printf("Prop report: disabled\n")
 	}
 	if c.RBN.Enabled {
 		fmt.Printf("RBN CW/RTTY: %s:%d (as %s, transport=%s slot_buffer=%d keepalive=%ds)\n",

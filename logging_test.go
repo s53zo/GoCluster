@@ -1,8 +1,10 @@
 package main
 
 import (
+	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -72,10 +74,13 @@ func TestDailyFileSinkRotateHook(t *testing.T) {
 	var gotPrevDate time.Time
 	var gotPrevPath string
 	var gotNewPath string
+	hookDone := make(chan struct{})
+	var hookOnce sync.Once
 	sink.SetRotateHook(func(prevDate time.Time, prevPath, newPath string) {
 		gotPrevDate = prevDate
 		gotPrevPath = prevPath
 		gotNewPath = newPath
+		hookOnce.Do(func() { close(hookDone) })
 	})
 
 	day1 := time.Date(2026, time.January, 22, 12, 0, 0, 0, time.UTC)
@@ -84,6 +89,11 @@ func TestDailyFileSinkRotateHook(t *testing.T) {
 	sink.WriteLine("first", day1)
 	sink.WriteLine("second", day2)
 
+	select {
+	case <-hookDone:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("rotate hook did not complete")
+	}
 	if gotPrevDate.IsZero() {
 		t.Fatalf("expected rotate hook to capture previous date")
 	}
@@ -98,5 +108,49 @@ func TestDailyFileSinkRotateHook(t *testing.T) {
 	}
 	if filepath.Base(gotNewPath) != "23-Jan-2026.log" {
 		t.Fatalf("unexpected new log path: %s", gotNewPath)
+	}
+}
+
+func TestRotateHookLoggingDoesNotDeadlock(t *testing.T) {
+	dir := t.TempDir()
+	sink, err := newDailyFileSink(dir, 1)
+	if err != nil {
+		t.Fatalf("newDailyFileSink: %v", err)
+	}
+	defer sink.Close()
+
+	fanout := newLogFanout(nil, sink)
+	logger := log.New(fanout, "", 0)
+
+	now := time.Now().UTC()
+	sink.WriteLine("prime", now)
+
+	// Force the next log write to rotate without relying on wall-clock midnight.
+	sink.mu.Lock()
+	sink.currentDate = now.Add(-24 * time.Hour).Format(logFileDateLayout)
+	sink.mu.Unlock()
+
+	hookDone := make(chan struct{})
+	var hookOnce sync.Once
+	sink.SetRotateHook(func(prevDate time.Time, prevPath, newPath string) {
+		logger.Printf("rotate hook for %s", prevDate.Format(time.RFC3339))
+		hookOnce.Do(func() { close(hookDone) })
+	})
+
+	done := make(chan struct{})
+	go func() {
+		logger.Print("trigger rotation")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("logger.Print deadlocked during rotate hook logging")
+	}
+	select {
+	case <-hookDone:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("rotate hook did not complete")
 	}
 }

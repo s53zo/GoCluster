@@ -76,6 +76,17 @@ High-level flow:
       system: 40
   ```
 
+## Propagation Reports (Daily)
+
+The cluster can generate a daily propagation report from the prior day's log file. It triggers on log rotation and also on a fixed UTC schedule so quiet systems still produce reports.
+
+Config block (excerpt):
+```yaml
+prop_report:
+  enabled: true
+  refresh_utc: "00:05" # UTC time to enqueue yesterday's report
+```
+
 ## Data Flow and Spot Record Format
 
 ```

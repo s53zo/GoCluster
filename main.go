@@ -356,6 +356,7 @@ func main() {
 				})
 			})
 		}
+		startPropReportDailyScheduler(ctx, cfg.PropReport, cfg.Logging, propScheduler)
 		log.Printf("Prop report scheduler enabled")
 	} else {
 		log.Printf("Prop report scheduler disabled")
@@ -3340,6 +3341,49 @@ func sleepWithContext(ctx context.Context, d time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+// Purpose: Enqueue daily propagation reports on a fixed UTC schedule.
+// Key aspects: Uses configured refresh time, skips when logging is disabled, and
+// verifies the prior-day log file exists before enqueueing.
+// Upstream: main prop-report initialization.
+// Downstream: nextDailyUTC, propReportScheduler.Enqueue.
+func startPropReportDailyScheduler(ctx context.Context, cfg config.PropReportConfig, logCfg config.LoggingConfig, scheduler *propReportScheduler) {
+	if scheduler == nil || !cfg.Enabled {
+		return
+	}
+	if !logCfg.Enabled {
+		return
+	}
+	logDir := strings.TrimSpace(logCfg.Dir)
+	if logDir == "" {
+		log.Printf("Prop report daily scheduler disabled (logging.dir empty)")
+		return
+	}
+
+	go func() {
+		for {
+			delay := nextDailyUTC(cfg.RefreshUTC, time.Now().UTC(), 0, 5)
+			if !sleepWithContext(ctx, delay) {
+				return
+			}
+			now := time.Now().UTC()
+			reportDate := dateOnly(now).AddDate(0, 0, -1)
+			logPath := filepath.Join(logDir, logFileNameForDate(reportDate))
+			if _, err := os.Stat(logPath); err != nil {
+				if os.IsNotExist(err) {
+					log.Printf("Prop report skip: log file missing for %s (%s)", reportDate.Format("2006-01-02"), logPath)
+				} else {
+					log.Printf("Prop report skip: log file stat failed for %s (%s): %v", reportDate.Format("2006-01-02"), logPath, err)
+				}
+				continue
+			}
+			scheduler.Enqueue(propReportJob{
+				Date:    reportDate,
+				LogPath: logPath,
+			})
+		}
+	}()
 }
 
 // Purpose: Download and parse the CTY database when updated.

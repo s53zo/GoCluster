@@ -113,7 +113,11 @@ func (s *dailyFileSink) WriteLine(line string, now time.Time) {
 	s.mu.Unlock()
 
 	if hook != nil && !prevDate.IsZero() {
-		hook(prevDate, prevPath, newPath)
+		prevDateCopy := prevDate
+		prevPathCopy := prevPath
+		newPathCopy := newPath
+		// Invoke asynchronously to avoid re-entering the logger while its mutex is held.
+		go hook(prevDateCopy, prevPathCopy, newPathCopy)
 	}
 }
 
