@@ -55,6 +55,7 @@ type dailyFileSink struct {
 	file          *os.File
 	lastErrorAt   time.Time
 	rotateHook    logRotateHook
+	cleanupFn     func(string, time.Time, int) error
 	mu            sync.Mutex
 }
 
@@ -73,13 +74,15 @@ func newDailyFileSink(dir string, retentionDays int) (*dailyFileSink, error) {
 	if err := os.MkdirAll(trimmed, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create log directory %q: %w", trimmed, err)
 	}
-	if err := cleanupOldLogs(trimmed, time.Now().UTC(), retentionDays); err != nil {
-		fmt.Fprintf(os.Stderr, "Logging: cleanup failed for %s: %v\n", trimmed, err)
-	}
-	return &dailyFileSink{
+	sink := &dailyFileSink{
 		dir:           trimmed,
 		retentionDays: retentionDays,
-	}, nil
+		cleanupFn:     cleanupOldLogs,
+	}
+	if err := sink.cleanupFn(trimmed, time.Now().UTC(), retentionDays); err != nil {
+		fmt.Fprintf(os.Stderr, "Logging: cleanup failed for %s: %v\n", trimmed, err)
+	}
+	return sink, nil
 }
 
 // Purpose: Append a timestamped line to the current daily log file.
@@ -183,8 +186,17 @@ func (s *dailyFileSink) rotateLocked(date string, now time.Time) (logRotateHook,
 	s.currentDate = date
 	s.currentPath = path
 	newPath = path
-	if err := cleanupOldLogs(s.dir, now, s.retentionDays); err != nil {
-		s.reportErrorLocked(now, fmt.Errorf("cleanup failed: %w", err))
+	if s.cleanupFn != nil {
+		cleanupDir := s.dir
+		cleanupRetention := s.retentionDays
+		cleanupNow := now
+		cleanupFn := s.cleanupFn
+		// Cleanup can be slow on large directories; keep it off the hot path.
+		go func() {
+			if err := cleanupFn(cleanupDir, cleanupNow, cleanupRetention); err != nil {
+				s.reportError(time.Now().UTC(), fmt.Errorf("cleanup failed: %w", err))
+			}
+		}()
 	}
 	return hook, prevDate, prevPath, newPath
 }
@@ -198,6 +210,15 @@ func (s *dailyFileSink) reportErrorLocked(now time.Time, err error) {
 	}
 	s.lastErrorAt = now
 	fmt.Fprintf(os.Stderr, "Logging: %v\n", err)
+}
+
+func (s *dailyFileSink) reportError(now time.Time, err error) {
+	if s == nil || err == nil {
+		return
+	}
+	s.mu.Lock()
+	s.reportErrorLocked(now, err)
+	s.mu.Unlock()
 }
 
 type logFanout struct {

@@ -111,6 +111,43 @@ func TestDailyFileSinkRotateHook(t *testing.T) {
 	}
 }
 
+func TestDailyFileSinkCleanupAsync(t *testing.T) {
+	dir := t.TempDir()
+	sink, err := newDailyFileSink(dir, 1)
+	if err != nil {
+		t.Fatalf("newDailyFileSink: %v", err)
+	}
+	defer sink.Close()
+
+	cleanupStarted := make(chan struct{})
+	cleanupBlock := make(chan struct{})
+	sink.cleanupFn = func(dir string, now time.Time, retentionDays int) error {
+		close(cleanupStarted)
+		<-cleanupBlock
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		sink.WriteLine("line", time.Now().UTC())
+		close(done)
+	}()
+
+	select {
+	case <-cleanupStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("cleanup did not start")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("WriteLine blocked on cleanup; expected async cleanup")
+	}
+
+	close(cleanupBlock)
+}
+
 func TestRotateHookLoggingDoesNotDeadlock(t *testing.T) {
 	dir := t.TempDir()
 	sink, err := newDailyFileSink(dir, 1)
