@@ -48,6 +48,7 @@ import (
 	"dxcluster/spot"
 	"dxcluster/stats"
 	"dxcluster/telnet"
+	"dxcluster/ui"
 	"dxcluster/uls"
 
 	"github.com/cockroachdb/pebble"
@@ -295,7 +296,7 @@ func main() {
 	uiMode := strings.ToLower(strings.TrimSpace(cfg.UI.Mode))
 	renderAllowed := isStdoutTTY()
 
-	var ui uiSurface
+	var surface ui.Surface
 	switch uiMode {
 	case "headless":
 		log.Printf("UI disabled (mode=headless)")
@@ -303,26 +304,32 @@ func main() {
 		if !renderAllowed {
 			log.Printf("UI disabled (tview requires an interactive console)")
 		} else {
-			ui = newDashboard(cfg.UI, true)
+			surface = newDashboard(cfg.UI, true)
+		}
+	case "tview-v2":
+		if !renderAllowed {
+			log.Printf("UI disabled (tview-v2 requires an interactive console)")
+		} else {
+			surface = ui.NewDashboardV2(cfg.UI, true)
 		}
 	case "ansi":
 		if !renderAllowed {
 			log.Printf("UI disabled (ansi renderer requires an interactive console)")
 		} else {
-			ui = newANSIConsole(cfg.UI, renderAllowed)
+			surface = newANSIConsole(cfg.UI, renderAllowed)
 		}
 	default:
 		log.Printf("UI mode %q not recognized; defaulting to headless", uiMode)
 	}
 
-	if ui != nil {
-		ui.WaitReady()
-		defer ui.Stop()
+	if surface != nil {
+		surface.WaitReady()
+		defer surface.Stop()
 		if logMux != nil {
 			// UI surfaces render their own timestamps; keep log lines raw.
-			logMux.SetConsoleSink(ui.SystemWriter(), false)
+			logMux.SetConsoleSink(surface.SystemWriter(), false)
 		}
-		ui.SetStats([]string{"Initializing..."})
+		surface.SetStats([]string{"Initializing..."})
 	} else {
 		if logMux != nil {
 			logMux.SetConsoleSink(os.Stdout, true)
@@ -395,7 +402,7 @@ func main() {
 	metaCache := newCallMetaCache(cfg.GridCacheSize, time.Duration(cfg.GridCacheTTLSec)*time.Second)
 
 	// Print the configuration (stdout only when not using the dashboard)
-	if ui == nil {
+	if surface == nil {
 		cfg.Print()
 	} else {
 		log.Printf("Configuration loaded for %s (%s)", cfg.Server.Name, cfg.Server.NodeID)
@@ -491,8 +498,8 @@ func main() {
 
 	// Create stats tracker
 	statsTracker := stats.NewTracker()
-	dropReporter := makeDroppedReporter(ui)
-	unlicensedReporter := makeUnlicensedReporter(ui, statsTracker)
+	dropReporter := makeDroppedReporter(surface)
+	unlicensedReporter := makeUnlicensedReporter(surface, statsTracker)
 
 	var repGate *reputation.Gate
 	var repDropReporter func(reputation.DropEvent)
@@ -503,7 +510,7 @@ func main() {
 		} else {
 			repGate = gate
 			repGate.Start(ctx)
-			repDropReporter = makeReputationDropReporter(dropReporter, statsTracker, cfg.Reputation)
+			repDropReporter = makeReputationDropReporter(surface, dropReporter, statsTracker, cfg.Reputation)
 		}
 	}
 
@@ -817,7 +824,7 @@ func main() {
 	// Downstream: processOutputSpots.
 	pathReport := newPathReportMetrics()
 	pskrPathOnlyStats := &pathOnlyStats{}
-	go processOutputSpots(deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor, pathReport, allowedBandSet)
+	go processOutputSpots(deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, surface, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor, pathReport, allowedBandSet)
 	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
@@ -972,7 +979,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor, pskrClient, pskrPathOnlyStats)
+	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, knownCallsPath, telnetServer, surface, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor, pskrClient, pskrPathOnlyStats)
 	if pathCfg.Enabled {
 		go startPathPredictionLogger(ctx, logMux, telnetServer, pathPredictor, pathReport)
 	}
@@ -1079,7 +1086,7 @@ func main() {
 // Key aspects: Returns a closure that increments stats and formats output.
 // Upstream: main wiring for applyLicenseGate reporting.
 // Downstream: tracker.IncrementUnlicensedDrops and dash.AppendUnlicensed/log.Println.
-func makeUnlicensedReporter(dash uiSurface, tracker *stats.Tracker) func(source, role, call, mode string, freq float64) {
+func makeUnlicensedReporter(dash ui.Surface, tracker *stats.Tracker) func(source, role, call, mode string, freq float64) {
 	// Purpose: Emit an unlicensed drop event with consistent formatting.
 	// Key aspects: Normalizes fields and routes to UI or log.
 	// Upstream: applyLicenseGate.
@@ -1107,7 +1114,7 @@ func makeUnlicensedReporter(dash uiSurface, tracker *stats.Tracker) func(source,
 // Key aspects: Routes to dropped pane when UI is active, otherwise logs.
 // Upstream: CTY/PC61/reputation drop paths.
 // Downstream: dash.AppendDropped and log.Print.
-func makeDroppedReporter(dash uiSurface) func(line string) {
+func makeDroppedReporter(dash ui.Surface) func(line string) {
 	return func(line string) {
 		if line == "" {
 			return
@@ -1124,7 +1131,7 @@ func makeDroppedReporter(dash uiSurface) func(line string) {
 // Key aspects: Updates counters and routes to the dropped pane or logs.
 // Upstream: Reputation gate in telnet command path.
 // Downstream: stats tracker and dropped/system logs.
-func makeReputationDropReporter(dropReporter func(string), tracker *stats.Tracker, cfg config.ReputationConfig) func(reputation.DropEvent) {
+func makeReputationDropReporter(dash ui.Surface, dropReporter func(string), tracker *stats.Tracker, cfg config.ReputationConfig) func(reputation.DropEvent) {
 	if tracker == nil {
 		return nil
 	}
@@ -1141,6 +1148,10 @@ func makeReputationDropReporter(dropReporter func(string), tracker *stats.Tracke
 			}
 		}
 		line := formatReputationDropLine(ev)
+		if dash != nil {
+			dash.AppendReputation(line)
+			return
+		}
 		if dropReporter != nil {
 			dropReporter(line)
 			return
@@ -1263,7 +1274,7 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor, pskrClient *pskreporter.Client, pskrPathOnly *pathOnlyStats) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], knownCallsPath string, telnetSrv *telnet.Server, dash ui.Surface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor, pskrClient *pskreporter.Client, pskrPathOnly *pathOnlyStats) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -1443,6 +1454,39 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 
 		if dash != nil {
 			dash.SetStats(lines)
+			snapshot := ui.Snapshot{
+				GeneratedAt: time.Now().UTC(),
+				OverviewLines: buildOverviewLines(tracker, dedup, secondaryFast, secondaryMed, secondarySlow, metaCache, knownPtr, ctyState, knownCallsPath, fccSnap, gridStats, pathPredictor, telnetSrv,
+					combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4,
+					pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144,
+					totalCorrections, totalUnlicensed, totalHarmonics, reputationTotal,
+				),
+				IngestLines: []string{
+					fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4),
+					fmt.Sprintf("PSKReporter: %s TOTAL / %s CW / %s RTTY / %s FT8 / %s FT4 / %s MSK144",
+						humanize.Comma(int64(pskTotal)),
+						humanize.Comma(int64(pskCW)),
+						humanize.Comma(int64(pskRTTY)),
+						humanize.Comma(int64(pskFT8)),
+						humanize.Comma(int64(pskFT4)),
+						humanize.Comma(int64(pskMSK144)),
+					),
+					fmt.Sprintf("Ingest total: %s", humanize.Comma(int64(ingestTotal))),
+				},
+				PipelineLines: []string{
+					pipelineLine,
+					fmt.Sprintf("Corrections: %d  Unlicensed: %d  Freq: %d  Harmonics: %d  Reputation: %d",
+						totalCorrections, totalUnlicensed, totalFreqCorrections, totalHarmonics, reputationTotal),
+				},
+				NetworkLines: []string{
+					fmt.Sprintf("Telnet clients: %d", clientCount),
+					fmt.Sprintf("Drops: %d (Q) / %d (C) / %d (W)", queueDrops, clientDrops, senderFailures),
+				},
+			}
+			if pathOnlyLine != "" {
+				snapshot.IngestLines = append(snapshot.IngestLines, pathOnlyLine)
+			}
+			dash.SetSnapshot(snapshot)
 		} else {
 			for _, line := range lines {
 				log.Print(line)
@@ -1767,7 +1811,7 @@ func processOutputSpots(
 	knownCalls *atomic.Pointer[spot.KnownCallsigns],
 	freqAvg *spot.FrequencyAverager,
 	spotPolicy config.SpotPolicy,
-	dash uiSurface,
+	dash ui.Surface,
 	gridUpdate func(call, grid string),
 	gridLookup func(call string) (string, bool, bool),
 	gridLookupSync func(call string) (string, bool, bool),
@@ -2719,7 +2763,7 @@ func metadataFromPrefix(info *cty.PrefixInfo) spot.CallMetadata {
 // Key aspects: Evaluates corrections, updates stats, and can suppress spots.
 // Upstream: processOutputSpots call correction stage.
 // Downstream: spot.ApplyCallCorrection, traceLogger, tracker updates.
-func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, metaCache *callMetaCache, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash uiSurface, traceLogger spot.CorrectionTraceLogger, cooldown *spot.CallCooldown, adaptive *spot.AdaptiveMinReports, spotterReliability spot.SpotterReliability) bool {
+func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, metaCache *callMetaCache, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash ui.Surface, traceLogger spot.CorrectionTraceLogger, cooldown *spot.CallCooldown, adaptive *spot.AdaptiveMinReports, spotterReliability spot.SpotterReliability) bool {
 	if spotEntry == nil {
 		return false
 	}
@@ -3582,6 +3626,17 @@ func (s *ctyRefreshState) failures() (int64, string) {
 		}
 	}
 	return s.failureCount.Load(), errText
+}
+
+func (s *ctyRefreshState) lastSuccessTime() (time.Time, bool) {
+	if s == nil {
+		return time.Time{}, false
+	}
+	ts := s.lastSuccess.Load()
+	if ts <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(ts, 0).UTC(), true
 }
 
 // Purpose: Format FCC database status line for stats output.
@@ -4763,6 +4818,207 @@ func formatDurationShort(d time.Duration) string {
 	}
 	seconds := int(d / time.Second)
 	return fmt.Sprintf("%ds", seconds)
+}
+
+func formatTimeShortZ(t time.Time) string {
+	if t.IsZero() {
+		return "n/a"
+	}
+	return t.UTC().Format("2006-01-02 15:04Z")
+}
+
+func gcPauseP99(mem *runtime.MemStats) time.Duration {
+	if mem == nil {
+		return 0
+	}
+	var pauses []uint64
+	for _, v := range mem.PauseNs {
+		if v > 0 {
+			pauses = append(pauses, v)
+		}
+	}
+	if len(pauses) == 0 {
+		return 0
+	}
+	sort.Slice(pauses, func(i, j int) bool { return pauses[i] < pauses[j] })
+	idx := int(float64(len(pauses)-1) * 0.99)
+	if idx < 0 {
+		idx = 0
+	}
+	return time.Duration(pauses[idx])
+}
+
+func formatPercent(numer, denom uint64) string {
+	if denom == 0 {
+		return "n/a"
+	}
+	pct := float64(numer) / float64(denom) * 100
+	return fmt.Sprintf("%.1f%%", pct)
+}
+
+func buildOverviewLines(
+	tracker *stats.Tracker,
+	dedup *dedup.Deduplicator,
+	secondaryFast *dedup.SecondaryDeduper,
+	secondaryMed *dedup.SecondaryDeduper,
+	secondarySlow *dedup.SecondaryDeduper,
+	metaCache *callMetaCache,
+	knownPtr *atomic.Pointer[spot.KnownCallsigns],
+	ctyState *ctyRefreshState,
+	knownCallsPath string,
+	fccSnap *fccSnapshot,
+	gridStats *gridMetrics,
+	pathPredictor *pathreliability.Predictor,
+	telnetSrv *telnet.Server,
+	rbnTotal, rbnCW, rbnRTTY, rbnFT8, rbnFT4 uint64,
+	pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144 uint64,
+	totalCorrections, totalUnlicensed, totalHarmonics, reputationTotal uint64,
+) []string {
+	now := time.Now().UTC()
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	heap := humanize.Bytes(mem.HeapAlloc)
+	sys := humanize.Bytes(mem.Sys)
+	gcP99 := gcPauseP99(&mem)
+	lastGC := time.Duration(0)
+	if mem.LastGC > 0 {
+		lastGC = now.Sub(time.Unix(0, int64(mem.LastGC)))
+	}
+	uptime := time.Duration(0)
+	if tracker != nil {
+		uptime = tracker.GetUptime()
+	}
+
+	gridLookups := uint64(0)
+	gridHits := uint64(0)
+	if gridStats != nil {
+		gridLookups = gridStats.cacheLookups.Load()
+		gridHits = gridStats.cacheHits.Load()
+	}
+	metaLookups := uint64(0)
+	metaHits := uint64(0)
+	metaCount := 0
+	if metaCache != nil {
+		metaCount = metaCache.EntryCount()
+		metaMetrics := metaCache.CTYMetrics()
+		metaLookups = metaMetrics.Lookups
+		metaHits = metaMetrics.Hits
+	}
+
+	var knownCount int
+	var knownLookups, knownHits uint64
+	if knownPtr != nil {
+		if known := knownPtr.Load(); known != nil {
+			knownCount = known.Count()
+			knownLookups, knownHits = known.Stats()
+		}
+	}
+
+	ctyTime := "n/a"
+	if ctyState != nil {
+		if ts, ok := ctyState.lastSuccessTime(); ok {
+			ctyTime = formatTimeShortZ(ts)
+		}
+	}
+
+	scpTime := "n/a"
+	if knownCallsPath != "" {
+		if info, err := os.Stat(knownCallsPath); err == nil {
+			scpTime = formatTimeShortZ(info.ModTime())
+		}
+	}
+
+	fccTime := "n/a"
+	if fccSnap != nil && !fccSnap.UpdatedAt.IsZero() {
+		fccTime = formatTimeShortZ(fccSnap.UpdatedAt)
+	}
+
+	primaryDupPct := "n/a"
+	if dedup != nil {
+		processed, duplicates, _ := dedup.GetStats()
+		if processed > 0 && duplicates <= processed {
+			primaryDupPct = formatPercent(duplicates, processed)
+		}
+	}
+	secondarySummary := "F-- M-- S--"
+	if secondaryFast != nil || secondaryMed != nil || secondarySlow != nil {
+		secondarySummary = fmt.Sprintf("F%s M%s S%s",
+			formatSecondaryPercent(secondaryFast),
+			formatSecondaryPercent(secondaryMed),
+			formatSecondaryPercent(secondarySlow),
+		)
+	}
+
+	clientCount := 0
+	var queueDrops, clientDrops, senderFailures uint64
+	if telnetSrv != nil {
+		queueDrops, clientDrops, senderFailures = telnetSrv.BroadcastMetricSnapshot()
+		clientCount = telnetSrv.GetClientCount()
+	}
+
+	pathPairs := "Path pairs: n/a"
+	if pathPredictor != nil {
+		stats := pathPredictor.Stats(now)
+		pathPairs = fmt.Sprintf("Path pairs: %s (L2) / %s (L1)",
+			humanize.Comma(int64(stats.CombinedFine)),
+			humanize.Comma(int64(stats.CombinedCoarse)),
+		)
+	}
+
+	lines := []string{
+		fmt.Sprintf("DX Cluster v%s  Uptime: %s  Goroutines: %d  Heap: %s", Version, formatUptimeLine(uptime), runtime.NumGoroutine(), heap),
+		"MEMORY / GC",
+		fmt.Sprintf("Heap: %s  Sys: %s  GC p99: %s  Last GC: %s ago", heap, sys, formatDurationShort(gcP99), formatDurationShort(lastGC)),
+		"INGEST RATES (per min)",
+		fmt.Sprintf("RBN: %s   | CW %s | RTTY %s | FT8 %s | FT4 %s",
+			humanize.Comma(int64(rbnTotal)),
+			humanize.Comma(int64(rbnCW)),
+			humanize.Comma(int64(rbnRTTY)),
+			humanize.Comma(int64(rbnFT8)),
+			humanize.Comma(int64(rbnFT4)),
+		),
+		fmt.Sprintf("PSK: %s   | CW %s | RTTY %s | FT8 %s | FT4 %s | MSK %s",
+			humanize.Comma(int64(pskTotal)),
+			humanize.Comma(int64(pskCW)),
+			humanize.Comma(int64(pskRTTY)),
+			humanize.Comma(int64(pskFT8)),
+			humanize.Comma(int64(pskFT4)),
+			humanize.Comma(int64(pskMSK144)),
+		),
+		"PIPELINE QUALITY",
+		fmt.Sprintf("Primary Dedupe: %s | Secondary: %s", primaryDupPct, secondarySummary),
+		fmt.Sprintf("Corrections: %s | Unlicensed: %s | Harmonics: %s | Reputation drops: %s",
+			humanize.Comma(int64(totalCorrections)),
+			humanize.Comma(int64(totalUnlicensed)),
+			humanize.Comma(int64(totalHarmonics)),
+			humanize.Comma(int64(reputationTotal)),
+		),
+		"CACHES & DATA FRESHNESS",
+		fmt.Sprintf("Grid cache hit: %s   Meta cache: %s (hit %s)   Known calls: %s (hit %s)",
+			formatPercent(gridHits, gridLookups),
+			humanize.Comma(int64(metaCount)),
+			formatPercent(metaHits, metaLookups),
+			humanize.Comma(int64(knownCount)),
+			formatPercent(knownHits, knownLookups),
+		),
+		fmt.Sprintf("CTY: %s  SCP: %s  FCC: %s", ctyTime, scpTime, fccTime),
+		"PATH PREDICTIONS",
+		pathPairs,
+		"NETWORK",
+		fmt.Sprintf("Telnet: %d clients   Drops: Q%d C%d W%d", clientCount, queueDrops, clientDrops, senderFailures),
+	}
+	return lines
+}
+
+func formatSecondaryPercent(d *dedup.SecondaryDeduper) string {
+	if d == nil {
+		return "--"
+	}
+	processed, duplicates, _ := d.GetStats()
+	if processed == 0 || duplicates > processed {
+		return "0%"
+	}
+	return fmt.Sprintf("%.0f%%", float64(processed-duplicates)/float64(processed)*100)
 }
 
 // wwvKindFromLine tags non-DX lines coming from human/relay telnet ingest.

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"dxcluster/config"
+	"dxcluster/ui"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -24,19 +25,6 @@ const (
 	batchFlushEvery = 100 * time.Millisecond
 	batchMaxLines   = 32
 )
-
-// uiSurface abstracts the dashboard/UI so alternative console renderers can plug in.
-type uiSurface interface {
-	WaitReady()
-	Stop()
-	SetStats(lines []string)
-	AppendDropped(line string)
-	AppendCall(line string)
-	AppendUnlicensed(line string)
-	AppendHarmonic(line string)
-	AppendSystem(line string)
-	SystemWriter() io.Writer
-}
 
 // dashboard renders the console layout when a compatible terminal is available.
 // It shows stats plus five scrolling panes (dropped, corrected, unlicensed,
@@ -238,6 +226,12 @@ func (d *dashboard) SetStats(lines []string) {
 	})
 }
 
+// Purpose: Satisfy ui.Surface snapshot contract (legacy dashboard ignores structured snapshots).
+// Key aspects: No-op for legacy tview UI.
+// Upstream: main stats loop.
+// Downstream: None.
+func (d *dashboard) SetSnapshot(_ ui.Snapshot) {}
+
 // Purpose: Queue a call-correction line for the calls pane.
 // Key aspects: Uses batching to reduce redraws.
 // Upstream: call correction path.
@@ -268,6 +262,14 @@ func (d *dashboard) AppendUnlicensed(line string) {
 // Downstream: d.enqueue.
 func (d *dashboard) AppendHarmonic(line string) {
 	d.enqueue(&d.harmBatch, line)
+}
+
+// Purpose: Queue a reputation drop line for the dropped pane.
+// Key aspects: Routes reputation drops into the dropped pane for legacy UI.
+// Upstream: reputation gate path.
+// Downstream: d.enqueue.
+func (d *dashboard) AppendReputation(line string) {
+	d.enqueue(&d.droppedBatch, line)
 }
 
 // Purpose: Queue a system log line for the system pane.
