@@ -8,6 +8,7 @@ type Surface interface {
 	WaitReady()
 	Stop()
 	SetStats(lines []string)
+	UpdateNetworkStatus(summaryLine string, clientLines []string)
 	AppendDropped(line string)
 	AppendCall(line string)
 	AppendUnlicensed(line string)

@@ -226,6 +226,12 @@ func (d *dashboard) SetStats(lines []string) {
 	})
 }
 
+// Purpose: Satisfy ui.Surface network update contract (legacy dashboard ignores it).
+// Key aspects: No-op for legacy tview UI.
+// Upstream: telnet client change notifier.
+// Downstream: None.
+func (d *dashboard) UpdateNetworkStatus(summaryLine string, clientLines []string) {}
+
 // Purpose: Satisfy ui.Surface snapshot contract (legacy dashboard ignores structured snapshots).
 // Key aspects: No-op for legacy tview UI.
 // Upstream: main stats loop.

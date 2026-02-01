@@ -40,9 +40,16 @@ type DashboardV2 struct {
 	eventsBuf *BoundedEventBuffer
 	debugBuf  *BoundedEventBuffer
 
-	overviewView *tview.TextView
-	ingestView   *tview.TextView
-	networkView  *tview.TextView
+	overviewRoot     *tview.Flex
+	overviewHdr      *tview.TextView
+	overviewMem      *tview.TextView
+	overviewIngest   *tview.TextView
+	overviewPipeline *tview.TextView
+	overviewCaches   *tview.TextView
+	overviewPath     *tview.TextView
+	overviewNetwork  *tview.TextView
+	ingestView       *tview.TextView
+	networkView      *tview.TextView
 
 	eventsPage *eventPage
 	debugPage  *eventPage
@@ -96,7 +103,28 @@ func NewDashboardV2(cfg config.UIConfig, enable bool) *DashboardV2 {
 	d.eventsBuf = NewBoundedEventBuffer("events", cfg.V2.EventBuffer.MaxEvents, eventMaxBytes, eventPolicy, log.Printf)
 	d.debugBuf = NewBoundedEventBuffer("debug", cfg.V2.DebugBuffer.MaxEvents, debugMaxBytes, debugPolicy, log.Printf)
 
-	d.overviewView = newPageTextView("Overview")
+	d.overviewHdr = newBoxedTextView("Overview")
+	d.overviewMem = newBoxedTextView("Memory / GC")
+	d.overviewIngest = newBoxedTextView("Ingest Rates (per min)")
+	d.overviewPipeline = newBoxedTextView("Pipeline Quality")
+	d.overviewCaches = newBoxedTextView("Caches & Data Freshness")
+	d.overviewPath = newBoxedTextView("Path Predictions")
+	d.overviewNetwork = newBoxedTextView("Network")
+	d.seedOverviewPlaceholders()
+	d.overviewRoot = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(d.overviewHdr, 3, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.overviewMem, 3, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.overviewIngest, 6, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.overviewPipeline, 4, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.overviewCaches, 10, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.overviewPath, 3, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.overviewNetwork, 0, 1, false)
 	d.ingestView = newPageTextView("Ingest")
 	d.networkView = newPageTextView("Network")
 
@@ -104,7 +132,7 @@ func NewDashboardV2(cfg config.UIConfig, enable bool) *DashboardV2 {
 	d.debugPage = newEventPage(ctx, "Debug", d.debugBuf, false, metrics)
 	d.pipeline = newPipelinePage(ctx, d.eventsBuf)
 
-	d.pages.AddPage("overview", d.overviewView, true, false)
+	d.pages.AddPage("overview", d.overviewRoot, true, false)
 	d.pages.AddPage("ingest", d.ingestView, true, false)
 	d.pages.AddPage("pipeline", d.pipeline.root, true, false)
 	d.pages.AddPage("network", d.networkView, true, false)
@@ -261,7 +289,7 @@ func (d *DashboardV2) showPage(name string) {
 	case "debug":
 		d.app.SetFocus(d.debugPage.list)
 	case "overview":
-		d.app.SetFocus(d.overviewView)
+		d.app.SetFocus(d.overviewRoot)
 	case "ingest":
 		d.app.SetFocus(d.ingestView)
 	case "pipeline":
@@ -353,6 +381,33 @@ func (d *DashboardV2) SetSnapshot(snapshot Snapshot) {
 	})
 }
 
+func (d *DashboardV2) UpdateNetworkStatus(summaryLine string, clientLines []string) {
+	if d == nil {
+		return
+	}
+	lines := make([]string, 0, 1+len(clientLines))
+	if summaryLine != "" {
+		lines = append(lines, summaryLine)
+	}
+	lines = append(lines, clientLines...)
+	text := padLines(strings.Join(lines, "\n"))
+	d.scheduler.Schedule("network", func() {
+		if d.networkView != nil {
+			d.networkView.SetText(text)
+		}
+		if d.overviewNetwork != nil {
+			d.overviewNetwork.SetText(text)
+			if d.overviewRoot != nil {
+				height := len(lines) + 2
+				if height < 3 {
+					height = 3
+				}
+				d.overviewRoot.ResizeItem(d.overviewNetwork, height, 0)
+			}
+		}
+	})
+}
+
 func (d *DashboardV2) renderSnapshot() {
 	snap := d.snapshotCopy()
 	if len(snap.OverviewLines) == 0 {
@@ -360,9 +415,9 @@ func (d *DashboardV2) renderSnapshot() {
 		snap.OverviewLines = append([]string{}, d.statsLines...)
 		d.statsMu.Unlock()
 	}
-	d.overviewView.SetText(strings.Join(snap.OverviewLines, "\n"))
-	d.ingestView.SetText(strings.Join(snap.IngestLines, "\n"))
-	d.networkView.SetText(strings.Join(snap.NetworkLines, "\n"))
+	d.updateOverviewBoxes(snap.OverviewLines)
+	d.ingestView.SetText(padLines(strings.Join(snap.IngestLines, "\n")))
+	d.networkView.SetText(padLines(strings.Join(snap.NetworkLines, "\n")))
 
 	d.eventsPage.refresh()
 	d.debugPage.refresh()
@@ -477,8 +532,118 @@ func newPageTextView(title string) *tview.TextView {
 	return tv
 }
 
+func newBoxedTextView(title string) *tview.TextView {
+	tv := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
+	tv.SetBorder(true)
+	if title != "" {
+		tv.SetTitle("[#ff69b4]" + title + "[-]").SetTitleAlign(tview.AlignLeft)
+	}
+	tv.SetBorderColor(tcell.ColorGray)
+	tv.SetTitleColor(tcell.ColorHotPink)
+	return tv
+}
+
+func newSpacer() *tview.Box {
+	return tview.NewBox()
+}
+
 func buildFooter() *tview.TextView {
-	return tview.NewTextView().SetText("[F1]Help  [F2]Overview  [F3]Ingest  [F4]Pipeline  [F5]Network  [F6]Events  [F7]Debug  [Q]Quit")
+	return tview.NewTextView().SetDynamicColors(true).SetText("[#ff69b4]F1[-]Help  [#ff69b4]F2[-]Overview  [#ff69b4]F3[-]Ingest  [#ff69b4]F4[-]Pipeline  [#ff69b4]F5[-]Network  [#ff69b4]F6[-]Events  [#ff69b4]F7[-]Debug  [Q]Quit")
+}
+
+func (d *DashboardV2) updateOverviewBoxes(lines []string) {
+	if len(lines) == 0 {
+		d.seedOverviewPlaceholders()
+		return
+	}
+	// Expected format from buildOverviewLines:
+	// 0 header
+	// 1 "MEMORY / GC"
+	// 2 memory line
+	// 3 "INGEST RATES (per min)"
+	// 4 rbn line
+	// 5 psk line
+	// 6 p92 line
+	// 7 path-only line
+	// 8 primary/secondary line
+	// 9 corrections line
+	// Section markers are used to slice cache/path/network blocks.
+	set := func(tv *tview.TextView, text string) {
+		if tv != nil {
+			tv.SetText(padLines(text))
+		}
+	}
+	set(d.overviewHdr, lines[0])
+	if len(lines) > 2 {
+		set(d.overviewMem, lines[2])
+	}
+	if len(lines) > 7 {
+		set(d.overviewIngest, lines[4]+"\n"+lines[5]+"\n"+lines[6]+"\n"+lines[7])
+	}
+	if len(lines) > 9 {
+		set(d.overviewPipeline, lines[8]+"\n"+lines[9])
+	}
+	cacheIdx := -1
+	pathIdx := -1
+	networkIdx := -1
+	for i, line := range lines {
+		switch line {
+		case "CACHES & DATA FRESHNESS":
+			cacheIdx = i
+		case "PATH PREDICTIONS":
+			pathIdx = i
+		case "NETWORK":
+			networkIdx = i
+		}
+	}
+	if cacheIdx >= 0 && pathIdx > cacheIdx+1 {
+		cacheLines := lines[cacheIdx+1 : pathIdx]
+		set(d.overviewCaches, strings.Join(cacheLines, "\n"))
+		if d.overviewRoot != nil {
+			height := len(cacheLines) + 2
+			if height < 3 {
+				height = 3
+			}
+			d.overviewRoot.ResizeItem(d.overviewCaches, height, 0)
+		}
+	}
+	if pathIdx >= 0 && networkIdx > pathIdx+1 {
+		pathLines := lines[pathIdx+1 : networkIdx]
+		set(d.overviewPath, strings.Join(pathLines, "\n"))
+		if d.overviewRoot != nil {
+			height := len(pathLines) + 2
+			if height < 3 {
+				height = 3
+			}
+			d.overviewRoot.ResizeItem(d.overviewPath, height, 0)
+		}
+	}
+	if networkIdx >= 0 && len(lines) > networkIdx+1 {
+		networkLines := lines[networkIdx+1:]
+		set(d.overviewNetwork, strings.Join(networkLines, "\n"))
+		if d.overviewRoot != nil {
+			height := len(networkLines) + 2
+			if height < 3 {
+				height = 3
+			}
+			d.overviewRoot.ResizeItem(d.overviewNetwork, height, 0)
+		}
+	}
+}
+
+func (d *DashboardV2) seedOverviewPlaceholders() {
+	set := func(tv *tview.TextView, text string) {
+		if tv != nil {
+			tv.SetText(padLines(text))
+		}
+	}
+	set(d.overviewHdr, "[yellow]Cluster[-]: --  [yellow]Version[-]: --  [yellow]Uptime[-]: --:--")
+	set(d.overviewMem, "[yellow]Heap[-]: --  [yellow]Sys[-]: --  [yellow]GC p99[-]: --  [yellow]Last GC[-]: --  [yellow]Goroutines[-]: --")
+	set(d.overviewIngest, "[yellow]RBN[-]: -- | [yellow]CW[-] -- | [yellow]RTTY[-] -- | [yellow]FT8[-] -- | [yellow]FT4[-] --\n[yellow]PSK[-]: -- | [yellow]CW[-] -- | [yellow]RTTY[-] -- | [yellow]FT8[-] -- | [yellow]FT4[-] -- | [yellow]MSK[-] --\n[yellow]P92[-]: --\n[yellow]Path[-]: -- (U) / -- (S) / -- (N) / -- (G) / -- (H) / -- (B) / -- (M)")
+	set(d.overviewPipeline, "[yellow]Primary Dedupe[-]: -- | [yellow]Secondary[-]: F-- M-- S--\n[yellow]Corrections[-]: -- | [yellow]Unlicensed[-]: -- | [yellow]Harmonics[-]: -- | [yellow]Reputation[-]: --")
+	set(d.overviewCaches, "[yellow]Grid cache[-]:  [[white:white]   [black:white]326,629[-:-]   [-:-]░░░░] 98.5%\n[yellow]Meta cache[-]:  [[white:white]  [black:white] 5,479[-:-]  [-:-]] 99.5%\n[yellow]Known calls[-]: [[white:white] [black:white]50,314[-:-] [-:-]░░░░░░░░] 49.4%\n\n[yellow]CTY[-]: --  [yellow]SCP[-]: --  [yellow]FCC[-]: --  [yellow]Skew[-]: --")
+	set(d.overviewPath, "[yellow]Path pairs[-]: -- (L2) / -- (L1)\n[yellow]160m[-]: -- / --   [yellow]80m[-]: -- / --")
+	set(d.overviewNetwork, "[yellow]Telnet[-]: -- clients   [yellow]Drops[-]: Q-- C-- W--")
 }
 
 func buildHelpOverlay() tview.Primitive {
@@ -487,7 +652,7 @@ func buildHelpOverlay() tview.Primitive {
 KEYBOARD HELP
 
 NAVIGATION
-  F1  Help   F2 Overview   F3 Ingest   F4 Pipeline   F5 Network   F6 Events   F7 Debug
+  [#ff69b4]F1[-]  Help   [#ff69b4]F2[-] Overview   [#ff69b4]F3[-] Ingest   [#ff69b4]F4[-] Pipeline   [#ff69b4]F5[-] Network   [#ff69b4]F6[-] Events   [#ff69b4]F7[-] Debug
   Tab Next page   Shift+Tab Previous page   q / Ctrl+C Quit
 
 EVENTS/DEBUG
@@ -495,6 +660,8 @@ EVENTS/DEBUG
   1-6 Filter tabs (Events)   / Search   Esc Clear search / close
 `))
 	help.SetBorder(true).SetTitle("Help")
+	help.SetBorderColor(tcell.ColorGray)
+	help.SetTitleColor(tcell.ColorHotPink)
 	container := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
@@ -719,12 +886,12 @@ type pipelinePage struct {
 }
 
 func newPipelinePage(ctx context.Context, buffer *BoundedEventBuffer) *pipelinePage {
-	header := tview.NewTextView().SetDynamicColors(true).SetWrap(false).SetText("PIPELINE")
+	header := tview.NewTextView().SetDynamicColors(true).SetWrap(false).SetText("[#ff69b4]PIPELINE[-]")
 	root := tview.NewFlex().SetDirection(tview.FlexRow)
 	root.AddItem(header, 1, 0, false)
 
 	makeColumn := func(title string) (*tview.Flex, *VirtualList) {
-		label := tview.NewTextView().SetDynamicColors(true).SetWrap(false).SetText(title)
+		label := tview.NewTextView().SetDynamicColors(true).SetWrap(false).SetText("[#ff69b4]" + title + "[-]")
 		list := NewVirtualList()
 		list.SetTimeFormat("15:04")
 		col := tview.NewFlex().SetDirection(tview.FlexRow).
@@ -825,6 +992,20 @@ func filterIndicesByKind(events []StyledEvent, kind EventKind) []int {
 	return indices
 }
 
+func padLines(text string) string {
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		lines[i] = " " + line
+	}
+	return strings.Join(lines, "\n")
+}
+
 func stripTags(s string) string {
 	if s == "" {
 		return ""
@@ -834,6 +1015,7 @@ func stripTags(s string) string {
 		"[green]", "",
 		"[yellow]", "",
 		"[blue]", "",
+		"[#ff69b4]", "",
 		"[magenta]", "",
 		"[cyan]", "",
 		"[white]", "",

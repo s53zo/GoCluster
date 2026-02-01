@@ -162,6 +162,12 @@ func (c *ansiConsole) WaitReady() {}
 // Downstream: None.
 func (c *ansiConsole) SetSnapshot(_ ui.Snapshot) {}
 
+// Purpose: Satisfy ui.Surface network update contract (ANSI ignores live updates).
+// Key aspects: No-op for ANSI renderer.
+// Upstream: telnet client change notifier.
+// Downstream: None.
+func (c *ansiConsole) UpdateNetworkStatus(summaryLine string, clientLines []string) {}
+
 // Purpose: Stop the ANSI console render loop.
 // Key aspects: Ensures quit is closed once.
 // Upstream: main shutdown path.

@@ -37,6 +37,7 @@ import (
 	"log"
 	"net"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -161,6 +162,8 @@ type Server struct {
 	useZiutek            bool                              // True when the external telnet transport is enabled
 	echoMode             string                            // Input echo policy ("server", "local", "off")
 	clientBufferSize     int                               // Per-client spot channel capacity
+	clientListListener   atomic.Value                      // optional func()
+	latency              latencyMetrics                    // latency samples for delivery path
 	loginLineLimit       int                               // Maximum bytes accepted for login/callsign input
 	commandLineLimit     int                               // Maximum bytes accepted for post-login commands
 	filterEngine         *filterCommandEngine              // Table-driven filter command parser/executor
@@ -202,7 +205,7 @@ type Client struct {
 	server       *Server                // Back-reference to server for formatting/helpers
 	address      string                 // Client's IP address
 	recentIPs    []string               // Most-recent-first IP history for this callsign
-	spotChan     chan *spot.Spot        // Buffered channel for spot delivery (configurable capacity)
+	spotChan     chan *spotEnvelope     // Buffered channel for spot delivery (configurable capacity)
 	bulletinChan chan bulletin          // Buffered channel for WWV/WCY bulletin delivery
 	echoInput    bool                   // True when we should echo typed characters back to the client
 	dialect      DialectName            // Active command dialect for filter commands
@@ -393,6 +396,7 @@ type broadcastPayload struct {
 	allowFast bool
 	allowMed  bool
 	allowSlow bool
+	enqueueAt time.Time
 }
 
 type broadcastJob struct {
@@ -401,6 +405,12 @@ type broadcastJob struct {
 	allowMed  bool
 	allowSlow bool
 	clients   []*Client
+	enqueueAt time.Time
+}
+
+type spotEnvelope struct {
+	spot      *spot.Spot
+	enqueueAt time.Time
 }
 
 type bulletin struct {
@@ -888,6 +898,7 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		loginLineLimit:    config.LoginLineLimit,
 		commandLineLimit:  config.CommandLineLimit,
 		filterEngine:      newFilterCommandEngineWithCTY(config.CTYLookup),
+		latency:           newLatencyMetrics(),
 		reputationGate:    opts.ReputationGate,
 		startTime:         time.Now().UTC().UTC(),
 		pathPredictor:     opts.PathPredictor,
@@ -1076,7 +1087,13 @@ func (s *Server) BroadcastSpot(spot *spot.Spot, allowFast, allowMed, allowSlow b
 	if s == nil || spot == nil {
 		return
 	}
-	payload := &broadcastPayload{spot: spot, allowFast: allowFast, allowMed: allowMed, allowSlow: allowSlow}
+	payload := &broadcastPayload{
+		spot:      spot,
+		allowFast: allowFast,
+		allowMed:  allowMed,
+		allowSlow: allowSlow,
+		enqueueAt: time.Now().UTC(),
+	}
 	select {
 	case s.broadcast <- payload:
 	default:
@@ -1116,8 +1133,10 @@ func (s *Server) DeliverSelfSpot(spot *spot.Spot) {
 		return
 	}
 
+	enqueueAt := time.Now().UTC()
 	select {
-	case client.spotChan <- spot:
+	case client.spotChan <- &spotEnvelope{spot: spot, enqueueAt: enqueueAt}:
+		s.observeEnqueueLatency(time.Since(enqueueAt))
 	default:
 		drops := atomic.AddUint64(&s.metrics.clientDrops, 1)
 		clientDrops := atomic.AddUint64(&client.dropCount, 1)
@@ -1282,6 +1301,7 @@ func (s *Server) dispatchSpotToWorkers(payload *broadcastPayload, shards [][]*Cl
 			allowMed:  payload.allowMed,
 			allowSlow: payload.allowSlow,
 			clients:   clients,
+			enqueueAt: payload.enqueueAt,
 		}
 		select {
 		case s.workerQueues[i] <- job:
@@ -1456,7 +1476,10 @@ func (s *Server) deliverJob(job *broadcastJob) {
 			}
 		}
 		select {
-		case client.spotChan <- job.spot:
+		case client.spotChan <- &spotEnvelope{spot: job.spot, enqueueAt: job.enqueueAt}:
+			if !job.enqueueAt.IsZero() {
+				s.observeEnqueueLatency(time.Since(job.enqueueAt))
+			}
 		default:
 			drops := atomic.AddUint64(&s.metrics.clientDrops, 1)
 			clientDrops := atomic.AddUint64(&client.dropCount, 1)
@@ -1609,7 +1632,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		connected:    time.Now().UTC().UTC(),
 		server:       s,
 		address:      address,
-		spotChan:     make(chan *spot.Spot, spotQueueSize),
+		spotChan:     make(chan *spotEnvelope, spotQueueSize),
 		bulletinChan: make(chan bulletin, spotQueueSize),
 		filter:       filter.NewFilter(), // Start with no filters (accept all)
 		dialect:      s.filterEngine.defaultDialect,
@@ -2457,15 +2480,22 @@ func (c *Client) spotSender() {
 	bulletinCh := c.bulletinChan
 	for spotCh != nil || bulletinCh != nil {
 		select {
-		case spot, ok := <-spotCh:
+		case env, ok := <-spotCh:
 			if !ok {
 				spotCh = nil
 				continue
 			}
-			formatted := spot.FormatDXCluster() + "\n"
-			if c.server != nil {
-				formatted = c.server.formatSpotForClient(c, spot)
+			if env == nil || env.spot == nil {
+				continue
 			}
+			if c.server != nil && !env.enqueueAt.IsZero() {
+				c.server.observeFirstByteLatency(time.Since(env.enqueueAt))
+			}
+			formatted := env.spot.FormatDXCluster() + "\n"
+			if c.server != nil {
+				formatted = c.server.formatSpotForClient(c, env.spot)
+			}
+			start := time.Now().UTC()
 			if err := c.Send(formatted); err != nil {
 				failures := uint64(0)
 				if c.server != nil {
@@ -2483,11 +2513,15 @@ func (c *Client) spotSender() {
 				}
 				return
 			}
+			if c.server != nil {
+				c.server.observeWriteStallLatency(time.Since(start))
+			}
 		case bulletin, ok := <-bulletinCh:
 			if !ok {
 				bulletinCh = nil
 				continue
 			}
+			start := time.Now().UTC()
 			if err := c.Send(bulletin.line); err != nil {
 				failures := uint64(0)
 				if c.server != nil {
@@ -2505,6 +2539,9 @@ func (c *Client) spotSender() {
 				}
 				return
 			}
+			if c.server != nil {
+				c.server.observeWriteStallLatency(time.Since(start))
+			}
 		}
 	}
 }
@@ -2521,6 +2558,7 @@ func (s *Server) registerClient(client *Client) {
 	total := len(s.clients)
 	s.shardsDirty.Store(true)
 	s.clientsMutex.Unlock()
+	s.notifyClientListChange()
 
 	if evicted != nil {
 		msg := strings.TrimSpace(s.duplicateLoginMsg)
@@ -2546,6 +2584,7 @@ func (s *Server) unregisterClient(client *Client) {
 	total := len(s.clients)
 	s.shardsDirty.Store(true)
 	s.clientsMutex.Unlock()
+	s.notifyClientListChange()
 
 	// Ensure all outstanding broadcast deliveries referencing this client complete before we close channels.
 	client.pendingDeliveries.Wait()
@@ -2560,6 +2599,73 @@ func (s *Server) GetClientCount() int {
 	s.clientsMutex.RLock()
 	defer s.clientsMutex.RUnlock()
 	return len(s.clients)
+}
+
+// SetClientListListener installs a callback invoked on client connect/disconnect.
+func (s *Server) SetClientListListener(fn func()) {
+	if s == nil {
+		return
+	}
+	if fn == nil {
+		s.clientListListener.Store((func())(nil))
+		return
+	}
+	s.clientListListener.Store(fn)
+}
+
+// ListClientCallsigns returns a sorted snapshot of connected client callsigns.
+func (s *Server) ListClientCallsigns() []string {
+	if s == nil {
+		return nil
+	}
+	s.clientsMutex.RLock()
+	calls := make([]string, 0, len(s.clients))
+	for call := range s.clients {
+		calls = append(calls, call)
+	}
+	s.clientsMutex.RUnlock()
+	sort.Strings(calls)
+	return calls
+}
+
+func (s *Server) notifyClientListChange() {
+	if s == nil {
+		return
+	}
+	if v := s.clientListListener.Load(); v != nil {
+		if fn, ok := v.(func()); ok && fn != nil {
+			fn()
+		}
+	}
+}
+
+func (s *Server) observeEnqueueLatency(d time.Duration) {
+	if s == nil {
+		return
+	}
+	s.latency.enqueue.Observe(d)
+}
+
+func (s *Server) observeFirstByteLatency(d time.Duration) {
+	if s == nil {
+		return
+	}
+	s.latency.firstByte.Observe(d)
+}
+
+func (s *Server) observeWriteStallLatency(d time.Duration) {
+	if s == nil {
+		return
+	}
+	s.latency.writeStall.Observe(d)
+}
+
+// LatencySnapshots returns p50/p99 snapshots for enqueue, first byte, and write stall.
+func (s *Server) LatencySnapshots() (enqueue, firstByte, writeStall LatencySnapshot) {
+	if s == nil {
+		return LatencySnapshot{}, LatencySnapshot{}, LatencySnapshot{}
+	}
+	return s.latency.snapshot()
 }
 
 // Stop shuts down the telnet server
