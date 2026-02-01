@@ -483,18 +483,16 @@ type ArchiveConfig struct {
 type PeeringConfig struct {
 	Enabled       bool   `yaml:"enabled"`
 	LocalCallsign string `yaml:"local_callsign"`
-	// RxOnly disables outbound spot publishing to peers when true.
-	RxOnly        bool `yaml:"rx_only"`
-	ListenPort    int  `yaml:"listen_port"`
-	HopCount      int    `yaml:"hop_count"`
+	// RxOnly limits outbound DX spot publishing to manual human spots only.
+	RxOnly     bool `yaml:"rx_only"`
+	ListenPort int  `yaml:"listen_port"`
+	HopCount   int  `yaml:"hop_count"`
 	NodeVersion   string `yaml:"node_version"`
 	NodeBuild     string `yaml:"node_build"`
 	LegacyVersion string `yaml:"legacy_version"`
 	PC92Bitmap    int    `yaml:"pc92_bitmap"`
 	NodeCount     int    `yaml:"node_count"`
 	UserCount     int    `yaml:"user_count"`
-	// RxOnly limits outbound DX spot publishing to manual human spots only.
-	RxOnly bool `yaml:"rx_only"`
 	// LogKeepalive controls whether keepalive/PC51 chatter is emitted to logs.
 	LogKeepalive bool `yaml:"log_keepalive"`
 	// LogLineTooLong controls whether oversized peer lines are logged.
