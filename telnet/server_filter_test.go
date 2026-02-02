@@ -1411,7 +1411,7 @@ func TestBroadcastSelfRespectsSelfToggle(t *testing.T) {
 	server := &Server{}
 	client := &Client{
 		callsign: "K1ABC",
-		spotChan: make(chan *spot.Spot, 1),
+		spotChan: make(chan *spotEnvelope, 1),
 		filter:   filter.NewFilter(),
 	}
 
@@ -1445,7 +1445,7 @@ func TestDeliverSelfSpotRespectsSelfToggle(t *testing.T) {
 	}
 	client := &Client{
 		callsign: "K1ABC",
-		spotChan: make(chan *spot.Spot, 1),
+		spotChan: make(chan *spotEnvelope, 1),
 		filter:   filter.NewFilter(),
 	}
 	server.clients["K1ABC"] = client

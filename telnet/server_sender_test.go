@@ -70,7 +70,7 @@ func TestSpotSenderDisconnectsOnSpotSendFailure(t *testing.T) {
 		writer:       bufio.NewWriter(conn),
 		server:       srv,
 		callsign:     "N0CALL",
-		spotChan:     make(chan *spot.Spot, 1),
+		spotChan:     make(chan *spotEnvelope, 1),
 		bulletinChan: make(chan bulletin, 1),
 	}
 	done := make(chan struct{})
@@ -79,12 +79,12 @@ func TestSpotSenderDisconnectsOnSpotSendFailure(t *testing.T) {
 		close(done)
 	}()
 
-	client.spotChan <- &spot.Spot{
+	client.spotChan <- &spotEnvelope{spot: &spot.Spot{
 		DECall:    "N0CALL",
 		DXCall:    "K1ABC",
 		Frequency: 14070.0,
 		Time:      time.Now().UTC(),
-	}
+	}}
 
 	select {
 	case <-done:
@@ -110,7 +110,7 @@ func TestSpotSenderDisconnectsOnBulletinSendFailure(t *testing.T) {
 		writer:       bufio.NewWriter(conn),
 		server:       srv,
 		callsign:     "N0CALL",
-		spotChan:     make(chan *spot.Spot, 1),
+		spotChan:     make(chan *spotEnvelope, 1),
 		bulletinChan: make(chan bulletin, 1),
 	}
 	done := make(chan struct{})

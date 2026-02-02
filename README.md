@@ -57,14 +57,15 @@ High-level flow:
 ## UI Modes (local console)
 
 - `ui.mode: ansi` (default) draws the fixed 90x68 ANSI console in the server's terminal when stdout is a TTY. The layout is 12 stats lines, a blank line, then Dropped/Corrected/Unlicensed/Harmonics/System Log panes with 10 lines each. Pane headers render as `<<<<<<<<<< Dropped >>>>>>>>>>`, `<<<<<<<<<< Corrected >>>>>>>>>>`, etc. Telnet clients do **not** see this UI; if the terminal is smaller than 90x68, ANSI disables and logs continue.
-- `ui.mode: tview` enables the framed tview dashboard (requires an interactive console).
+- `ui.mode: tview` enables the legacy framed tview dashboard (requires an interactive console).
+- `ui.mode: tview-v2` enables the page-based tview dashboard with bounded buffers and navigation keys.
 - `ui.mode: headless` disables the local console; logs continue to stdout/stderr.
 - `ui.pane_lines` controls the visible heights of tview panes; ANSI uses a fixed 12/10-line layout and ignores pane_lines.
 - `logging.enabled` in `app.yaml` duplicates system logs to daily files in `logging.dir` (local time, `logging.retention_days` controls retention).
 - Config block (excerpt):
   ```yaml
   ui:
-    mode: "ansi"       # ansi | tview | headless
+    mode: "ansi"       # ansi | tview | tview-v2 | headless
     refresh_ms: 250    # ANSI minimum redraw spacing; 0 renders on every event
     color: true        # ANSI coloring for marked-up lines
     clear_screen: true # Ignored by ANSI; preserved for compatibility

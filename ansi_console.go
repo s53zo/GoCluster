@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"dxcluster/config"
+	"dxcluster/ui"
 
 	"golang.org/x/term"
 )
@@ -24,7 +25,7 @@ const (
 	ansiPaneLines  = 10
 	ansiPaneCount  = 5
 	ansiGapLines   = 1
-	ansiTotalRows  = ansiStatsLines + ansiGapLines + (1+ansiPaneLines) + (ansiPaneCount-1)*(1+1+ansiPaneLines)
+	ansiTotalRows  = ansiStatsLines + ansiGapLines + (1 + ansiPaneLines) + (ansiPaneCount-1)*(1+1+ansiPaneLines)
 	ansiMinRefresh = 16 * time.Millisecond
 )
 
@@ -76,7 +77,7 @@ type ringPane struct {
 // Key aspects: Fixed layout, size check, and event-driven render loop.
 // Upstream: main UI selection based on config.
 // Downstream: ansiWriter and refreshLoop goroutine.
-func newANSIConsole(uiCfg config.UIConfig, allowRender bool) uiSurface {
+func newANSIConsole(uiCfg config.UIConfig, allowRender bool) ui.Surface {
 	if !allowRender {
 		return nil
 	}
@@ -149,11 +150,23 @@ func newANSIConsole(uiCfg config.UIConfig, allowRender bool) uiSurface {
 	return c
 }
 
-// Purpose: Satisfy uiSurface readiness contract for ANSI consoles.
+// Purpose: Satisfy ui.Surface readiness contract for ANSI consoles.
 // Key aspects: No-op because ANSI renderer has no async initialization.
 // Upstream: main UI setup.
 // Downstream: None.
 func (c *ansiConsole) WaitReady() {}
+
+// Purpose: Satisfy ui.Surface snapshot contract (ANSI ignores structured snapshots).
+// Key aspects: No-op for ANSI renderer.
+// Upstream: main stats loop.
+// Downstream: None.
+func (c *ansiConsole) SetSnapshot(_ ui.Snapshot) {}
+
+// Purpose: Satisfy ui.Surface network update contract (ANSI ignores live updates).
+// Key aspects: No-op for ANSI renderer.
+// Upstream: telnet client change notifier.
+// Downstream: None.
+func (c *ansiConsole) UpdateNetworkStatus(summaryLine string, clientLines []string) {}
 
 // Purpose: Stop the ANSI console render loop.
 // Key aspects: Ensures quit is closed once.
@@ -217,6 +230,12 @@ func (c *ansiConsole) AppendUnlicensed(line string) { c.append(&c.unlic, line) }
 // Upstream: harmonic suppression path.
 // Downstream: c.append.
 func (c *ansiConsole) AppendHarmonic(line string) { c.append(&c.harm, line) }
+
+// Purpose: Append a reputation drop line to the dropped pane.
+// Key aspects: Routes reputation drops into the dropped pane for ANSI UI.
+// Upstream: reputation gate path.
+// Downstream: c.append.
+func (c *ansiConsole) AppendReputation(line string) { c.append(&c.dropped, line) }
 
 // Purpose: Append a system log line to the system pane.
 // Key aspects: Delegates to the shared ring-buffer append logic.
@@ -634,4 +653,3 @@ func termSize() (int, int, bool) {
 	}
 	return width, height, true
 }
-

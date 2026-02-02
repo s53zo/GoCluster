@@ -48,6 +48,7 @@ import (
 	"dxcluster/spot"
 	"dxcluster/stats"
 	"dxcluster/telnet"
+	"dxcluster/ui"
 	"dxcluster/uls"
 
 	"github.com/cockroachdb/pebble"
@@ -295,7 +296,7 @@ func main() {
 	uiMode := strings.ToLower(strings.TrimSpace(cfg.UI.Mode))
 	renderAllowed := isStdoutTTY()
 
-	var ui uiSurface
+	var surface ui.Surface
 	switch uiMode {
 	case "headless":
 		log.Printf("UI disabled (mode=headless)")
@@ -303,26 +304,32 @@ func main() {
 		if !renderAllowed {
 			log.Printf("UI disabled (tview requires an interactive console)")
 		} else {
-			ui = newDashboard(cfg.UI, true)
+			surface = newDashboard(cfg.UI, true)
+		}
+	case "tview-v2":
+		if !renderAllowed {
+			log.Printf("UI disabled (tview-v2 requires an interactive console)")
+		} else {
+			surface = ui.NewDashboardV2(cfg.UI, true)
 		}
 	case "ansi":
 		if !renderAllowed {
 			log.Printf("UI disabled (ansi renderer requires an interactive console)")
 		} else {
-			ui = newANSIConsole(cfg.UI, renderAllowed)
+			surface = newANSIConsole(cfg.UI, renderAllowed)
 		}
 	default:
 		log.Printf("UI mode %q not recognized; defaulting to headless", uiMode)
 	}
 
-	if ui != nil {
-		ui.WaitReady()
-		defer ui.Stop()
+	if surface != nil {
+		surface.WaitReady()
+		defer surface.Stop()
 		if logMux != nil {
 			// UI surfaces render their own timestamps; keep log lines raw.
-			logMux.SetConsoleSink(ui.SystemWriter(), false)
+			logMux.SetConsoleSink(surface.SystemWriter(), false)
 		}
-		ui.SetStats([]string{"Initializing..."})
+		surface.SetStats([]string{"Initializing..."})
 	} else {
 		if logMux != nil {
 			logMux.SetConsoleSink(os.Stdout, true)
@@ -395,7 +402,7 @@ func main() {
 	metaCache := newCallMetaCache(cfg.GridCacheSize, time.Duration(cfg.GridCacheTTLSec)*time.Second)
 
 	// Print the configuration (stdout only when not using the dashboard)
-	if ui == nil {
+	if surface == nil {
 		cfg.Print()
 	} else {
 		log.Printf("Configuration loaded for %s (%s)", cfg.Server.Name, cfg.Server.NodeID)
@@ -491,8 +498,8 @@ func main() {
 
 	// Create stats tracker
 	statsTracker := stats.NewTracker()
-	dropReporter := makeDroppedReporter(ui)
-	unlicensedReporter := makeUnlicensedReporter(ui, statsTracker)
+	dropReporter := makeDroppedReporter(surface)
+	unlicensedReporter := makeUnlicensedReporter(surface, statsTracker)
 
 	var repGate *reputation.Gate
 	var repDropReporter func(reputation.DropEvent)
@@ -503,7 +510,7 @@ func main() {
 		} else {
 			repGate = gate
 			repGate.Start(ctx)
-			repDropReporter = makeReputationDropReporter(dropReporter, statsTracker, cfg.Reputation)
+			repDropReporter = makeReputationDropReporter(surface, dropReporter, statsTracker, cfg.Reputation)
 		}
 	}
 
@@ -799,6 +806,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to start telnet server: %v", err)
 	}
+	telnetServer.SetClientListListener(func() {
+		if surface == nil {
+			return
+		}
+		lines := formatNetworkLines(telnetServer, telnetServer.ListClientCallsigns())
+		if len(lines) == 0 {
+			return
+		}
+		surface.UpdateNetworkStatus(lines[0], lines[1:])
+	})
 	// Hook peering raw passthrough (e.g., PC26) into telnet broadcast once available.
 	if peerManager != nil {
 		peerManager.SetRawBroadcast(telnetServer.BroadcastRaw)
@@ -817,7 +834,7 @@ func main() {
 	// Downstream: processOutputSpots.
 	pathReport := newPathReportMetrics()
 	pskrPathOnlyStats := &pathOnlyStats{}
-	go processOutputSpots(deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, ui, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor, pathReport, allowedBandSet)
+	go processOutputSpots(deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, modeAssigner, spotBuffer, telnetServer, peerManager, statsTracker, correctionIndex, cfg.CallCorrection, ctyLookup, metaCache, harmonicDetector, cfg.Harmonics, &knownCalls, freqAverager, cfg.SpotPolicy, surface, gridUpdater, gridLookup, gridLookupSync, unlicensedReporter, corrLogger, callCooldown, adaptiveMinReports, refresher, spotterReliability, cfg.RBN.KeepSSIDSuffix, archiveWriter, &lastOutput, pathPredictor, pathReport, allowedBandSet)
 	startPipelineHealthMonitor(ctx, deduplicator, &lastOutput, peerManager)
 
 	// Connect to RBN CW/RTTY feed if enabled (port 7000)
@@ -972,7 +989,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, telnetServer, ui, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor, pskrClient, pskrPathOnlyStats)
+	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, cfg.CTY.File, &knownCalls, knownCallsPath, telnetServer, surface, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor, pskrClient, pskrPathOnlyStats, cfg.Server.NodeID, cfg.Skew.File)
 	if pathCfg.Enabled {
 		go startPathPredictionLogger(ctx, logMux, telnetServer, pathPredictor, pathReport)
 	}
@@ -1079,7 +1096,7 @@ func main() {
 // Key aspects: Returns a closure that increments stats and formats output.
 // Upstream: main wiring for applyLicenseGate reporting.
 // Downstream: tracker.IncrementUnlicensedDrops and dash.AppendUnlicensed/log.Println.
-func makeUnlicensedReporter(dash uiSurface, tracker *stats.Tracker) func(source, role, call, mode string, freq float64) {
+func makeUnlicensedReporter(dash ui.Surface, tracker *stats.Tracker) func(source, role, call, mode string, freq float64) {
 	// Purpose: Emit an unlicensed drop event with consistent formatting.
 	// Key aspects: Normalizes fields and routes to UI or log.
 	// Upstream: applyLicenseGate.
@@ -1107,7 +1124,7 @@ func makeUnlicensedReporter(dash uiSurface, tracker *stats.Tracker) func(source,
 // Key aspects: Routes to dropped pane when UI is active, otherwise logs.
 // Upstream: CTY/PC61/reputation drop paths.
 // Downstream: dash.AppendDropped and log.Print.
-func makeDroppedReporter(dash uiSurface) func(line string) {
+func makeDroppedReporter(dash ui.Surface) func(line string) {
 	return func(line string) {
 		if line == "" {
 			return
@@ -1124,7 +1141,7 @@ func makeDroppedReporter(dash uiSurface) func(line string) {
 // Key aspects: Updates counters and routes to the dropped pane or logs.
 // Upstream: Reputation gate in telnet command path.
 // Downstream: stats tracker and dropped/system logs.
-func makeReputationDropReporter(dropReporter func(string), tracker *stats.Tracker, cfg config.ReputationConfig) func(reputation.DropEvent) {
+func makeReputationDropReporter(dash ui.Surface, dropReporter func(string), tracker *stats.Tracker, cfg config.ReputationConfig) func(reputation.DropEvent) {
 	if tracker == nil {
 		return nil
 	}
@@ -1141,6 +1158,10 @@ func makeReputationDropReporter(dropReporter func(string), tracker *stats.Tracke
 			}
 		}
 		line := formatReputationDropLine(ev)
+		if dash != nil {
+			dash.AppendReputation(line)
+			return
+		}
 		if dropReporter != nil {
 			dropReporter(line)
 			return
@@ -1222,7 +1243,7 @@ func emptyOr(value, fallback string) string {
 
 func formatReputationDropSummary(total uint64, reasons map[string]uint64) string {
 	if total == 0 {
-		return "Reputation drops: 0"
+		return "Reputation: 0"
 	}
 	type pair struct {
 		key   string
@@ -1243,7 +1264,7 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 		limit = len(items)
 	}
 	var b strings.Builder
-	b.WriteString("Reputation drops: ")
+	b.WriteString("Reputation: ")
 	b.WriteString(humanize.Comma(int64(total)))
 	if limit == 0 {
 		return b.String()
@@ -1263,7 +1284,7 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], telnetSrv *telnet.Server, dash uiSurface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor, pskrClient *pskreporter.Client, pskrPathOnly *pathOnlyStats) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, ctyPath string, knownPtr *atomic.Pointer[spot.KnownCallsigns], knownCallsPath string, telnetSrv *telnet.Server, dash ui.Surface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor, pskrClient *pskreporter.Client, pskrPathOnly *pathOnlyStats, clusterCall string, skewPath string) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -1303,6 +1324,8 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 		pskFT8 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "FT8")
 		pskFT4 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "FT4")
 		pskMSK144 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "MSK144")
+		// Peer ingest is summarized under the synthetic P92 label.
+		p92Total := diffCounter(sourceTotals, prevSourceCounts, "P92")
 
 		totalCorrections := tracker.CallCorrections()
 		totalUnlicensed := tracker.UnlicensedDrops()
@@ -1389,13 +1412,15 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 
 		var queueDrops, clientDrops, senderFailures uint64
 		var clientCount int
+		var clientList []string
 		if telnetSrv != nil {
 			queueDrops, clientDrops, senderFailures = telnetSrv.BroadcastMetricSnapshot()
 			clientCount = telnetSrv.GetClientCount()
+			clientList = telnetSrv.ListClientCallsigns()
 		}
 
 		combinedRBN := rbnTotal + rbnFTTotal
-		pathOnlyLine := ""
+		pathOnlyLine := "[yellow]Path[-]: n/a"
 		if pskrClient != nil {
 			snap := pskrClient.HealthSnapshot()
 			if snap.PathOnlyQueueCap > 0 {
@@ -1403,7 +1428,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 				delta := diffPathOnly(current, prevPathOnly)
 				prevPathOnly = current
 				_ = snap
-				pathOnlyLine = fmt.Sprintf("Path only: %s (U) / %s (S) / %s (N) / %s (G) / %s (H) / %s (B) / %s (M)",
+				pathOnlyLine = fmt.Sprintf("[yellow]Path[-]: %s (U) / %s (S) / %s (N) / %s (G) / %s (H) / %s (B) / %s (M)",
 					humanize.Comma(int64(delta.updates)),
 					humanize.Comma(int64(delta.stale)),
 					humanize.Comma(int64(delta.noSNR)),
@@ -1428,10 +1453,9 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 				humanize.Comma(int64(pskFT4)),
 				humanize.Comma(int64(pskMSK144)),
 			), // 5
+			fmt.Sprintf("P92: %s TOTAL", humanize.Comma(int64(p92Total))), // 6
 		}
-		if pathOnlyLine != "" {
-			lines = append(lines, pathOnlyLine)
-		}
+		lines = append(lines, pathOnlyLine)
 		lines = append(lines,
 			fmt.Sprintf("Calls: %d (C) / %d (U) / %d (F) / %d (H) / %d (R)", totalCorrections, totalUnlicensed, totalFreqCorrections, totalHarmonics, reputationTotal), // 6
 			pipelineLine, // 7
@@ -1443,6 +1467,33 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 
 		if dash != nil {
 			dash.SetStats(lines)
+			overviewLines := buildOverviewLines(tracker, dedup, secondaryFast, secondaryMed, secondarySlow, metaCache, knownPtr, ctyState, ctyPath, knownCallsPath, fccSnap, gridStats, gridDB, pathPredictor, telnetSrv, clusterCall,
+				combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4,
+				pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144,
+				p92Total,
+				totalCorrections, totalUnlicensed, totalHarmonics, reputationTotal,
+				pathOnlyLine,
+				skewPath,
+			)
+			ingestLines := []string{}
+			if len(overviewLines) > 0 {
+				ingestLines = append(ingestLines, overviewLines[0], "")
+			}
+			if len(overviewLines) > 7 {
+				ingestLines = append(ingestLines, overviewLines[3], overviewLines[4], overviewLines[5], overviewLines[6], overviewLines[7])
+			}
+			snapshot := ui.Snapshot{
+				GeneratedAt:   time.Now().UTC(),
+				OverviewLines: overviewLines,
+				IngestLines:   ingestLines,
+				PipelineLines: []string{
+					pipelineLine,
+					fmt.Sprintf("Corrections: %d  Unlicensed: %d  Freq: %d  Harmonics: %d  Reputation: %d",
+						totalCorrections, totalUnlicensed, totalFreqCorrections, totalHarmonics, reputationTotal),
+				},
+				NetworkLines: formatNetworkLines(telnetSrv, clientList),
+			}
+			dash.SetSnapshot(snapshot)
 		} else {
 			for _, line := range lines {
 				log.Print(line)
@@ -1767,7 +1818,7 @@ func processOutputSpots(
 	knownCalls *atomic.Pointer[spot.KnownCallsigns],
 	freqAvg *spot.FrequencyAverager,
 	spotPolicy config.SpotPolicy,
-	dash uiSurface,
+	dash ui.Surface,
 	gridUpdate func(call, grid string),
 	gridLookup func(call string) (string, bool, bool),
 	gridLookupSync func(call string) (string, bool, bool),
@@ -1923,6 +1974,10 @@ func processOutputSpots(
 				if sourceName != "" {
 					tracker.IncrementSource(sourceName)
 					tracker.IncrementSourceMode(sourceName, modeKey)
+				}
+				if s.SourceType == spot.SourcePeer {
+					tracker.IncrementSource("P92")
+					tracker.IncrementSourceMode("P92", modeKey)
 				}
 			}
 
@@ -2719,7 +2774,7 @@ func metadataFromPrefix(info *cty.PrefixInfo) spot.CallMetadata {
 // Key aspects: Evaluates corrections, updates stats, and can suppress spots.
 // Upstream: processOutputSpots call correction stage.
 // Downstream: spot.ApplyCallCorrection, traceLogger, tracker updates.
-func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, metaCache *callMetaCache, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash uiSurface, traceLogger spot.CorrectionTraceLogger, cooldown *spot.CallCooldown, adaptive *spot.AdaptiveMinReports, spotterReliability spot.SpotterReliability) bool {
+func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, metaCache *callMetaCache, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash ui.Surface, traceLogger spot.CorrectionTraceLogger, cooldown *spot.CallCooldown, adaptive *spot.AdaptiveMinReports, spotterReliability spot.SpotterReliability) bool {
 	if spotEntry == nil {
 		return false
 	}
@@ -3582,6 +3637,17 @@ func (s *ctyRefreshState) failures() (int64, string) {
 		}
 	}
 	return s.failureCount.Load(), errText
+}
+
+func (s *ctyRefreshState) lastSuccessTime() (time.Time, bool) {
+	if s == nil {
+		return time.Time{}, false
+	}
+	ts := s.lastSuccess.Load()
+	if ts <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(ts, 0).UTC(), true
 }
 
 // Purpose: Format FCC database status line for stats output.
@@ -4738,6 +4804,21 @@ func formatUptimeLine(uptime time.Duration) string {
 	return fmt.Sprintf("Uptime: %02d:%02d", hours, minutes)
 }
 
+func formatUptimeShort(uptime time.Duration) string {
+	if uptime < 0 {
+		uptime = -uptime
+	}
+	days := int(uptime / (24 * time.Hour))
+	uptime -= time.Duration(days) * 24 * time.Hour
+	hours := int(uptime / time.Hour)
+	uptime -= time.Duration(hours) * time.Hour
+	minutes := int(uptime / time.Minute)
+	if days > 0 {
+		return fmt.Sprintf("%dd %02d:%02d", days, hours, minutes)
+	}
+	return fmt.Sprintf("%02d:%02d", hours, minutes)
+}
+
 // Purpose: Format a short duration for stats display.
 // Key aspects: Uses d/h/m/s units with coarse granularity.
 // Upstream: CTY stats line formatting.
@@ -4763,6 +4844,562 @@ func formatDurationShort(d time.Duration) string {
 	}
 	seconds := int(d / time.Second)
 	return fmt.Sprintf("%ds", seconds)
+}
+
+func formatDurationMillis(d time.Duration) string {
+	if d < 0 {
+		d = -d
+	}
+	return fmt.Sprintf("%dms", d.Milliseconds())
+}
+
+func formatTimeShortZ(t time.Time) string {
+	if t.IsZero() {
+		return "n/a"
+	}
+	return t.UTC().Format("2006-01-02 15:04Z")
+}
+
+func formatDateShortZ(t time.Time) string {
+	if t.IsZero() {
+		return "n/a"
+	}
+	return t.UTC().Format("2006-01-02")
+}
+
+func gcPauseP99(mem *runtime.MemStats) time.Duration {
+	if mem == nil {
+		return 0
+	}
+	var pauses []uint64
+	for _, v := range mem.PauseNs {
+		if v > 0 {
+			pauses = append(pauses, v)
+		}
+	}
+	if len(pauses) == 0 {
+		return 0
+	}
+	sort.Slice(pauses, func(i, j int) bool { return pauses[i] < pauses[j] })
+	idx := int(float64(len(pauses)-1) * 0.99)
+	if idx < 0 {
+		idx = 0
+	}
+	return time.Duration(pauses[idx])
+}
+
+func formatPercent(numer, denom uint64) string {
+	if denom == 0 {
+		return "n/a"
+	}
+	pct := float64(numer) / float64(denom) * 100
+	return fmt.Sprintf("%.1f%%", pct)
+}
+
+func percentValue(numer, denom uint64) float64 {
+	if denom == 0 {
+		return 0
+	}
+	return float64(numer) / float64(denom) * 100
+}
+
+func formatPercentString(pct float64) string {
+	if pct <= 0 {
+		return "0.0%"
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	return fmt.Sprintf("%.1f%%", pct)
+}
+
+func formatPercentBar(pct float64, width int) string {
+	return formatPercentBarWithLabel(pct, width, "")
+}
+
+func formatPercentBarWithLabel(pct float64, width int, label string) string {
+	if width <= 0 {
+		return "[]"
+	}
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	filled := int(math.Round(float64(width) * pct / 100))
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > width {
+		filled = width
+	}
+	empty := width - filled
+	if width == 0 {
+		return "[]"
+	}
+	return "[" + buildBarWithLabel(width, filled, empty, label) + "]"
+}
+
+func buildBarWithLabel(width, filled, empty int, label string) string {
+	if width <= 0 {
+		return ""
+	}
+	if label == "" {
+		return buildBarSegment(0, width, filled)
+	}
+	labelRunes := []rune(label)
+	if len(labelRunes) > width {
+		labelRunes = labelRunes[:width]
+	}
+	labelLen := len(labelRunes)
+	labelStart := 1
+	labelEnd := labelStart + labelLen
+	if labelEnd > width {
+		labelStart = 0
+		labelEnd = labelLen
+	}
+
+	var b strings.Builder
+	for i := 0; i < width; i++ {
+		if i == labelStart {
+			b.WriteString("[black:white]")
+			b.WriteString(string(labelRunes))
+			b.WriteString("[-:-]")
+			i = labelEnd - 1
+			continue
+		}
+		if i < filled {
+			b.WriteString("[white:white] [-:-]")
+		} else {
+			b.WriteString("[-:-] ")
+		}
+	}
+	return b.String()
+}
+
+func buildBarSegment(start, end, filled int) string {
+	var b strings.Builder
+	for i := start; i < end; i++ {
+		if i < filled {
+			b.WriteString("[white:white] [-:-]")
+		} else {
+			b.WriteString("[-:-] ")
+		}
+	}
+	return b.String()
+}
+
+func buildOverviewLines(
+	tracker *stats.Tracker,
+	dedup *dedup.Deduplicator,
+	secondaryFast *dedup.SecondaryDeduper,
+	secondaryMed *dedup.SecondaryDeduper,
+	secondarySlow *dedup.SecondaryDeduper,
+	metaCache *callMetaCache,
+	knownPtr *atomic.Pointer[spot.KnownCallsigns],
+	ctyState *ctyRefreshState,
+	ctyPath string,
+	knownCallsPath string,
+	fccSnap *fccSnapshot,
+	gridStats *gridMetrics,
+	gridDB *gridStoreHandle,
+	pathPredictor *pathreliability.Predictor,
+	telnetSrv *telnet.Server,
+	clusterCall string,
+	rbnTotal, rbnCW, rbnRTTY, rbnFT8, rbnFT4 uint64,
+	pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144 uint64,
+	p92Total uint64,
+	totalCorrections, totalUnlicensed, totalHarmonics, reputationTotal uint64,
+	pathOnlyLine string,
+	skewPath string,
+) []string {
+	now := time.Now().UTC()
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	heap := humanize.Bytes(mem.HeapAlloc)
+	sys := humanize.Bytes(mem.Sys)
+	gcP99 := gcPauseP99(&mem)
+	lastGC := time.Duration(0)
+	if mem.LastGC > 0 {
+		lastGC = now.Sub(time.Unix(0, int64(mem.LastGC)))
+	}
+	uptime := time.Duration(0)
+	if tracker != nil {
+		uptime = tracker.GetUptime()
+	}
+
+	gridLookups := uint64(0)
+	gridHits := uint64(0)
+	if gridStats != nil {
+		gridLookups = gridStats.cacheLookups.Load()
+		gridHits = gridStats.cacheHits.Load()
+	}
+	metaLookups := uint64(0)
+	metaHits := uint64(0)
+	metaCount := 0
+	if metaCache != nil {
+		metaCount = metaCache.EntryCount()
+		metaMetrics := metaCache.CTYMetrics()
+		metaLookups = metaMetrics.Lookups
+		metaHits = metaMetrics.Hits
+	}
+
+	var knownCount int
+	var knownLookups, knownHits uint64
+	if knownPtr != nil {
+		if known := knownPtr.Load(); known != nil {
+			knownCount = known.Count()
+			knownLookups, knownHits = known.Stats()
+		}
+	}
+
+	gridCount := int64(-1)
+	if gridDB != nil {
+		if store := gridDB.Store(); store != nil {
+			if count, err := store.Count(); err == nil {
+				gridCount = count
+			}
+		}
+	}
+	gridHitPct := percentValue(gridHits, gridLookups)
+	metaHitPct := percentValue(metaHits, metaLookups)
+	knownHitPct := percentValue(knownHits, knownLookups)
+
+	gridSizeLabel := humanize.Comma(gridCount)
+	metaSizeLabel := humanize.Comma(int64(metaCount))
+	knownSizeLabel := humanize.Comma(int64(knownCount))
+	cacheBars := []string{
+		fmt.Sprintf("[yellow]Grid cache[-]:  %s %s", formatPercentBarWithLabel(gridHitPct, 20, gridSizeLabel), formatPercentString(gridHitPct)),
+		fmt.Sprintf("[yellow]Meta cache[-]:  %s %s", formatPercentBarWithLabel(metaHitPct, 20, metaSizeLabel), formatPercentString(metaHitPct)),
+		fmt.Sprintf("[yellow]Known calls[-]: %s %s", formatPercentBarWithLabel(knownHitPct, 20, knownSizeLabel), formatPercentString(knownHitPct)),
+	}
+
+	ctyTime := "n/a"
+	if ctyState != nil {
+		if ts, ok := ctyState.lastSuccessTime(); ok {
+			ctyTime = formatDateShortZ(ts)
+		}
+	}
+
+	scpTime := "n/a"
+	if knownCallsPath != "" {
+		if info, err := os.Stat(knownCallsPath); err == nil {
+			scpTime = formatDateShortZ(info.ModTime())
+		}
+	}
+
+	fccTime := "n/a"
+	if fccSnap != nil && !fccSnap.UpdatedAt.IsZero() {
+		fccTime = formatDateShortZ(fccSnap.UpdatedAt)
+	}
+
+	skewTime := "n/a"
+	if strings.TrimSpace(skewPath) != "" {
+		if info, err := os.Stat(skewPath); err == nil {
+			skewTime = formatDateShortZ(info.ModTime())
+		}
+	}
+
+	primaryDupPct := "n/a"
+	if dedup != nil {
+		processed, duplicates, _ := dedup.GetStats()
+		if processed > 0 && duplicates <= processed {
+			primaryDupPct = formatPercent(duplicates, processed)
+		}
+	}
+	secondarySummary := "F-- M-- S--"
+	if secondaryFast != nil || secondaryMed != nil || secondarySlow != nil {
+		secondarySummary = fmt.Sprintf("F%s M%s S%s",
+			formatSecondaryPercent(secondaryFast),
+			formatSecondaryPercent(secondaryMed),
+			formatSecondaryPercent(secondarySlow),
+		)
+	}
+
+	var clientList []string
+	if telnetSrv != nil {
+		clientList = telnetSrv.ListClientCallsigns()
+	}
+
+	if strings.TrimSpace(clusterCall) == "" {
+		clusterCall = "unknown"
+	}
+
+	lines := []string{
+		fmt.Sprintf("[yellow]Cluster[-]: %s  [yellow]Version[-]: %s  [yellow]Uptime[-]: %s", clusterCall, Version, formatUptimeShort(uptime)),
+		"MEMORY / GC",
+		fmt.Sprintf("[yellow]Heap[-]: %s  [yellow]Sys[-]: %s  [yellow]GC p99[-]: %s  [yellow]Last GC[-]: %s ago  [yellow]Goroutines[-]: %d", heap, sys, formatDurationMillis(gcP99), formatDurationShort(lastGC), runtime.NumGoroutine()),
+		"INGEST RATES (per min)",
+		formatIngestLine("[yellow]RBN[-]", rbnTotal, rbnCW, rbnRTTY, rbnFT8, rbnFT4, 0, false),
+		formatIngestLine("[yellow]PSK[-]", pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144, true),
+		fmt.Sprintf("[yellow]P92[-]: %s", humanize.Comma(int64(p92Total))),
+		pathOnlyLine,
+		fmt.Sprintf("[yellow]Primary Dedupe[-]: %s | [yellow]Secondary[-]: %s", primaryDupPct, secondarySummary),
+		fmt.Sprintf("[yellow]Corrections[-]: %s | [yellow]Unlicensed[-]: %s | [yellow]Harmonics[-]: %s | [yellow]Reputation[-]: %s",
+			humanize.Comma(int64(totalCorrections)),
+			humanize.Comma(int64(totalUnlicensed)),
+			humanize.Comma(int64(totalHarmonics)),
+			humanize.Comma(int64(reputationTotal)),
+		),
+		"CACHES & DATA FRESHNESS",
+	}
+	lines = append(lines, cacheBars...)
+	lines = append(lines,
+		"",
+		fmt.Sprintf("[yellow]CTY[-]: %s  [yellow]SCP[-]: %s  [yellow]FCC[-]: %s  [yellow]Skew[-]: %s", ctyTime, scpTime, fccTime, skewTime),
+		"PATH PREDICTIONS",
+	)
+	lines = append(lines, formatPathLines(pathPredictor, now)...)
+	lines = append(lines, "NETWORK")
+	lines = append(lines, formatNetworkLines(telnetSrv, clientList)...)
+	return lines
+}
+
+func formatNetworkSummaryLine(telnetSrv *telnet.Server) string {
+	if telnetSrv == nil {
+		return "[yellow]Telnet[-]: 0 clients   [yellow]Drops[-]: Q0 C0 W0"
+	}
+	queueDrops, clientDrops, senderFailures := telnetSrv.BroadcastMetricSnapshot()
+	clientCount := telnetSrv.GetClientCount()
+	return fmt.Sprintf("[yellow]Telnet[-]: %d clients   [yellow]Drops[-]: Q%d C%d W%d",
+		clientCount, queueDrops, clientDrops, senderFailures,
+	)
+}
+
+func formatNetworkLatencyLines(telnetSrv *telnet.Server) []string {
+	if telnetSrv == nil {
+		return []string{"[yellow]Latency[-]: enq n/a  first n/a", "[yellow]Write stall[-]: n/a"}
+	}
+	enq, first, stall := telnetSrv.LatencySnapshots()
+	formatPair := func(s telnet.LatencySnapshot) string {
+		if s.N == 0 {
+			return "n/a"
+		}
+		return fmt.Sprintf("p50 %s p99 %s", formatDurationMillis(s.P50), formatDurationMillis(s.P99))
+	}
+	return []string{
+		fmt.Sprintf("[yellow]Latency[-]: enq %s  first %s", formatPair(enq), formatPair(first)),
+		fmt.Sprintf("[yellow]Write stall[-]: %s", formatPair(stall)),
+	}
+}
+
+func formatNetworkLines(telnetSrv *telnet.Server, clientList []string) []string {
+	lines := []string{formatNetworkSummaryLine(telnetSrv)}
+	lines = append(lines, formatNetworkLatencyLines(telnetSrv)...)
+	lines = append(lines, formatClientListLines(clientList)...)
+	return lines
+}
+
+func formatColumns(width int, cols ...string) string {
+	if width <= 0 || len(cols) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, col := range cols {
+		if i < len(cols)-1 {
+			b.WriteString(padRight(col, width))
+		} else {
+			b.WriteString(col)
+		}
+	}
+	return b.String()
+}
+
+func padRight(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	if visibleLen(s) >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-visibleLen(s))
+}
+
+func padLeft(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	if visibleLen(s) >= width {
+		return s
+	}
+	return strings.Repeat(" ", width-visibleLen(s)) + s
+}
+
+func visibleLen(s string) int {
+	if s == "" {
+		return 0
+	}
+	count := 0
+	for i := 0; i < len(s); {
+		if s[i] == '[' {
+			if j := strings.IndexByte(s[i:], ']'); j >= 0 {
+				i += j + 1
+				continue
+			}
+		}
+		count++
+		i++
+	}
+	return count
+}
+
+func formatIngestLine(label string, total, cw, rtty, ft8, ft4, msk uint64, includeMSK bool) string {
+	totalStr := padRight(humanize.Comma(int64(total)), 7)
+	fields := []string{
+		fmt.Sprintf("%s: %s", label, totalStr),
+		formatIngestField("[yellow]CW[-]", cw, 6),
+		formatIngestField("[yellow]RTTY[-]", rtty, 6),
+		formatIngestField("[yellow]FT8[-]", ft8, 6),
+		formatIngestField("[yellow]FT4[-]", ft4, 6),
+	}
+	if includeMSK {
+		fields = append(fields, formatIngestField("[yellow]MSK[-]", msk, 6))
+	}
+	return strings.Join(fields, " | ")
+}
+
+func formatIngestField(label string, value uint64, width int) string {
+	val := padRight(humanize.Comma(int64(value)), width)
+	return fmt.Sprintf("%s %s", label, val)
+}
+
+func formatPathLines(predictor *pathreliability.Predictor, now time.Time) []string {
+	const (
+		colsPerRow = 4
+	)
+	lines := make([]string, 0, 1)
+	if predictor == nil || !predictor.Config().Enabled {
+		lines = append(lines, "[yellow]Path pairs[-]: n/a")
+		return lines
+	}
+	stats := predictor.Stats(now)
+	lines = append(lines, fmt.Sprintf("[yellow]Path pairs[-]: %s (L2) / %s (L1)",
+		humanize.Comma(int64(stats.CombinedFine)),
+		humanize.Comma(int64(stats.CombinedCoarse)),
+	))
+	lines = append(lines, "")
+	bands := predictor.StatsByBand(now)
+	if len(bands) == 0 {
+		return lines
+	}
+	maxBand := 0
+	maxFine := 0
+	maxCoarse := 0
+	for _, entry := range bands {
+		if len(entry.Band) > maxBand {
+			maxBand = len(entry.Band)
+		}
+		fineStr := humanize.Comma(int64(entry.Fine))
+		coarseStr := humanize.Comma(int64(entry.Coarse))
+		if len(fineStr) > maxFine {
+			maxFine = len(fineStr)
+		}
+		if len(coarseStr) > maxCoarse {
+			maxCoarse = len(coarseStr)
+		}
+	}
+	rows := (len(bands) + colsPerRow - 1) / colsPerRow
+	cols := make([]string, 0, len(bands))
+	for r := 0; r < rows; r++ {
+		cols = cols[:0]
+		for c := 0; c < colsPerRow; c++ {
+			idx := c*rows + r
+			if idx >= len(bands) {
+				continue
+			}
+			entry := bands[idx]
+			bandCol := padLeft(entry.Band, maxBand)
+			fineCol := padLeft(humanize.Comma(int64(entry.Fine)), maxFine)
+			coarseCol := padLeft(humanize.Comma(int64(entry.Coarse)), maxCoarse)
+			col := fmt.Sprintf("[yellow]%s[-]: %s / %s", bandCol, fineCol, coarseCol)
+			cols = append(cols, col)
+		}
+		if len(cols) == 0 {
+			continue
+		}
+		if len(cols) == 1 {
+			lines = append(lines, cols[0])
+			continue
+		}
+		colWidth := 0
+		for _, col := range cols {
+			if w := visibleLen(col); w > colWidth {
+				colWidth = w
+			}
+		}
+		colWidth += 2
+		var b strings.Builder
+		for i, col := range cols {
+			if i < len(cols)-1 {
+				b.WriteString(padRight(col, colWidth))
+			} else {
+				b.WriteString(col)
+			}
+		}
+		lines = append(lines, b.String())
+	}
+	return lines
+}
+
+func formatClientListLines(calls []string) []string {
+	if len(calls) == 0 {
+		return []string{""}
+	}
+	const (
+		colsPerRow = 5
+		colWidth   = 14
+		maxRows    = 10
+	)
+	lines := make([]string, 0, 1)
+	lines = append(lines, "")
+	rows := (len(calls) + colsPerRow - 1) / colsPerRow
+	overflow := 0
+	maxItems := maxRows * colsPerRow
+	if len(calls) > maxItems {
+		overflow = len(calls) - maxItems
+	}
+	for r := 0; r < rows; r++ {
+		cols := make([]string, 0, colsPerRow)
+		for c := 0; c < colsPerRow; c++ {
+			idx := r*colsPerRow + c
+			if idx >= len(calls) {
+				continue
+			}
+			cols = append(cols, calls[idx])
+		}
+		if len(cols) == 0 {
+			continue
+		}
+		if len(cols) == 1 {
+			lines = append(lines, cols[0])
+			continue
+		}
+		var b strings.Builder
+		for i, col := range cols {
+			if i < len(cols)-1 {
+				b.WriteString(padRight(col, colWidth))
+			} else {
+				b.WriteString(col)
+			}
+		}
+		lines = append(lines, b.String())
+	}
+	if overflow > 0 {
+		lines = append(lines, fmt.Sprintf("... +%d more", overflow))
+	}
+	return lines
+}
+
+func formatSecondaryPercent(d *dedup.SecondaryDeduper) string {
+	if d == nil {
+		return "--"
+	}
+	processed, duplicates, _ := d.GetStats()
+	if processed == 0 || duplicates > processed {
+		return "0%"
+	}
+	return fmt.Sprintf("%.0f%%", float64(processed-duplicates)/float64(processed)*100)
 }
 
 // wwvKindFromLine tags non-DX lines coming from human/relay telnet ingest.

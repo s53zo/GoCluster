@@ -106,19 +106,19 @@ func TestBroadcastRespectsDedupePolicyWindows(t *testing.T) {
 	fastClient := &Client{
 		callsign: "FAST1",
 		filter:   filter.NewFilter(),
-		spotChan: make(chan *spot.Spot, 16384),
+		spotChan: make(chan *spotEnvelope, 16384),
 	}
 	fastClient.setDedupePolicy(dedupePolicyFast)
 	medClient := &Client{
 		callsign: "MED1",
 		filter:   filter.NewFilter(),
-		spotChan: make(chan *spot.Spot, 16384),
+		spotChan: make(chan *spotEnvelope, 16384),
 	}
 	medClient.setDedupePolicy(dedupePolicyMed)
 	slowClient := &Client{
 		callsign: "SLOW1",
 		filter:   filter.NewFilter(),
-		spotChan: make(chan *spot.Spot, 16384),
+		spotChan: make(chan *spotEnvelope, 16384),
 	}
 	slowClient.setDedupePolicy(dedupePolicySlow)
 
@@ -171,7 +171,7 @@ func TestBroadcastRespectsDedupePolicyWindows(t *testing.T) {
 	assertNoExtraSpots(t, slowClient.spotChan)
 }
 
-func drainSpotCount(t *testing.T, ch <-chan *spot.Spot, want int) int {
+func drainSpotCount(t *testing.T, ch <-chan *spotEnvelope, want int) int {
 	t.Helper()
 	count := 0
 	deadline := time.After(2 * time.Second)
@@ -186,7 +186,7 @@ func drainSpotCount(t *testing.T, ch <-chan *spot.Spot, want int) int {
 	return count
 }
 
-func assertNoExtraSpots(t *testing.T, ch <-chan *spot.Spot) {
+func assertNoExtraSpots(t *testing.T, ch <-chan *spotEnvelope) {
 	t.Helper()
 	select {
 	case <-ch:

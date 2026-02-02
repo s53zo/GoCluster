@@ -252,9 +252,9 @@ type ReputationConfig struct {
 
 // UIConfig controls the optional local console UI. The legacy TUI uses tview;
 // the lean ANSI mode uses fixed buffers and ANSI escape codes. Mode must be
-// one of ansi, tview, or headless (disables the local UI).
+// one of ansi, tview, tview-v2, or headless (disables the local UI).
 type UIConfig struct {
-	// Mode selects the UI renderer: "ansi", "tview", or "headless".
+	// Mode selects the UI renderer: "ansi", "tview", "tview-v2", or "headless".
 	Mode string `yaml:"mode"`
 	// RefreshMS controls the ANSI render cadence; ignored by tview. 0 disables
 	// periodic renders (events will still be buffered).
@@ -266,6 +266,8 @@ type UIConfig struct {
 	ClearScreen bool `yaml:"clear_screen"`
 	// PaneLines sets tview pane heights (ANSI uses a fixed layout).
 	PaneLines UIPaneLines `yaml:"pane_lines"`
+	// V2 configures the page-based tview renderer when ui.mode = tview-v2.
+	V2 UIV2Config `yaml:"v2"`
 }
 
 // LoggingConfig controls optional system log duplication to disk.
@@ -288,6 +290,100 @@ type UIPaneLines struct {
 	Unlicensed int `yaml:"unlicensed"`
 	Harmonics  int `yaml:"harmonics"`
 	System     int `yaml:"system"`
+}
+
+// UIV2Config controls the page-based tview UI.
+type UIV2Config struct {
+	Pages       []string         `yaml:"pages"`
+	EventBuffer UIV2BufferConfig `yaml:"event_buffer"`
+	DebugBuffer UIV2BufferConfig `yaml:"debug_buffer"`
+	TargetFPS   int              `yaml:"target_fps"`
+	EnableMouse bool             `yaml:"enable_mouse"`
+	Keybindings UIV2Keybindings  `yaml:"keybindings"`
+}
+
+// UIV2BufferConfig bounds event storage for a single page.
+type UIV2BufferConfig struct {
+	MaxEvents        int  `yaml:"max_events"`
+	MaxBytesMB       int  `yaml:"max_bytes_mb"`
+	MaxMessageBytes  int  `yaml:"max_message_bytes"`
+	EvictOnByteLimit bool `yaml:"evict_on_byte_limit"`
+	LogDrops         bool `yaml:"log_drops"`
+}
+
+// UIV2Keybindings controls optional alternative navigation bindings.
+type UIV2Keybindings struct {
+	UseAlternatives bool `yaml:"use_alternatives"`
+}
+
+var defaultUIV2Pages = []string{"overview", "ingest", "pipeline"}
+
+func normalizeUIV2(cfg *UIConfig, raw map[string]any) error {
+	if cfg == nil {
+		return nil
+	}
+
+	applyBufferDefaults := func(buf *UIV2BufferConfig, maxEvents, maxBytesMB int, logDrops bool, key string) {
+		if buf.MaxEvents <= 0 {
+			buf.MaxEvents = maxEvents
+		}
+		if buf.MaxBytesMB <= 0 {
+			buf.MaxBytesMB = maxBytesMB
+		}
+		if buf.MaxMessageBytes <= 0 {
+			buf.MaxMessageBytes = 4096
+		}
+		if !yamlKeyPresent(raw, "ui", "v2", key, "evict_on_byte_limit") {
+			buf.EvictOnByteLimit = true
+		}
+		if !yamlKeyPresent(raw, "ui", "v2", key, "log_drops") {
+			buf.LogDrops = logDrops
+		}
+	}
+
+	applyBufferDefaults(&cfg.V2.EventBuffer, 1000, 1, true, "event_buffer")
+	applyBufferDefaults(&cfg.V2.DebugBuffer, 5000, 2, false, "debug_buffer")
+
+	if cfg.V2.TargetFPS <= 0 {
+		cfg.V2.TargetFPS = 30
+	}
+	if !yamlKeyPresent(raw, "ui", "v2", "keybindings", "use_alternatives") {
+		cfg.V2.Keybindings.UseAlternatives = true
+	}
+
+	pages := cfg.V2.Pages
+	if len(pages) == 0 {
+		cfg.V2.Pages = append([]string{}, defaultUIV2Pages...)
+		return nil
+	}
+
+	allowed := map[string]struct{}{
+		"overview": {},
+		"ingest":   {},
+		"pipeline": {},
+	}
+	seen := make(map[string]struct{}, len(pages))
+	normalized := make([]string, 0, len(pages))
+	for _, page := range pages {
+		name := strings.ToLower(strings.TrimSpace(page))
+		if name == "" {
+			continue
+		}
+		if _, ok := allowed[name]; !ok {
+			return fmt.Errorf("invalid ui.v2.pages entry %q: must be one of overview, ingest, pipeline", page)
+		}
+		if _, ok := seen[name]; ok {
+			return fmt.Errorf("invalid ui.v2.pages: duplicate entry %q", page)
+		}
+		seen[name] = struct{}{}
+		normalized = append(normalized, name)
+	}
+	if len(normalized) == 0 {
+		cfg.V2.Pages = append([]string{}, defaultUIV2Pages...)
+		return nil
+	}
+	cfg.V2.Pages = normalized
+	return nil
 }
 
 // RBNConfig contains Reverse Beacon Network settings
@@ -814,14 +910,14 @@ func Load(path string) (*Config, error) {
 		uiMode = "ansi"
 	}
 	switch uiMode {
-	case "ansi", "tview", "headless":
+	case "ansi", "tview", "tview-v2", "headless":
 		cfg.UI.Mode = uiMode
 	case "none":
 		cfg.UI.Mode = "headless"
 	case "auto", "ansi_poc":
 		cfg.UI.Mode = "ansi"
 	default:
-		return nil, fmt.Errorf("invalid ui.mode %q: must be ansi, tview, or headless", cfg.UI.Mode)
+		return nil, fmt.Errorf("invalid ui.mode %q: must be ansi, tview, tview-v2, or headless", cfg.UI.Mode)
 	}
 	if cfg.UI.RefreshMS <= 0 {
 		cfg.UI.RefreshMS = 250
@@ -846,6 +942,10 @@ func Load(path string) (*Config, error) {
 	}
 	if !yamlKeyPresent(raw, "ui", "clear_screen") {
 		cfg.UI.ClearScreen = true
+	}
+
+	if err := normalizeUIV2(&cfg.UI, raw); err != nil {
+		return nil, err
 	}
 	cfg.Logging.Dir = strings.TrimSpace(cfg.Logging.Dir)
 	if cfg.Logging.Enabled {
