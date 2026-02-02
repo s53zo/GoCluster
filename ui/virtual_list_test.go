@@ -27,3 +27,29 @@ func TestVirtualListDraw(t *testing.T) {
 		t.Fatalf("expected rendered content, got blank")
 	}
 }
+
+func TestVirtualListCacheInvalidation(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("init screen: %v", err)
+	}
+
+	list := NewVirtualList()
+	list.rowCache[0] = "stale"
+	list.lastWidth = 10
+	list.SetRect(0, 0, 40, 2)
+	events := []StyledEvent{
+		{Timestamp: time.Unix(0, 0), Kind: EventDrop, Message: "alpha"},
+	}
+	list.SetSnapshot(events, nil)
+	list.Draw(screen)
+	if got := list.rowCache[0]; got == "stale" {
+		t.Fatalf("expected cache invalidation on width change")
+	}
+
+	list.rowCache[0] = "stale"
+	list.SetTimeFormat("15:04")
+	if got := list.rowCache[0]; got == "stale" {
+		t.Fatalf("expected cache invalidation on time format change")
+	}
+}

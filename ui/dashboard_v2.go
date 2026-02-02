@@ -17,7 +17,18 @@ import (
 )
 
 const (
-	maxSearchResults = 1000
+	maxSearchResults   = 1000
+	paneWriterMaxBytes = 64 * 1024
+)
+
+const (
+	accentTag   = "[#ff69b4]"
+	accentReset = "[-]"
+)
+
+var (
+	uiBorderColor = tcell.ColorGray
+	uiTitleColor  = tcell.ColorHotPink
 )
 
 // DashboardV2 implements the page-based tview UI.
@@ -40,16 +51,25 @@ type DashboardV2 struct {
 	eventsBuf *BoundedEventBuffer
 	debugBuf  *BoundedEventBuffer
 
-	overviewRoot     *tview.Flex
-	overviewHdr      *tview.TextView
-	overviewMem      *tview.TextView
-	overviewIngest   *tview.TextView
-	overviewPipeline *tview.TextView
-	overviewCaches   *tview.TextView
-	overviewPath     *tview.TextView
-	overviewNetwork  *tview.TextView
-	ingestView       *tview.TextView
-	networkView      *tview.TextView
+	overviewRoot      *tview.Flex
+	overviewHdr       *tview.TextView
+	overviewMem       *tview.TextView
+	overviewIngest    *tview.TextView
+	overviewPipeline  *tview.TextView
+	overviewCaches    *tview.TextView
+	overviewPath      *tview.TextView
+	overviewNetwork   *tview.TextView
+	ingestRoot        *tview.Flex
+	ingestHdr         *tview.TextView
+	ingestIngest      *tview.TextView
+	ingestValidation  *tview.TextView
+	ingestUnlicensed  *tview.TextView
+	pipelineRoot      *tview.Flex
+	pipelineHdr       *tview.TextView
+	pipelineQuality   *tview.TextView
+	pipelineCorrected *tview.TextView
+	pipelineHarmonics *tview.TextView
+	networkView       *tview.TextView
 
 	eventsPage *eventPage
 	debugPage  *eventPage
@@ -59,6 +79,37 @@ type DashboardV2 struct {
 	pageIndex int
 	helpShown bool
 	metrics   *Metrics
+
+	validationMu    sync.Mutex
+	validationLines []string
+	validationTotal uint64
+	validationMax   int
+
+	unlicensedMu    sync.Mutex
+	unlicensedLines []string
+	unlicensedTotal uint64
+	unlicensedMax   int
+
+	ingestFocus         int
+	validationTitleBase string
+	unlicensedTitleBase string
+	overviewNetworkBase string
+	overviewFocus       int
+	pipelineFocus       int
+	correctedTitleBase  string
+	harmonicsTitleBase  string
+
+	correctedMu    sync.Mutex
+	correctedLines []string
+	correctedTotal uint64
+	correctedMax   int
+
+	harmonicsMu    sync.Mutex
+	harmonicsLines []string
+	harmonicsTotal uint64
+	harmonicsMax   int
+
+	pagePresent map[string]bool
 }
 
 // NewDashboardV2 constructs the v2 dashboard if enabled.
@@ -79,13 +130,14 @@ func NewDashboardV2(cfg config.UIConfig, enable bool) *DashboardV2 {
 
 	metrics := NewMetrics()
 	d := &DashboardV2{
-		app:       app,
-		pages:     pages,
-		ctx:       ctx,
-		cancel:    cancel,
-		ready:     ready,
-		pageOrder: cfg.V2.Pages,
-		metrics:   metrics,
+		app:         app,
+		pages:       pages,
+		ctx:         ctx,
+		cancel:      cancel,
+		ready:       ready,
+		pageOrder:   cfg.V2.Pages,
+		metrics:     metrics,
+		pagePresent: make(map[string]bool),
 	}
 
 	eventPolicy := DropPolicy{
@@ -109,14 +161,17 @@ func NewDashboardV2(cfg config.UIConfig, enable bool) *DashboardV2 {
 	d.overviewPipeline = newBoxedTextView("Pipeline Quality")
 	d.overviewCaches = newBoxedTextView("Caches & Data Freshness")
 	d.overviewPath = newBoxedTextView("Path Predictions")
-	d.overviewNetwork = newBoxedTextView("Network")
+	d.overviewNetworkBase = "Network"
+	d.overviewNetwork = newBoxedTextView(d.overviewNetworkBase)
+	d.overviewNetwork.SetScrollable(true)
 	d.seedOverviewPlaceholders()
 	d.overviewRoot = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(d.overviewHdr, 3, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
 		AddItem(d.overviewMem, 3, 0, false).
-		AddItem(newSpacer(), 1, 0, false).
-		AddItem(d.overviewIngest, 6, 0, false).
+		AddItem(newSpacer(), 1, 0, false)
+	addOverviewTopSections(d.overviewRoot, d.overviewIngest)
+	d.overviewRoot.
 		AddItem(newSpacer(), 1, 0, false).
 		AddItem(d.overviewPipeline, 4, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
@@ -125,22 +180,76 @@ func NewDashboardV2(cfg config.UIConfig, enable bool) *DashboardV2 {
 		AddItem(d.overviewPath, 3, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
 		AddItem(d.overviewNetwork, 0, 1, false)
-	d.ingestView = newPageTextView("Ingest")
-	d.networkView = newPageTextView("Network")
+	d.ingestHdr = newBoxedTextView("Overview")
+	d.ingestIngest = newBoxedTextView("Ingest Rates (per min)")
+	d.validationTitleBase = "Validation"
+	d.unlicensedTitleBase = "Unlicensed"
+	d.ingestValidation = newBoxedTextView(d.validationTitleBase)
+	d.ingestValidation.SetScrollable(true)
+	d.ingestValidation.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if d.handleIngestScroll(event) {
+			return nil
+		}
+		return event
+	})
+	d.validationMax = 200
+	d.ingestUnlicensed = newBoxedTextView(d.unlicensedTitleBase)
+	d.ingestUnlicensed.SetScrollable(true)
+	d.ingestUnlicensed.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if d.handleIngestScroll(event) {
+			return nil
+		}
+		return event
+	})
+	d.unlicensedMax = 200
+	d.seedIngestPlaceholders()
+	d.ingestRoot = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(d.ingestHdr, 3, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.ingestIngest, 6, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.ingestValidation, 28, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.ingestUnlicensed, 28, 0, false)
 
-	d.eventsPage = newEventPage(ctx, "Events", d.eventsBuf, true, metrics)
-	d.debugPage = newEventPage(ctx, "Debug", d.debugBuf, false, metrics)
-	d.pipeline = newPipelinePage(ctx, d.eventsBuf)
+	d.pipelineHdr = newBoxedTextView("Overview")
+	d.pipelineQuality = newBoxedTextView("Pipeline Quality")
+	d.correctedTitleBase = "Corrected"
+	d.harmonicsTitleBase = "Harmonics"
+	d.pipelineCorrected = newBoxedTextView(d.correctedTitleBase)
+	d.pipelineCorrected.SetScrollable(true)
+	d.pipelineCorrected.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if d.handlePipelineScroll(event) {
+			return nil
+		}
+		return event
+	})
+	d.correctedMax = 200
+	d.pipelineHarmonics = newBoxedTextView(d.harmonicsTitleBase)
+	d.pipelineHarmonics.SetScrollable(true)
+	d.pipelineHarmonics.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if d.handlePipelineScroll(event) {
+			return nil
+		}
+		return event
+	})
+	d.harmonicsMax = 200
+	d.seedPipelinePlaceholders()
+	d.pipelineRoot = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(d.pipelineHdr, 3, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.pipelineQuality, 4, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.pipelineCorrected, 28, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.pipelineHarmonics, 28, 0, false)
 
-	d.pages.AddPage("overview", d.overviewRoot, true, false)
-	d.pages.AddPage("ingest", d.ingestView, true, false)
-	d.pages.AddPage("pipeline", d.pipeline.root, true, false)
-	d.pages.AddPage("network", d.networkView, true, false)
-	d.pages.AddPage("events", d.eventsPage.root, true, false)
-	d.pages.AddPage("debug", d.debugPage.root, true, false)
+	d.addPage("overview", d.overviewRoot, true, false)
+	d.addPage("ingest", d.ingestRoot, true, false)
+	d.addPage("pipeline", d.pipelineRoot, true, false)
 
 	help := buildHelpOverlay()
-	d.pages.AddPage("help", help, true, false)
+	d.addPage("help", help, true, false)
 
 	d.scheduler = newFrameScheduler(app, cfg.V2.TargetFPS, 100*time.Millisecond, metrics.ObserveRender)
 	d.scheduler.Start()
@@ -162,7 +271,7 @@ func (d *DashboardV2) installRoot(cfg config.UIConfig) {
 		AddItem(d.pages, 0, 1, true).
 		AddItem(buildFooter(), 1, 0, false)
 	d.app.SetRoot(root, true)
-	d.showPage("overview")
+	d.showFirstAvailablePage()
 }
 
 func (d *DashboardV2) installKeybindings(cfg config.UIConfig) {
@@ -174,16 +283,16 @@ func (d *DashboardV2) installKeybindings(cfg config.UIConfig) {
 			}
 		}
 
-		if pageName, _ := d.pages.GetFrontPage(); pageName == "events" {
-			if d.eventsPage.handleInput(event, d.app) {
+		if pageName, _ := d.pages.GetFrontPage(); pageName == "ingest" {
+			if d.handleIngestScroll(event) {
+				return nil
+			}
+		} else if pageName == "overview" {
+			if d.handleOverviewScroll(event) {
 				return nil
 			}
 		} else if pageName == "pipeline" {
-			if d.pipeline.handleInput(event) {
-				return nil
-			}
-		} else if pageName == "debug" {
-			if d.debugPage.handleInput(event, d.app) {
+			if d.handlePipelineScroll(event) {
 				return nil
 			}
 		}
@@ -201,20 +310,27 @@ func (d *DashboardV2) installKeybindings(cfg config.UIConfig) {
 		case tcell.KeyF4:
 			d.showPage("pipeline")
 			return nil
-		case tcell.KeyF5:
-			d.showPage("network")
-			return nil
-		case tcell.KeyF6:
-			d.showPage("events")
-			return nil
-		case tcell.KeyF7:
-			d.showPage("debug")
-			return nil
 		case tcell.KeyTab:
-			d.nextPage()
+			if pageName, _ := d.pages.GetFrontPage(); pageName == "ingest" {
+				d.cycleIngestFocus(1)
+			} else if pageName == "overview" {
+				d.cycleOverviewFocus(1)
+			} else if pageName == "pipeline" {
+				d.cyclePipelineFocus(1)
+			} else {
+				d.nextPage()
+			}
 			return nil
 		case tcell.KeyBacktab:
-			d.prevPage()
+			if pageName, _ := d.pages.GetFrontPage(); pageName == "ingest" {
+				d.cycleIngestFocus(-1)
+			} else if pageName == "overview" {
+				d.cycleOverviewFocus(-1)
+			} else if pageName == "pipeline" {
+				d.cyclePipelineFocus(-1)
+			} else {
+				d.prevPage()
+			}
 			return nil
 		case tcell.KeyCtrlC:
 			d.Stop()
@@ -267,11 +383,8 @@ func (d *DashboardV2) toggleHelp(show bool) {
 }
 
 func (d *DashboardV2) showPage(name string) {
-	if !d.pageEnabled(name) {
-		if len(d.pageOrder) == 0 {
-			return
-		}
-		name = d.pageOrder[0]
+	if !d.pageEnabled(name) || !d.pageAvailable(name) {
+		return
 	}
 	for i, page := range d.pageOrder {
 		if page == name {
@@ -285,37 +398,59 @@ func (d *DashboardV2) showPage(name string) {
 	}
 	switch name {
 	case "events":
-		d.app.SetFocus(d.eventsPage.list)
+		if d.eventsPage != nil && d.eventsPage.list != nil {
+			d.app.SetFocus(d.eventsPage.list)
+		}
 	case "debug":
-		d.app.SetFocus(d.debugPage.list)
+		if d.debugPage != nil && d.debugPage.list != nil {
+			d.app.SetFocus(d.debugPage.list)
+		}
 	case "overview":
 		d.app.SetFocus(d.overviewRoot)
 	case "ingest":
-		d.app.SetFocus(d.ingestView)
+		d.setIngestFocus(0)
 	case "pipeline":
-		d.app.SetFocus(d.pipeline.corrected)
+		d.setPipelineFocus(0)
 	case "network":
-		d.app.SetFocus(d.networkView)
+		if d.networkView != nil {
+			d.app.SetFocus(d.networkView)
+		}
 	}
+}
+
+func (d *DashboardV2) showFirstAvailablePage() {
+	if d == nil {
+		return
+	}
+	if name, ok := d.firstAvailablePage(); ok {
+		d.showPage(name)
+	}
+}
+
+func (d *DashboardV2) firstAvailablePage() (string, bool) {
+	if d == nil {
+		return "", false
+	}
+	for _, name := range d.pageOrder {
+		if d.pageAvailable(name) {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 func (d *DashboardV2) nextPage() {
 	if len(d.pageOrder) == 0 {
 		return
 	}
-	d.pageIndex = (d.pageIndex + 1) % len(d.pageOrder)
-	d.showPage(d.pageOrder[d.pageIndex])
+	d.cyclePage(1)
 }
 
 func (d *DashboardV2) prevPage() {
 	if len(d.pageOrder) == 0 {
 		return
 	}
-	d.pageIndex--
-	if d.pageIndex < 0 {
-		d.pageIndex = len(d.pageOrder) - 1
-	}
-	d.showPage(d.pageOrder[d.pageIndex])
+	d.cyclePage(-1)
 }
 
 func (d *DashboardV2) pageEnabled(name string) bool {
@@ -325,6 +460,40 @@ func (d *DashboardV2) pageEnabled(name string) bool {
 		}
 	}
 	return false
+}
+
+func (d *DashboardV2) pageAvailable(name string) bool {
+	if d == nil {
+		return false
+	}
+	return d.pagePresent[name]
+}
+
+func (d *DashboardV2) addPage(name string, page tview.Primitive, resize, visible bool) {
+	if d == nil || d.pages == nil || page == nil || name == "" {
+		return
+	}
+	d.pages.AddPage(name, page, resize, visible)
+	d.pagePresent[name] = true
+}
+
+func (d *DashboardV2) cyclePage(delta int) {
+	if d == nil || len(d.pageOrder) == 0 {
+		return
+	}
+	for i := 0; i < len(d.pageOrder); i++ {
+		d.pageIndex += delta
+		if d.pageIndex < 0 {
+			d.pageIndex = len(d.pageOrder) - 1
+		} else if d.pageIndex >= len(d.pageOrder) {
+			d.pageIndex = 0
+		}
+		name := d.pageOrder[d.pageIndex]
+		if d.pageAvailable(name) {
+			d.showPage(name)
+			return
+		}
+	}
 }
 
 func (d *DashboardV2) WaitReady() {
@@ -392,13 +561,19 @@ func (d *DashboardV2) UpdateNetworkStatus(summaryLine string, clientLines []stri
 	lines = append(lines, clientLines...)
 	text := padLines(strings.Join(lines, "\n"))
 	d.scheduler.Schedule("network", func() {
-		if d.networkView != nil {
-			d.networkView.SetText(text)
-		}
 		if d.overviewNetwork != nil {
 			d.overviewNetwork.SetText(text)
 			if d.overviewRoot != nil {
+				const (
+					networkMaxRows = 10
+					baseLines      = 4
+					overflowLine   = 1
+				)
+				maxHeight := baseLines + networkMaxRows + overflowLine + 2
 				height := len(lines) + 2
+				if height > maxHeight {
+					height = maxHeight
+				}
 				if height < 3 {
 					height = 3
 				}
@@ -416,12 +591,10 @@ func (d *DashboardV2) renderSnapshot() {
 		d.statsMu.Unlock()
 	}
 	d.updateOverviewBoxes(snap.OverviewLines)
-	d.ingestView.SetText(padLines(strings.Join(snap.IngestLines, "\n")))
-	d.networkView.SetText(padLines(strings.Join(snap.NetworkLines, "\n")))
+	d.updateIngestBoxes(snap.OverviewLines)
+	d.updatePipelineBoxes(snap.OverviewLines)
 
-	d.eventsPage.refresh()
-	d.debugPage.refresh()
-	d.pipeline.refresh()
+	// Only overview + ingest + pipeline pages are active.
 }
 
 func (d *DashboardV2) snapshotCopy() Snapshot {
@@ -445,19 +618,145 @@ func (d *DashboardV2) snapshotCopy() Snapshot {
 }
 
 func (d *DashboardV2) AppendDropped(line string) {
+	if strings.HasPrefix(line, "CTY drop:") {
+		d.appendValidation(line)
+	}
 	d.appendEvent(EventDrop, line, d.eventsBuf)
 }
 
 func (d *DashboardV2) AppendCall(line string) {
+	d.appendCorrectedStream(line)
 	d.appendEvent(EventCorrection, line, d.eventsBuf)
 }
 
 func (d *DashboardV2) AppendUnlicensed(line string) {
+	d.appendUnlicensedStream(line)
 	d.appendEvent(EventUnlicensed, line, d.eventsBuf)
 }
 
 func (d *DashboardV2) AppendHarmonic(line string) {
+	d.appendHarmonicsStream(line)
 	d.appendEvent(EventHarmonic, line, d.eventsBuf)
+}
+
+func (d *DashboardV2) appendValidation(line string) {
+	if d == nil || d.ingestValidation == nil {
+		return
+	}
+	d.validationMu.Lock()
+	d.validationLines = append(d.validationLines, line)
+	d.validationTotal++
+	overflow := 0
+	if d.validationMax > 0 && len(d.validationLines) > d.validationMax {
+		d.validationLines = d.validationLines[len(d.validationLines)-d.validationMax:]
+	}
+	lines := append([]string{}, d.validationLines...)
+	if d.validationTotal > uint64(len(lines)) {
+		overflow = int(d.validationTotal - uint64(len(lines)))
+	}
+	d.validationMu.Unlock()
+	if overflow > 0 {
+		lines = append(lines, fmt.Sprintf("... +%d more", overflow))
+	}
+	text := padLines(strings.Join(lines, "\n"))
+	d.scheduler.Schedule("validation", func() {
+		if d.ingestValidation != nil {
+			d.ingestValidation.SetText(text)
+			if d.app == nil || d.app.GetFocus() != d.ingestValidation {
+				d.ingestValidation.ScrollToEnd()
+			}
+		}
+	})
+}
+
+func (d *DashboardV2) appendUnlicensedStream(line string) {
+	if d == nil || d.ingestUnlicensed == nil {
+		return
+	}
+	d.unlicensedMu.Lock()
+	d.unlicensedLines = append(d.unlicensedLines, line)
+	d.unlicensedTotal++
+	overflow := 0
+	if d.unlicensedMax > 0 && len(d.unlicensedLines) > d.unlicensedMax {
+		d.unlicensedLines = d.unlicensedLines[len(d.unlicensedLines)-d.unlicensedMax:]
+	}
+	lines := append([]string{}, d.unlicensedLines...)
+	if d.unlicensedTotal > uint64(len(lines)) {
+		overflow = int(d.unlicensedTotal - uint64(len(lines)))
+	}
+	d.unlicensedMu.Unlock()
+	if overflow > 0 {
+		lines = append(lines, fmt.Sprintf("... +%d more", overflow))
+	}
+	text := padLines(strings.Join(lines, "\n"))
+	d.scheduler.Schedule("unlicensed", func() {
+		if d.ingestUnlicensed != nil {
+			d.ingestUnlicensed.SetText(text)
+			if d.app == nil || d.app.GetFocus() != d.ingestUnlicensed {
+				d.ingestUnlicensed.ScrollToEnd()
+			}
+		}
+	})
+}
+
+func (d *DashboardV2) appendCorrectedStream(line string) {
+	if d == nil || d.pipelineCorrected == nil {
+		return
+	}
+	d.correctedMu.Lock()
+	d.correctedLines = append(d.correctedLines, line)
+	d.correctedTotal++
+	overflow := 0
+	if d.correctedMax > 0 && len(d.correctedLines) > d.correctedMax {
+		d.correctedLines = d.correctedLines[len(d.correctedLines)-d.correctedMax:]
+	}
+	lines := append([]string{}, d.correctedLines...)
+	if d.correctedTotal > uint64(len(lines)) {
+		overflow = int(d.correctedTotal - uint64(len(lines)))
+	}
+	d.correctedMu.Unlock()
+	if overflow > 0 {
+		lines = append(lines, fmt.Sprintf("... +%d more", overflow))
+	}
+	text := padLines(strings.Join(lines, "\n"))
+	d.scheduler.Schedule("corrected", func() {
+		if d.pipelineCorrected != nil {
+			d.pipelineCorrected.SetText(text)
+			if d.app == nil || d.app.GetFocus() != d.pipelineCorrected {
+				d.pipelineCorrected.ScrollToEnd()
+			}
+		}
+	})
+}
+
+func (d *DashboardV2) appendHarmonicsStream(line string) {
+	if d == nil || d.pipelineHarmonics == nil {
+		return
+	}
+	d.harmonicsMu.Lock()
+	d.harmonicsLines = append(d.harmonicsLines, line)
+	d.harmonicsTotal++
+	overflow := 0
+	if d.harmonicsMax > 0 && len(d.harmonicsLines) > d.harmonicsMax {
+		d.harmonicsLines = d.harmonicsLines[len(d.harmonicsLines)-d.harmonicsMax:]
+	}
+	lines := append([]string{}, d.harmonicsLines...)
+	if d.harmonicsTotal > uint64(len(lines)) {
+		overflow = int(d.harmonicsTotal - uint64(len(lines)))
+	}
+	d.harmonicsMu.Unlock()
+	if overflow > 0 {
+		lines = append(lines, fmt.Sprintf("... +%d more", overflow))
+	}
+	text := padLines(strings.Join(lines, "\n"))
+	d.scheduler.Schedule("harmonics", func() {
+		if d.pipelineHarmonics != nil {
+			d.pipelineHarmonics.SetText(text)
+			if d.app == nil || d.app.GetFocus() != d.pipelineHarmonics {
+				d.pipelineHarmonics.ScrollToEnd()
+			}
+		}
+	})
 }
 
 func (d *DashboardV2) AppendReputation(line string) {
@@ -480,9 +779,13 @@ func (d *DashboardV2) appendEvent(kind EventKind, line string, buf *BoundedEvent
 	}
 	if buf.Append(event) {
 		d.scheduler.Schedule("events", func() {
-			d.eventsPage.refresh()
-			d.debugPage.refresh()
-			d.pipeline.refresh()
+			if d.eventsPage != nil {
+				d.eventsPage.refresh()
+			}
+			if d.debugPage != nil {
+				d.debugPage.refresh()
+			}
+			// pipeline page uses stream panes, no event list refresh.
 		})
 	}
 }
@@ -496,18 +799,38 @@ func (d *DashboardV2) SystemWriter() io.Writer {
 
 type paneWriter struct {
 	dash *DashboardV2
-	buf  []byte
-	mu   sync.Mutex
+	// buf holds any partial line; it is bounded to avoid unbounded growth when no newline arrives.
+	buf          []byte
+	mu           sync.Mutex
+	droppedBytes uint64
+	lastDropLog  time.Time
 }
 
 func (w *paneWriter) Write(p []byte) (int, error) {
 	if w == nil || w.dash == nil {
 		return len(p), nil
 	}
+	var logDrop bool
+	var dropBytes uint64
+	var totalDropped uint64
+	now := time.Now().UTC()
 	w.mu.Lock()
 	w.buf = append(w.buf, p...)
+	if excess := len(w.buf) - paneWriterMaxBytes; excess > 0 {
+		w.buf = w.buf[excess:]
+		w.droppedBytes += uint64(excess)
+		dropBytes = uint64(excess)
+		totalDropped = w.droppedBytes
+		if w.lastDropLog.IsZero() || now.Sub(w.lastDropLog) >= 30*time.Second {
+			w.lastDropLog = now
+			logDrop = true
+		}
+	}
 	data := w.buf
 	w.mu.Unlock()
+	if logDrop {
+		log.Printf("UI: paneWriter dropped %d bytes (total %d) due to missing newline", dropBytes, totalDropped)
+	}
 
 	for {
 		idx := bytes.IndexByte(data, '\n')
@@ -536,10 +859,10 @@ func newBoxedTextView(title string) *tview.TextView {
 	tv := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
 	tv.SetBorder(true)
 	if title != "" {
-		tv.SetTitle("[#ff69b4]" + title + "[-]").SetTitleAlign(tview.AlignLeft)
+		tv.SetTitle(accentText(title)).SetTitleAlign(tview.AlignLeft)
 	}
-	tv.SetBorderColor(tcell.ColorGray)
-	tv.SetTitleColor(tcell.ColorHotPink)
+	tv.SetBorderColor(uiBorderColor)
+	tv.SetTitleColor(uiTitleColor)
 	return tv
 }
 
@@ -548,7 +871,9 @@ func newSpacer() *tview.Box {
 }
 
 func buildFooter() *tview.TextView {
-	return tview.NewTextView().SetDynamicColors(true).SetText("[#ff69b4]F1[-]Help  [#ff69b4]F2[-]Overview  [#ff69b4]F3[-]Ingest  [#ff69b4]F4[-]Pipeline  [#ff69b4]F5[-]Network  [#ff69b4]F6[-]Events  [#ff69b4]F7[-]Debug  [Q]Quit")
+	return tview.NewTextView().SetDynamicColors(true).SetText(
+		accentText("F1") + "Help  " + accentText("F2") + "Overview  " + accentText("F3") + "Ingest  " + accentText("F4") + "Pipeline  [Q]Quit",
+	)
 }
 
 func (d *DashboardV2) updateOverviewBoxes(lines []string) {
@@ -568,21 +893,12 @@ func (d *DashboardV2) updateOverviewBoxes(lines []string) {
 	// 8 primary/secondary line
 	// 9 corrections line
 	// Section markers are used to slice cache/path/network blocks.
-	set := func(tv *tview.TextView, text string) {
-		if tv != nil {
-			tv.SetText(padLines(text))
-		}
-	}
-	set(d.overviewHdr, lines[0])
+	setOverviewHeader(d.overviewHdr, lines)
 	if len(lines) > 2 {
-		set(d.overviewMem, lines[2])
+		setBoxText(d.overviewMem, lines[2])
 	}
-	if len(lines) > 7 {
-		set(d.overviewIngest, lines[4]+"\n"+lines[5]+"\n"+lines[6]+"\n"+lines[7])
-	}
-	if len(lines) > 9 {
-		set(d.overviewPipeline, lines[8]+"\n"+lines[9])
-	}
+	setOverviewIngest(d.overviewIngest, lines)
+	setOverviewPipeline(d.overviewPipeline, lines)
 	cacheIdx := -1
 	pathIdx := -1
 	networkIdx := -1
@@ -598,7 +914,7 @@ func (d *DashboardV2) updateOverviewBoxes(lines []string) {
 	}
 	if cacheIdx >= 0 && pathIdx > cacheIdx+1 {
 		cacheLines := lines[cacheIdx+1 : pathIdx]
-		set(d.overviewCaches, strings.Join(cacheLines, "\n"))
+		setBoxText(d.overviewCaches, strings.Join(cacheLines, "\n"))
 		if d.overviewRoot != nil {
 			height := len(cacheLines) + 2
 			if height < 3 {
@@ -609,7 +925,7 @@ func (d *DashboardV2) updateOverviewBoxes(lines []string) {
 	}
 	if pathIdx >= 0 && networkIdx > pathIdx+1 {
 		pathLines := lines[pathIdx+1 : networkIdx]
-		set(d.overviewPath, strings.Join(pathLines, "\n"))
+		setBoxText(d.overviewPath, strings.Join(pathLines, "\n"))
 		if d.overviewRoot != nil {
 			height := len(pathLines) + 2
 			if height < 3 {
@@ -620,9 +936,18 @@ func (d *DashboardV2) updateOverviewBoxes(lines []string) {
 	}
 	if networkIdx >= 0 && len(lines) > networkIdx+1 {
 		networkLines := lines[networkIdx+1:]
-		set(d.overviewNetwork, strings.Join(networkLines, "\n"))
+		setBoxText(d.overviewNetwork, strings.Join(networkLines, "\n"))
 		if d.overviewRoot != nil {
+			const (
+				networkMaxRows = 10
+				baseLines      = 4 // summary + 2 latency lines + blank
+				overflowLine   = 1
+			)
+			maxHeight := baseLines + networkMaxRows + overflowLine + 2
 			height := len(networkLines) + 2
+			if height > maxHeight {
+				height = maxHeight
+			}
 			if height < 3 {
 				height = 3
 			}
@@ -631,37 +956,330 @@ func (d *DashboardV2) updateOverviewBoxes(lines []string) {
 	}
 }
 
+func (d *DashboardV2) updateIngestBoxes(lines []string) {
+	if len(lines) == 0 {
+		d.seedIngestPlaceholders()
+		return
+	}
+	setOverviewHeader(d.ingestHdr, lines)
+	setOverviewIngest(d.ingestIngest, lines)
+}
+
+func (d *DashboardV2) updatePipelineBoxes(lines []string) {
+	if len(lines) == 0 {
+		d.seedPipelinePlaceholders()
+		return
+	}
+	setOverviewHeader(d.pipelineHdr, lines)
+	setOverviewPipeline(d.pipelineQuality, lines)
+}
+
 func (d *DashboardV2) seedOverviewPlaceholders() {
-	set := func(tv *tview.TextView, text string) {
-		if tv != nil {
-			tv.SetText(padLines(text))
+	setBoxText(d.overviewHdr, "[yellow]Cluster[-]: --  [yellow]Version[-]: --  [yellow]Uptime[-]: --:--")
+	setBoxText(d.overviewMem, "[yellow]Heap[-]: --  [yellow]Sys[-]: --  [yellow]GC p99[-]: --  [yellow]Last GC[-]: --  [yellow]Goroutines[-]: --")
+	setBoxText(d.overviewIngest, "[yellow]RBN[-]: -- | [yellow]CW[-] -- | [yellow]RTTY[-] -- | [yellow]FT8[-] -- | [yellow]FT4[-] --\n[yellow]PSK[-]: -- | [yellow]CW[-] -- | [yellow]RTTY[-] -- | [yellow]FT8[-] -- | [yellow]FT4[-] -- | [yellow]MSK[-] --\n[yellow]P92[-]: --\n[yellow]Path[-]: -- (U) / -- (S) / -- (N) / -- (G) / -- (H) / -- (B) / -- (M)")
+	setBoxText(d.overviewPipeline, "[yellow]Primary Dedupe[-]: -- | [yellow]Secondary[-]: F-- M-- S--\n[yellow]Corrections[-]: -- | [yellow]Unlicensed[-]: -- | [yellow]Harmonics[-]: -- | [yellow]Reputation[-]: --")
+	setBoxText(d.overviewCaches, "[yellow]Grid cache[-]:  [[white:white]   [black:white]326,629[-:-]   [-:-]░░░░] 98.5%\n[yellow]Meta cache[-]:  [[white:white]  [black:white] 5,479[-:-]  [-:-]] 99.5%\n[yellow]Known calls[-]: [[white:white] [black:white]50,314[-:-] [-:-]░░░░░░░░] 49.4%\n\n[yellow]CTY[-]: --  [yellow]SCP[-]: --  [yellow]FCC[-]: --  [yellow]Skew[-]: --")
+	setBoxText(d.overviewPath, "[yellow]Path pairs[-]: -- (L2) / -- (L1)\n[yellow]160m[-]: -- / --   [yellow]80m[-]: -- / --")
+	setBoxText(d.overviewNetwork, "[yellow]Telnet[-]: -- clients   [yellow]Drops[-]: Q-- C-- W--")
+}
+
+func (d *DashboardV2) seedIngestPlaceholders() {
+	if d == nil || d.ingestHdr == nil || d.ingestIngest == nil {
+		return
+	}
+	setBoxText(d.ingestHdr, "[yellow]Cluster[-]: --  [yellow]Version[-]: --  [yellow]Uptime[-]: --:--")
+	setBoxText(d.ingestIngest, "[yellow]RBN[-]: -- | [yellow]CW[-] -- | [yellow]RTTY[-] -- | [yellow]FT8[-] -- | [yellow]FT4[-] --\n[yellow]PSK[-]: -- | [yellow]CW[-] -- | [yellow]RTTY[-] -- | [yellow]FT8[-] -- | [yellow]FT4[-] -- | [yellow]MSK[-] --\n[yellow]P92[-]: --\n[yellow]Path[-]: -- (U) / -- (S) / -- (N) / -- (G) / -- (H) / -- (B) / -- (M)")
+	if d.ingestValidation != nil {
+		setBoxText(d.ingestValidation, "CTY drop: --")
+	}
+	if d.ingestUnlicensed != nil {
+		setBoxText(d.ingestUnlicensed, "Unlicensed drop: --")
+	}
+	d.setIngestFocus(d.ingestFocus)
+}
+
+func (d *DashboardV2) seedPipelinePlaceholders() {
+	if d == nil || d.pipelineHdr == nil || d.pipelineQuality == nil {
+		return
+	}
+	setBoxText(d.pipelineHdr, "[yellow]Cluster[-]: --  [yellow]Version[-]: --  [yellow]Uptime[-]: --:--")
+	setBoxText(d.pipelineQuality, "[yellow]Primary Dedupe[-]: -- | [yellow]Secondary[-]: F-- M-- S--\n[yellow]Corrections[-]: -- | [yellow]Unlicensed[-]: -- | [yellow]Harmonics[-]: -- | [yellow]Reputation[-]: --")
+	if d.pipelineCorrected != nil {
+		setBoxText(d.pipelineCorrected, "Corrected: --")
+	}
+	if d.pipelineHarmonics != nil {
+		setBoxText(d.pipelineHarmonics, "Harmonics: --")
+	}
+	d.setPipelineFocus(d.pipelineFocus)
+}
+
+func setBoxText(tv *tview.TextView, text string) {
+	if tv == nil {
+		return
+	}
+	tv.SetText(padLines(text))
+}
+
+func setOverviewHeader(tv *tview.TextView, lines []string) {
+	if len(lines) > 0 {
+		setBoxText(tv, lines[0])
+	}
+}
+
+func setOverviewIngest(tv *tview.TextView, lines []string) {
+	if len(lines) > 7 {
+		setBoxText(tv, lines[4]+"\n"+lines[5]+"\n"+lines[6]+"\n"+lines[7])
+	}
+}
+
+func setOverviewPipeline(tv *tview.TextView, lines []string) {
+	if len(lines) > 9 {
+		setBoxText(tv, lines[8]+"\n"+lines[9])
+	}
+}
+
+func addOverviewTopSections(root *tview.Flex, ingest *tview.TextView) {
+	if root == nil || ingest == nil {
+		return
+	}
+	root.AddItem(ingest, 6, 0, false)
+}
+
+func (d *DashboardV2) cycleIngestFocus(delta int) {
+	if d == nil {
+		return
+	}
+	count := 0
+	if d.ingestValidation != nil {
+		count++
+	}
+	if d.ingestUnlicensed != nil {
+		count++
+	}
+	if count == 0 {
+		return
+	}
+	next := d.ingestFocus + delta
+	if next < 0 {
+		next = count - 1
+	} else if next >= count {
+		next = 0
+	}
+	d.setIngestFocus(next)
+}
+
+func (d *DashboardV2) setIngestFocus(idx int) {
+	if d == nil {
+		return
+	}
+	d.ingestFocus = idx
+	if d.ingestValidation != nil {
+		title := d.validationTitleBase
+		if idx == 0 {
+			title += " *"
+		}
+		d.ingestValidation.SetTitle(accentText(title))
+	}
+	if d.ingestUnlicensed != nil {
+		title := d.unlicensedTitleBase
+		if idx == 1 {
+			title += " *"
+		}
+		d.ingestUnlicensed.SetTitle(accentText(title))
+	}
+	switch idx {
+	case 0:
+		if d.ingestValidation != nil {
+			d.app.SetFocus(d.ingestValidation)
+		}
+	case 1:
+		if d.ingestUnlicensed != nil {
+			d.app.SetFocus(d.ingestUnlicensed)
 		}
 	}
-	set(d.overviewHdr, "[yellow]Cluster[-]: --  [yellow]Version[-]: --  [yellow]Uptime[-]: --:--")
-	set(d.overviewMem, "[yellow]Heap[-]: --  [yellow]Sys[-]: --  [yellow]GC p99[-]: --  [yellow]Last GC[-]: --  [yellow]Goroutines[-]: --")
-	set(d.overviewIngest, "[yellow]RBN[-]: -- | [yellow]CW[-] -- | [yellow]RTTY[-] -- | [yellow]FT8[-] -- | [yellow]FT4[-] --\n[yellow]PSK[-]: -- | [yellow]CW[-] -- | [yellow]RTTY[-] -- | [yellow]FT8[-] -- | [yellow]FT4[-] -- | [yellow]MSK[-] --\n[yellow]P92[-]: --\n[yellow]Path[-]: -- (U) / -- (S) / -- (N) / -- (G) / -- (H) / -- (B) / -- (M)")
-	set(d.overviewPipeline, "[yellow]Primary Dedupe[-]: -- | [yellow]Secondary[-]: F-- M-- S--\n[yellow]Corrections[-]: -- | [yellow]Unlicensed[-]: -- | [yellow]Harmonics[-]: -- | [yellow]Reputation[-]: --")
-	set(d.overviewCaches, "[yellow]Grid cache[-]:  [[white:white]   [black:white]326,629[-:-]   [-:-]░░░░] 98.5%\n[yellow]Meta cache[-]:  [[white:white]  [black:white] 5,479[-:-]  [-:-]] 99.5%\n[yellow]Known calls[-]: [[white:white] [black:white]50,314[-:-] [-:-]░░░░░░░░] 49.4%\n\n[yellow]CTY[-]: --  [yellow]SCP[-]: --  [yellow]FCC[-]: --  [yellow]Skew[-]: --")
-	set(d.overviewPath, "[yellow]Path pairs[-]: -- (L2) / -- (L1)\n[yellow]160m[-]: -- / --   [yellow]80m[-]: -- / --")
-	set(d.overviewNetwork, "[yellow]Telnet[-]: -- clients   [yellow]Drops[-]: Q-- C-- W--")
+}
+
+func (d *DashboardV2) handleIngestScroll(event *tcell.EventKey) bool {
+	if d == nil || event == nil {
+		return false
+	}
+	focused := d.app.GetFocus()
+	var target *tview.TextView
+	switch focused {
+	case d.ingestValidation:
+		target = d.ingestValidation
+	case d.ingestUnlicensed:
+		target = d.ingestUnlicensed
+	default:
+		return false
+	}
+	return scrollTextView(target, event)
+}
+
+func (d *DashboardV2) handleOverviewScroll(event *tcell.EventKey) bool {
+	if d == nil || event == nil {
+		return false
+	}
+	if d.app.GetFocus() != d.overviewNetwork {
+		return false
+	}
+	return scrollTextView(d.overviewNetwork, event)
+}
+
+func (d *DashboardV2) cycleOverviewFocus(delta int) {
+	if d == nil || d.overviewNetwork == nil {
+		return
+	}
+	next := d.overviewFocus + delta
+	if next < 0 {
+		next = 0
+	} else if next > 0 {
+		next = 0
+	}
+	d.setOverviewFocus(next)
+}
+
+func (d *DashboardV2) setOverviewFocus(idx int) {
+	if d == nil || d.overviewNetwork == nil {
+		return
+	}
+	d.overviewFocus = idx
+	title := d.overviewNetworkBase
+	if idx == 0 {
+		title += " *"
+	}
+	d.overviewNetwork.SetTitle(accentText(title))
+	if d.app != nil {
+		d.app.SetFocus(d.overviewNetwork)
+	}
+}
+
+func (d *DashboardV2) cyclePipelineFocus(delta int) {
+	if d == nil {
+		return
+	}
+	count := 0
+	if d.pipelineCorrected != nil {
+		count++
+	}
+	if d.pipelineHarmonics != nil {
+		count++
+	}
+	if count == 0 {
+		return
+	}
+	next := d.pipelineFocus + delta
+	if next < 0 {
+		next = count - 1
+	} else if next >= count {
+		next = 0
+	}
+	d.setPipelineFocus(next)
+}
+
+func (d *DashboardV2) setPipelineFocus(idx int) {
+	if d == nil {
+		return
+	}
+	d.pipelineFocus = idx
+	if d.pipelineCorrected != nil {
+		title := d.correctedTitleBase
+		if idx == 0 {
+			title += " *"
+		}
+		d.pipelineCorrected.SetTitle(accentText(title))
+	}
+	if d.pipelineHarmonics != nil {
+		title := d.harmonicsTitleBase
+		if idx == 1 {
+			title += " *"
+		}
+		d.pipelineHarmonics.SetTitle(accentText(title))
+	}
+	switch idx {
+	case 0:
+		if d.pipelineCorrected != nil {
+			d.app.SetFocus(d.pipelineCorrected)
+		}
+	case 1:
+		if d.pipelineHarmonics != nil {
+			d.app.SetFocus(d.pipelineHarmonics)
+		}
+	}
+}
+
+func scrollTextView(target *tview.TextView, event *tcell.EventKey) bool {
+	if target == nil || event == nil {
+		return false
+	}
+	row, col := target.GetScrollOffset()
+	page := 10
+	_, _, _, height := target.GetInnerRect()
+	if height > 0 {
+		page = height - 1
+		if page < 1 {
+			page = 1
+		}
+	}
+	switch event.Key() {
+	case tcell.KeyUp:
+		if row > 0 {
+			row--
+		}
+	case tcell.KeyDown:
+		row++
+	case tcell.KeyPgUp:
+		row -= page
+		if row < 0 {
+			row = 0
+		}
+	case tcell.KeyPgDn:
+		row += page
+	case tcell.KeyHome:
+		row = 0
+	case tcell.KeyEnd:
+		row = 1 << 30
+	default:
+		return false
+	}
+	target.ScrollTo(row, col)
+	return true
+}
+
+func (d *DashboardV2) handlePipelineScroll(event *tcell.EventKey) bool {
+	if d == nil || event == nil {
+		return false
+	}
+	focused := d.app.GetFocus()
+	var target *tview.TextView
+	switch focused {
+	case d.pipelineCorrected:
+		target = d.pipelineCorrected
+	case d.pipelineHarmonics:
+		target = d.pipelineHarmonics
+	default:
+		return false
+	}
+	return scrollTextView(target, event)
 }
 
 func buildHelpOverlay() tview.Primitive {
 	help := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
-	help.SetText(strings.TrimSpace(`
+	help.SetText(strings.TrimSpace(fmt.Sprintf(`
 KEYBOARD HELP
 
 NAVIGATION
-  [#ff69b4]F1[-]  Help   [#ff69b4]F2[-] Overview   [#ff69b4]F3[-] Ingest   [#ff69b4]F4[-] Pipeline   [#ff69b4]F5[-] Network   [#ff69b4]F6[-] Events   [#ff69b4]F7[-] Debug
+  %sF1%s  Help   %sF2%s Overview   %sF3%s Ingest   %sF4%s Pipeline
   Tab Next page   Shift+Tab Previous page   q / Ctrl+C Quit
 
 EVENTS/DEBUG
   ↑/↓ or k/j Scroll   PageUp/Down Fast scroll   Home/End Top/Bottom
   1-6 Filter tabs (Events)   / Search   Esc Clear search / close
-`))
+`, accentTag, accentReset, accentTag, accentReset, accentTag, accentReset, accentTag, accentReset)))
 	help.SetBorder(true).SetTitle("Help")
-	help.SetBorderColor(tcell.ColorGray)
-	help.SetTitleColor(tcell.ColorHotPink)
+	help.SetBorderColor(uiBorderColor)
+	help.SetTitleColor(uiTitleColor)
 	container := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
@@ -886,12 +1504,12 @@ type pipelinePage struct {
 }
 
 func newPipelinePage(ctx context.Context, buffer *BoundedEventBuffer) *pipelinePage {
-	header := tview.NewTextView().SetDynamicColors(true).SetWrap(false).SetText("[#ff69b4]PIPELINE[-]")
+	header := tview.NewTextView().SetDynamicColors(true).SetWrap(false).SetText(accentText("PIPELINE"))
 	root := tview.NewFlex().SetDirection(tview.FlexRow)
 	root.AddItem(header, 1, 0, false)
 
 	makeColumn := func(title string) (*tview.Flex, *VirtualList) {
-		label := tview.NewTextView().SetDynamicColors(true).SetWrap(false).SetText("[#ff69b4]" + title + "[-]")
+		label := tview.NewTextView().SetDynamicColors(true).SetWrap(false).SetText(accentText(title))
 		list := NewVirtualList()
 		list.SetTimeFormat("15:04")
 		col := tview.NewFlex().SetDirection(tview.FlexRow).
@@ -1022,4 +1640,11 @@ func stripTags(s string) string {
 		"[-]", "",
 	)
 	return replacer.Replace(s)
+}
+
+func accentText(text string) string {
+	if text == "" {
+		return ""
+	}
+	return accentTag + text + accentReset
 }

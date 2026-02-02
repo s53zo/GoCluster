@@ -17,6 +17,7 @@ type VirtualList struct {
 	scrollOffset int
 	rowCache     map[int]string
 	timeFormat   string
+	lastWidth    int
 }
 
 func NewVirtualList() *VirtualList {
@@ -31,13 +32,20 @@ func (v *VirtualList) SetTimeFormat(format string) {
 	if format == "" {
 		format = "15:04:05"
 	}
+	if v.timeFormat != format {
+		v.clearRowCache()
+	}
 	v.timeFormat = format
 }
 
 func (v *VirtualList) SetSnapshot(snapshot []StyledEvent, indices []int) {
 	v.snapshot = snapshot
 	v.indices = indices
-	v.rowCache = make(map[int]string, v.visibleRows)
+	if v.rowCache == nil {
+		v.rowCache = make(map[int]string, v.visibleRows)
+	} else {
+		v.clearRowCache()
+	}
 	maxOffset := maxInt(0, v.listLen()-v.visibleRows)
 	if v.scrollOffset > maxOffset {
 		v.scrollOffset = maxOffset
@@ -60,6 +68,10 @@ func (v *VirtualList) Draw(screen tcell.Screen) {
 	v.visibleRows = height
 	if width <= 0 || height <= 0 {
 		return
+	}
+	if v.lastWidth != width {
+		v.clearRowCache()
+		v.lastWidth = width
 	}
 
 	maxOffset := maxInt(0, v.listLen()-v.visibleRows)
@@ -197,5 +209,14 @@ func styleForKind(kind EventKind) tcell.Style {
 		return tcell.StyleDefault.Foreground(tcell.ColorWhite)
 	default:
 		return tcell.StyleDefault
+	}
+}
+
+func (v *VirtualList) clearRowCache() {
+	if v == nil || v.rowCache == nil {
+		return
+	}
+	for key := range v.rowCache {
+		delete(v.rowCache, key)
 	}
 }

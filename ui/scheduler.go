@@ -96,8 +96,13 @@ func (f *frameScheduler) flushBounded(max time.Duration) {
 			f.mu.Unlock()
 			return
 		}
-		batch := f.pending
-		f.pending = make(map[string]func())
+		batch := make([]func(), 0, len(f.pending))
+		for _, fn := range f.pending {
+			batch = append(batch, fn)
+		}
+		for key := range f.pending {
+			delete(f.pending, key)
+		}
 		f.mu.Unlock()
 
 		queuedAt := time.Now()

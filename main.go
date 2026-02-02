@@ -1467,29 +1467,25 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 
 		if dash != nil {
 			dash.SetStats(lines)
+			overviewLines := buildOverviewLines(tracker, dedup, secondaryFast, secondaryMed, secondarySlow, metaCache, knownPtr, ctyState, ctyPath, knownCallsPath, fccSnap, gridStats, gridDB, pathPredictor, telnetSrv, clusterCall,
+				combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4,
+				pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144,
+				p92Total,
+				totalCorrections, totalUnlicensed, totalHarmonics, reputationTotal,
+				pathOnlyLine,
+				skewPath,
+			)
+			ingestLines := []string{}
+			if len(overviewLines) > 0 {
+				ingestLines = append(ingestLines, overviewLines[0], "")
+			}
+			if len(overviewLines) > 7 {
+				ingestLines = append(ingestLines, overviewLines[3], overviewLines[4], overviewLines[5], overviewLines[6], overviewLines[7])
+			}
 			snapshot := ui.Snapshot{
-				GeneratedAt: time.Now().UTC(),
-				OverviewLines: buildOverviewLines(tracker, dedup, secondaryFast, secondaryMed, secondarySlow, metaCache, knownPtr, ctyState, ctyPath, knownCallsPath, fccSnap, gridStats, gridDB, pathPredictor, telnetSrv, clusterCall,
-					combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4,
-					pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144,
-					p92Total,
-					totalCorrections, totalUnlicensed, totalHarmonics, reputationTotal,
-					pathOnlyLine,
-					skewPath,
-				),
-				IngestLines: []string{
-					fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4),
-					fmt.Sprintf("PSKReporter: %s TOTAL / %s CW / %s RTTY / %s FT8 / %s FT4 / %s MSK144",
-						humanize.Comma(int64(pskTotal)),
-						humanize.Comma(int64(pskCW)),
-						humanize.Comma(int64(pskRTTY)),
-						humanize.Comma(int64(pskFT8)),
-						humanize.Comma(int64(pskFT4)),
-						humanize.Comma(int64(pskMSK144)),
-					),
-					fmt.Sprintf("P92: %s TOTAL", humanize.Comma(int64(p92Total))),
-					fmt.Sprintf("Ingest total: %s", humanize.Comma(int64(ingestTotal))),
-				},
+				GeneratedAt:   time.Now().UTC(),
+				OverviewLines: overviewLines,
+				IngestLines:   ingestLines,
 				PipelineLines: []string{
 					pipelineLine,
 					fmt.Sprintf("Corrections: %d  Unlicensed: %d  Freq: %d  Harmonics: %d  Reputation: %d",
@@ -1497,7 +1493,6 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 				},
 				NetworkLines: formatNetworkLines(telnetSrv, clientList),
 			}
-			snapshot.IngestLines = append(snapshot.IngestLines, pathOnlyLine)
 			dash.SetSnapshot(snapshot)
 		} else {
 			for _, line := range lines {
@@ -5189,17 +5184,6 @@ func formatNetworkLatencyLines(telnetSrv *telnet.Server) []string {
 	}
 }
 
-func formatDurationMillis(d time.Duration) string {
-	if d <= 0 {
-		return "0ms"
-	}
-	ms := d.Milliseconds()
-	if ms <= 0 {
-		return "0ms"
-	}
-	return fmt.Sprintf("%dms", ms)
-}
-
 func formatNetworkLines(telnetSrv *telnet.Server, clientList []string) []string {
 	lines := []string{formatNetworkSummaryLine(telnetSrv)}
 	lines = append(lines, formatNetworkLatencyLines(telnetSrv)...)
@@ -5365,10 +5349,16 @@ func formatClientListLines(calls []string) []string {
 	const (
 		colsPerRow = 5
 		colWidth   = 14
+		maxRows    = 10
 	)
 	lines := make([]string, 0, 1)
 	lines = append(lines, "")
 	rows := (len(calls) + colsPerRow - 1) / colsPerRow
+	overflow := 0
+	maxItems := maxRows * colsPerRow
+	if len(calls) > maxItems {
+		overflow = len(calls) - maxItems
+	}
 	for r := 0; r < rows; r++ {
 		cols := make([]string, 0, colsPerRow)
 		for c := 0; c < colsPerRow; c++ {
@@ -5394,6 +5384,9 @@ func formatClientListLines(calls []string) []string {
 			}
 		}
 		lines = append(lines, b.String())
+	}
+	if overflow > 0 {
+		lines = append(lines, fmt.Sprintf("... +%d more", overflow))
 	}
 	return lines
 }
