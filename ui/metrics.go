@@ -61,14 +61,12 @@ func (t *LatencyTracker) Snapshot() LatencySnapshot {
 // Metrics tracks UI-level counters and latency distributions.
 type Metrics struct {
 	renderLatency *LatencyTracker
-	searchLatency *LatencyTracker
 	pageSwitches  atomic.Uint64
 }
 
 func NewMetrics() *Metrics {
 	return &Metrics{
 		renderLatency: NewLatencyTracker(512),
-		searchLatency: NewLatencyTracker(512),
 	}
 }
 
@@ -77,13 +75,6 @@ func (m *Metrics) ObserveRender(d time.Duration) {
 		return
 	}
 	m.renderLatency.Observe(d)
-}
-
-func (m *Metrics) ObserveSearch(d time.Duration) {
-	if m == nil {
-		return
-	}
-	m.searchLatency.Observe(d)
 }
 
 func (m *Metrics) PageSwitch() {
@@ -98,13 +89,6 @@ func (m *Metrics) RenderSnapshot() LatencySnapshot {
 		return LatencySnapshot{}
 	}
 	return m.renderLatency.Snapshot()
-}
-
-func (m *Metrics) SearchSnapshot() LatencySnapshot {
-	if m == nil {
-		return LatencySnapshot{}
-	}
-	return m.searchLatency.Snapshot()
 }
 
 func (m *Metrics) PageSwitches() uint64 {

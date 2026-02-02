@@ -72,47 +72,34 @@ func (f *frameScheduler) run() {
 		case <-ticker.C:
 			f.flush()
 		case <-f.quit:
-			f.flushBounded(f.drainTimeout)
+			f.flush()
 			return
 		}
 	}
 }
 
 func (f *frameScheduler) flush() {
-	f.flushBounded(0)
-}
-
-func (f *frameScheduler) flushBounded(max time.Duration) {
-	deadline := time.Time{}
-	if max > 0 {
-		deadline = time.Now().Add(max)
-	}
-	for {
-		if !deadline.IsZero() && time.Now().After(deadline) {
-			return
-		}
-		f.mu.Lock()
-		if len(f.pending) == 0 {
-			f.mu.Unlock()
-			return
-		}
-		batch := make([]func(), 0, len(f.pending))
-		for _, fn := range f.pending {
-			batch = append(batch, fn)
-		}
-		for key := range f.pending {
-			delete(f.pending, key)
-		}
+	f.mu.Lock()
+	if len(f.pending) == 0 {
 		f.mu.Unlock()
-
-		queuedAt := time.Now()
-		f.app.QueueUpdateDraw(func() {
-			for _, fn := range batch {
-				fn()
-			}
-			if f.observeDelay != nil {
-				f.observeDelay(time.Since(queuedAt))
-			}
-		})
+		return
 	}
+	batch := make([]func(), 0, len(f.pending))
+	for _, fn := range f.pending {
+		batch = append(batch, fn)
+	}
+	for key := range f.pending {
+		delete(f.pending, key)
+	}
+	f.mu.Unlock()
+
+	queuedAt := time.Now()
+	f.app.QueueUpdateDraw(func() {
+		for _, fn := range batch {
+			fn()
+		}
+		if f.observeDelay != nil {
+			f.observeDelay(time.Since(queuedAt))
+		}
+	})
 }

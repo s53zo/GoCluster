@@ -24,8 +24,8 @@ func TestLoadUIV2Defaults(t *testing.T) {
 	if cfg.UI.V2.TargetFPS != 30 {
 		t.Fatalf("expected ui.v2.target_fps default 30, got %d", cfg.UI.V2.TargetFPS)
 	}
-	if len(cfg.UI.V2.Pages) != 6 {
-		t.Fatalf("expected 6 default pages, got %d", len(cfg.UI.V2.Pages))
+	if len(cfg.UI.V2.Pages) != 3 {
+		t.Fatalf("expected 3 default pages, got %d", len(cfg.UI.V2.Pages))
 	}
 	if cfg.UI.V2.EventBuffer.MaxEvents != 1000 || cfg.UI.V2.EventBuffer.MaxBytesMB != 1 {
 		t.Fatalf("unexpected event buffer defaults: %+v", cfg.UI.V2.EventBuffer)
