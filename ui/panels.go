@@ -118,6 +118,7 @@ type streamPanel struct {
 	*focusBox
 	mu    sync.Mutex
 	lines []string
+	snap  []string
 	head  int
 	count int
 	total uint64
@@ -170,24 +171,33 @@ func (p *streamPanel) Render(app *tview.Application) {
 	total := p.total
 	head := p.head
 	lines := p.lines
+	if cap(p.snap) < count {
+		p.snap = make([]string, count)
+	} else {
+		p.snap = p.snap[:count]
+	}
+	for i := 0; i < count; i++ {
+		idx := (head + i) % p.max
+		p.snap[i] = lines[idx]
+	}
+	snapshot := p.snap
 	p.dirty = false
+	p.mu.Unlock()
 
 	var b strings.Builder
-	for i := 0; i < count; i++ {
+	for i := 0; i < len(snapshot); i++ {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		idx := (head + i) % p.max
-		b.WriteString(lines[idx])
+		b.WriteString(snapshot[i])
 	}
-	if overflow := int(total) - count; overflow > 0 {
-		if count > 0 {
+	if overflow := int(total) - len(snapshot); overflow > 0 {
+		if len(snapshot) > 0 {
 			b.WriteByte('\n')
 		}
 		fmt.Fprintf(&b, "... +%d more", overflow)
 	}
 	text := padLines(b.String())
-	p.mu.Unlock()
 
 	p.View().SetText(text)
 	if app == nil || app.GetFocus() != p.View() {
