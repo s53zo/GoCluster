@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"runtime"
 	"sort"
 	"strconv"
@@ -48,10 +49,12 @@ import (
 	"dxcluster/commands"
 	"dxcluster/cty"
 	"dxcluster/filter"
+	"dxcluster/internal/ratelimit"
 	"dxcluster/pathreliability"
 	"dxcluster/reputation"
 	"dxcluster/solarweather"
 	"dxcluster/spot"
+	"dxcluster/strutil"
 	ztelnet "github.com/ziutek/telnet"
 )
 
@@ -75,7 +78,7 @@ func parseDedupePolicy(value string) dedupePolicy {
 }
 
 func parseDedupePolicyToken(value string) (dedupePolicy, bool) {
-	trimmed := strings.ToUpper(strings.TrimSpace(value))
+	trimmed := strutil.NormalizeUpper(value)
 	switch trimmed {
 	case filter.DedupePolicyFast:
 		return dedupePolicyFast, true
@@ -162,6 +165,12 @@ type Server struct {
 	useZiutek            bool                              // True when the external telnet transport is enabled
 	echoMode             string                            // Input echo policy ("server", "local", "off")
 	clientBufferSize     int                               // Per-client spot channel capacity
+	controlQueueSize     int                               // Per-client control queue capacity
+	readIdleTimeout      time.Duration                     // Read deadline for logged-in sessions (timeouts do not disconnect)
+	loginTimeout         time.Duration                     // Pre-login timeout before disconnect
+	dropExtremeRate      float64                           // Drop ratio threshold for disconnect
+	dropExtremeWindow    time.Duration                     // Window for extreme drop evaluation
+	dropExtremeMinAtt    int                               // Minimum attempts before extreme drop disconnect
 	clientListListener   atomic.Value                      // optional func()
 	latency              latencyMetrics                    // latency samples for delivery path
 	loginLineLimit       int                               // Maximum bytes accepted for login/callsign input
@@ -177,6 +186,9 @@ type Server struct {
 	dedupeFastEnabled    bool                              // Fast secondary dedupe policy enabled
 	dedupeMedEnabled     bool                              // Med secondary dedupe policy enabled
 	dedupeSlowEnabled    bool                              // Slow secondary dedupe policy enabled
+	queueDropLog         ratelimit.Counter                 // Rate-limited log counter for broadcast queue drops
+	workerDropLog        ratelimit.Counter                 // Rate-limited log counter for worker queue drops
+	clientDropLog        ratelimit.Counter                 // Rate-limited log counter for per-client drops
 	pathPredTotal        atomic.Uint64                     // Path predictions computed (glyphs)
 	pathPredDerived      atomic.Uint64                     // Predictions using derived user/DX grids
 	pathPredCombined     atomic.Uint64                     // Predictions with sufficient combined data
@@ -200,13 +212,16 @@ type Client struct {
 	conn         net.Conn               // TCP connection to client
 	reader       *bufio.Reader          // Buffered reader for client input
 	writer       *bufio.Writer          // Buffered writer for client output
+	writeMu      sync.Mutex             // Guards writer/deadline usage for echo + writer loop
 	callsign     string                 // Client's amateur radio callsign
 	connected    time.Time              // Timestamp when client connected
 	server       *Server                // Back-reference to server for formatting/helpers
 	address      string                 // Client's IP address
 	recentIPs    []string               // Most-recent-first IP history for this callsign
 	spotChan     chan *spotEnvelope     // Buffered channel for spot delivery (configurable capacity)
-	bulletinChan chan bulletin          // Buffered channel for WWV/WCY bulletin delivery
+	controlChan  chan controlMessage    // Buffered channel for control/bulletin delivery
+	done         chan struct{}          // Closed to stop writer and prevent new enqueues
+	closeOnce    sync.Once              // Ensures close logic runs once
 	echoInput    bool                   // True when we should echo typed characters back to the client
 	dialect      DialectName            // Active command dialect for filter commands
 	grid         string                 // User grid (4+ chars) for path reliability
@@ -230,9 +245,9 @@ type Client struct {
 	filterMu sync.RWMutex
 	filter   *filter.Filter // Personal spot filter (band, mode, callsign)
 	// pathMu guards grid/noise settings shared across goroutines.
-	pathMu            sync.RWMutex
-	dropCount         uint64         // Count of spots dropped for this client due to backpressure
-	pendingDeliveries sync.WaitGroup // Outstanding broadcast jobs referencing this client
+	pathMu     sync.RWMutex
+	dropCount  uint64     // Count of spots dropped for this client due to backpressure
+	dropWindow dropWindow // Sliding window for extreme drop detection
 }
 
 // InputValidationError represents a non-fatal ingress violation (length or character guardrails).
@@ -413,9 +428,26 @@ type spotEnvelope struct {
 	enqueueAt time.Time
 }
 
-type bulletin struct {
-	kind string
-	line string
+type controlMessage struct {
+	line       string
+	raw        []byte
+	closeAfter bool
+}
+
+type dropBucket struct {
+	attempts uint64
+	drops    uint64
+}
+
+// dropWindow tracks spot enqueue attempts and drops over a sliding window.
+// It is guarded by a mutex because updates can arrive from multiple workers.
+type dropWindow struct {
+	mu          sync.Mutex
+	window      time.Duration
+	bucketWidth time.Duration
+	start       time.Time
+	startIdx    int
+	buckets     []dropBucket
 }
 
 type broadcastMetrics struct {
@@ -436,6 +468,88 @@ func (s *Server) recordSenderFailure() uint64 {
 		return 0
 	}
 	return atomic.AddUint64(&s.metrics.senderFailures, 1)
+}
+
+const dropWindowBuckets = 6
+
+func newDropWindow(window time.Duration) dropWindow {
+	if window <= 0 {
+		return dropWindow{}
+	}
+	width := window / time.Duration(dropWindowBuckets)
+	if width <= 0 {
+		width = window
+	}
+	return dropWindow{
+		window:      window,
+		bucketWidth: width,
+		buckets:     make([]dropBucket, dropWindowBuckets),
+	}
+}
+
+func (w *dropWindow) advance(now time.Time) {
+	if w == nil || w.bucketWidth <= 0 || len(w.buckets) == 0 {
+		return
+	}
+	if w.start.IsZero() {
+		w.start = now.Truncate(w.bucketWidth)
+		w.startIdx = 0
+		return
+	}
+	if now.Before(w.start) {
+		for i := range w.buckets {
+			w.buckets[i] = dropBucket{}
+		}
+		w.start = now.Truncate(w.bucketWidth)
+		w.startIdx = 0
+		return
+	}
+	offset := int(now.Sub(w.start) / w.bucketWidth)
+	if offset < len(w.buckets) {
+		return
+	}
+	shift := offset - len(w.buckets) + 1
+	if shift >= len(w.buckets) {
+		for i := range w.buckets {
+			w.buckets[i] = dropBucket{}
+		}
+		w.start = now.Truncate(w.bucketWidth)
+		w.startIdx = 0
+		return
+	}
+	for i := 0; i < shift; i++ {
+		w.start = w.start.Add(w.bucketWidth)
+		w.startIdx = (w.startIdx + 1) % len(w.buckets)
+		w.buckets[w.startIdx] = dropBucket{}
+	}
+}
+
+func (w *dropWindow) record(now time.Time, dropped bool) (uint64, uint64) {
+	if w == nil || w.window <= 0 || w.bucketWidth <= 0 {
+		return 0, 0
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.advance(now)
+	offset := int(now.Sub(w.start) / w.bucketWidth)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(w.buckets) {
+		offset = len(w.buckets) - 1
+	}
+	idx := (w.startIdx + offset) % len(w.buckets)
+	w.buckets[idx].attempts++
+	if dropped {
+		w.buckets[idx].drops++
+	}
+	var attempts uint64
+	var drops uint64
+	for i := range w.buckets {
+		attempts += w.buckets[i].attempts
+		drops += w.buckets[i].drops
+	}
+	return attempts, drops
 }
 
 // handleDialectCommand lets a client select a filter command dialect explicitly.
@@ -747,12 +861,8 @@ func (s *Server) handleDedupeCommand(client *Client, line string) (string, bool)
 	}
 }
 
-func shouldLogQueueDrop(total uint64) bool {
-	return total == 1 || total%100 == 0
-}
-
 func parseSolarSummaryMinutes(token string) (int, bool) {
-	switch strings.TrimSpace(strings.ToUpper(token)) {
+	switch strutil.NormalizeUpper(token) {
 	case "OFF":
 		return 0, true
 	case "15":
@@ -807,10 +917,17 @@ const (
 	defaultBroadcastBatch         = 512
 	defaultBroadcastBatchInterval = 250 * time.Millisecond
 	defaultClientBufferSize       = 128
+	defaultControlQueueSize       = 32
 	defaultWorkerQueueSize        = 128
 	defaultSendDeadline           = 2 * time.Second
 	defaultLoginLineLimit         = 32
 	defaultCommandLineLimit       = 128
+	defaultReadIdleTimeout        = 24 * time.Hour
+	defaultLoginTimeout           = 2 * time.Minute
+	defaultDropExtremeRate        = 0.80
+	defaultDropExtremeWindow      = 30 * time.Second
+	defaultDropExtremeMinAttempts = 100
+	defaultDropLogInterval        = 10 * time.Second
 )
 
 const (
@@ -842,13 +959,19 @@ type ServerOptions struct {
 	BroadcastQueue          int
 	WorkerQueue             int
 	ClientBuffer            int
+	ControlQueue            int
 	BroadcastBatchInterval  time.Duration
 	KeepaliveSeconds        int
 	SkipHandshake           bool
 	Transport               string
 	EchoMode                string
+	ReadIdleTimeout         time.Duration
+	LoginTimeout            time.Duration
 	LoginLineLimit          int
 	CommandLineLimit        int
+	DropExtremeRate         float64
+	DropExtremeWindow       time.Duration
+	DropExtremeMinAttempts  int
 	ReputationGate          *reputation.Gate
 	PathPredictor           *pathreliability.Predictor
 	PathDisplayEnabled      bool
@@ -890,17 +1013,20 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		batchMax:          defaultBroadcastBatch,
 		keepaliveInterval: time.Duration(config.KeepaliveSeconds) * time.Second,
 		clientBufferSize:  config.ClientBuffer,
+		controlQueueSize:  config.ControlQueue,
 		skipHandshake:     config.SkipHandshake,
 		transport:         config.Transport,
 		useZiutek:         useZiutek,
 		echoMode:          config.EchoMode,
 		processor:         processor,
+		readIdleTimeout:   config.ReadIdleTimeout,
+		loginTimeout:      config.LoginTimeout,
 		loginLineLimit:    config.LoginLineLimit,
 		commandLineLimit:  config.CommandLineLimit,
 		filterEngine:      newFilterCommandEngineWithCTY(config.CTYLookup),
 		latency:           newLatencyMetrics(),
 		reputationGate:    opts.ReputationGate,
-		startTime:         time.Now().UTC().UTC(),
+		startTime:         time.Now().UTC(),
 		pathPredictor:     opts.PathPredictor,
 		pathDisplay:       opts.PathDisplayEnabled,
 		solarWeather:      opts.SolarWeather,
@@ -909,6 +1035,12 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 		dedupeFastEnabled: config.DedupeFastEnabled,
 		dedupeMedEnabled:  config.DedupeMedEnabled,
 		dedupeSlowEnabled: config.DedupeSlowEnabled,
+		dropExtremeRate:   config.DropExtremeRate,
+		dropExtremeWindow: config.DropExtremeWindow,
+		dropExtremeMinAtt: config.DropExtremeMinAttempts,
+		queueDropLog:      ratelimit.NewCounter(defaultDropLogInterval),
+		workerDropLog:     ratelimit.NewCounter(defaultDropLogInterval),
+		clientDropLog:     ratelimit.NewCounter(defaultDropLogInterval),
 	}
 }
 
@@ -925,6 +1057,9 @@ func normalizeServerOptions(opts ServerOptions) ServerOptions {
 	}
 	if config.ClientBuffer <= 0 {
 		config.ClientBuffer = defaultClientBufferSize
+	}
+	if config.ControlQueue <= 0 {
+		config.ControlQueue = defaultControlQueueSize
 	}
 	if config.BroadcastBatchInterval <= 0 {
 		config.BroadcastBatchInterval = defaultBroadcastBatchInterval
@@ -945,6 +1080,24 @@ func normalizeServerOptions(opts ServerOptions) ServerOptions {
 	}
 	if config.CommandLineLimit <= 0 {
 		config.CommandLineLimit = defaultCommandLineLimit
+	}
+	if config.ReadIdleTimeout <= 0 {
+		config.ReadIdleTimeout = defaultReadIdleTimeout
+	}
+	if config.LoginTimeout <= 0 {
+		config.LoginTimeout = defaultLoginTimeout
+	}
+	if config.DropExtremeRate <= 0 {
+		config.DropExtremeRate = defaultDropExtremeRate
+	}
+	if config.DropExtremeRate > 1 {
+		config.DropExtremeRate = defaultDropExtremeRate
+	}
+	if config.DropExtremeWindow <= 0 {
+		config.DropExtremeWindow = defaultDropExtremeWindow
+	}
+	if config.DropExtremeMinAttempts <= 0 {
+		config.DropExtremeMinAttempts = defaultDropExtremeMinAttempts
 	}
 	if config.PathPredictor == nil {
 		config.PathDisplayEnabled = false
@@ -1098,7 +1251,7 @@ func (s *Server) BroadcastSpot(spot *spot.Spot, allowFast, allowMed, allowSlow b
 	case s.broadcast <- payload:
 	default:
 		drops := atomic.AddUint64(&s.metrics.queueDrops, 1)
-		if shouldLogQueueDrop(drops) {
+		if _, ok := s.queueDropLog.Inc(); ok {
 			log.Printf("Broadcast channel full (%d/%d buffered), dropping spot (total queue drops=%d)", len(s.broadcast), cap(s.broadcast), drops)
 		}
 	}
@@ -1123,9 +1276,6 @@ func (s *Server) DeliverSelfSpot(spot *spot.Spot) {
 		return
 	}
 
-	client.pendingDeliveries.Add(1)
-	defer client.pendingDeliveries.Done()
-
 	client.filterMu.RLock()
 	allowSelf := client.filter.SelfEnabled()
 	client.filterMu.RUnlock()
@@ -1134,16 +1284,7 @@ func (s *Server) DeliverSelfSpot(spot *spot.Spot) {
 	}
 
 	enqueueAt := time.Now().UTC()
-	select {
-	case client.spotChan <- &spotEnvelope{spot: spot, enqueueAt: enqueueAt}:
-		s.observeEnqueueLatency(time.Since(enqueueAt))
-	default:
-		drops := atomic.AddUint64(&s.metrics.clientDrops, 1)
-		clientDrops := atomic.AddUint64(&client.dropCount, 1)
-		if shouldLogQueueDrop(drops) {
-			log.Printf("Client %s spot channel full, dropping spot (client drops=%d total=%d)", client.callsign, clientDrops, drops)
-		}
-	}
+	client.enqueueSpot(&spotEnvelope{spot: spot, enqueueAt: enqueueAt})
 }
 
 // BroadcastRaw sends a raw line to all connected clients without formatting.
@@ -1180,7 +1321,7 @@ func (s *Server) SendDirectMessage(callsign string, line string) {
 	if s == nil {
 		return
 	}
-	callsign = strings.ToUpper(strings.TrimSpace(callsign))
+	callsign = strutil.NormalizeUpper(callsign)
 	if callsign == "" {
 		return
 	}
@@ -1191,7 +1332,7 @@ func (s *Server) SendDirectMessage(callsign string, line string) {
 	s.clientsMutex.RLock()
 	client := s.clients[callsign]
 	s.clientsMutex.RUnlock()
-	if client == nil || client.bulletinChan == nil {
+	if client == nil {
 		return
 	}
 	s.enqueueBulletin(client, "TALK", message)
@@ -1208,9 +1349,6 @@ func (s *Server) broadcastBulletin(kind string, line string, applyFilter bool) {
 	s.clientsMutex.RLock()
 	defer s.clientsMutex.RUnlock()
 	for _, client := range s.clients {
-		if client.bulletinChan == nil {
-			continue
-		}
 		if applyFilter {
 			client.filterMu.RLock()
 			allowed := client.filter.AllowsBulletin(kind)
@@ -1224,18 +1362,10 @@ func (s *Server) broadcastBulletin(kind string, line string, applyFilter bool) {
 }
 
 func (s *Server) enqueueBulletin(client *Client, kind, message string) {
-	if client == nil || client.bulletinChan == nil {
+	if client == nil {
 		return
 	}
-	select {
-	case client.bulletinChan <- bulletin{kind: kind, line: message}:
-	default:
-		drops := atomic.AddUint64(&s.metrics.clientDrops, 1)
-		clientDrops := atomic.AddUint64(&client.dropCount, 1)
-		if shouldLogQueueDrop(drops) {
-			log.Printf("Client %s bulletin channel full, dropping %s bulletin (client drops=%d total=%d)", client.callsign, kind, clientDrops, drops)
-		}
-	}
+	_ = client.enqueueControl(controlMessage{line: message})
 }
 
 func prepareBulletinLine(line string) string {
@@ -1247,7 +1377,7 @@ func prepareBulletinLine(line string) string {
 }
 
 func normalizeWWVKind(kind string) string {
-	kind = strings.ToUpper(strings.TrimSpace(kind))
+	kind = strutil.NormalizeUpper(kind)
 	switch kind {
 	case "WWV", "WCY":
 		return kind
@@ -1292,9 +1422,6 @@ func (s *Server) dispatchSpotToWorkers(payload *broadcastPayload, shards [][]*Cl
 		if len(clients) == 0 {
 			continue
 		}
-		for _, client := range clients {
-			client.pendingDeliveries.Add(1)
-		}
 		job := &broadcastJob{
 			spot:      payload.spot,
 			allowFast: payload.allowFast,
@@ -1307,11 +1434,8 @@ func (s *Server) dispatchSpotToWorkers(payload *broadcastPayload, shards [][]*Cl
 		case s.workerQueues[i] <- job:
 		default:
 			drops := atomic.AddUint64(&s.metrics.queueDrops, 1)
-			if shouldLogQueueDrop(drops) {
+			if _, ok := s.workerDropLog.Inc(); ok {
 				log.Printf("Worker %d queue full (%d pending jobs), dropping %d-client shard (total queue drops=%d)", i, len(s.workerQueues[i]), len(clients), drops)
-			}
-			for _, client := range clients {
-				client.pendingDeliveries.Done()
 			}
 		}
 	}
@@ -1399,9 +1523,8 @@ func normalizedDXCall(s *spot.Spot) string {
 	if s == nil {
 		return ""
 	}
-	s.EnsureNormalized()
 	if s.DXCallNorm != "" {
-		return strings.ToUpper(strings.TrimSpace(s.DXCallNorm))
+		return strutil.NormalizeUpper(s.DXCallNorm)
 	}
 	return spot.NormalizeCallsign(s.DXCall)
 }
@@ -1430,7 +1553,6 @@ func (s *Server) deliverJob(job *broadcastJob) {
 		if client == nil {
 			continue
 		}
-		client.pendingDeliveries.Done()
 		policyAllowed := job.allowFast
 		switch client.getDedupePolicy() {
 		case dedupePolicyMed:
@@ -1475,18 +1597,7 @@ func (s *Server) deliverJob(job *broadcastJob) {
 				}
 			}
 		}
-		select {
-		case client.spotChan <- &spotEnvelope{spot: job.spot, enqueueAt: job.enqueueAt}:
-			if !job.enqueueAt.IsZero() {
-				s.observeEnqueueLatency(time.Since(job.enqueueAt))
-			}
-		default:
-			drops := atomic.AddUint64(&s.metrics.clientDrops, 1)
-			clientDrops := atomic.AddUint64(&client.dropCount, 1)
-			if shouldLogQueueDrop(drops) {
-				log.Printf("Client %s spot channel full, dropping spot (client drops=%d total=%d)", client.callsign, clientDrops, drops)
-			}
-		}
+		client.enqueueSpot(&spotEnvelope{spot: job.spot, enqueueAt: job.enqueueAt})
 	}
 }
 
@@ -1599,14 +1710,16 @@ func (s *Server) acceptConnections() {
 
 // handleClient manages a single client connection
 func (s *Server) handleClient(conn net.Conn) {
-	defer conn.Close()
-
 	address := conn.RemoteAddr().String()
 	log.Printf("New connection from %s", address)
 
 	spotQueueSize := s.clientBufferSize
 	if spotQueueSize <= 0 {
 		spotQueueSize = defaultClientBufferSize
+	}
+	controlQueueSize := s.controlQueueSize
+	if controlQueueSize <= 0 {
+		controlQueueSize = defaultControlQueueSize
 	}
 
 	if s.filterEngine == nil {
@@ -1620,6 +1733,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		tconn, err := ztelnet.NewConn(conn)
 		if err != nil {
 			log.Printf("telnet: failed to wrap connection from %s: %v", address, err)
+			_ = conn.Close()
 			return
 		}
 		readerConn = tconn
@@ -1629,11 +1743,12 @@ func (s *Server) handleClient(conn net.Conn) {
 		conn:         conn,
 		reader:       bufio.NewReader(readerConn),
 		writer:       bufio.NewWriter(writerConn),
-		connected:    time.Now().UTC().UTC(),
+		connected:    time.Now().UTC(),
 		server:       s,
 		address:      address,
 		spotChan:     make(chan *spotEnvelope, spotQueueSize),
-		bulletinChan: make(chan bulletin, spotQueueSize),
+		controlChan:  make(chan controlMessage, controlQueueSize),
+		done:         make(chan struct{}),
 		filter:       filter.NewFilter(), // Start with no filters (accept all)
 		dialect:      s.filterEngine.defaultDialect,
 		gridCell:     pathreliability.InvalidCell,
@@ -1643,22 +1758,43 @@ func (s *Server) handleClient(conn net.Conn) {
 		// when clients toggle their own modes.
 		echoInput: s.echoMode == telnetEchoServer,
 	}
+	client.dropWindow = newDropWindow(s.dropExtremeWindow)
+
+	closeOnExit := true
+	registered := false
+	defer func() {
+		if closeOnExit {
+			client.close("")
+		}
+		if registered {
+			s.unregisterClient(client)
+		}
+	}()
 
 	s.negotiateTelnet(client)
+	go client.writerLoop()
 
 	// Send welcome message with template tokens (uptime, user count, etc.).
-	loginTime := time.Now().UTC().UTC()
+	loginTime := time.Now().UTC()
 	s.sendPreLoginMessage(client, s.welcomeMessage, loginTime)
 	s.sendPreLoginMessage(client, s.loginPrompt, loginTime)
 
 	var callsign string
 	for {
+		if err := client.setReadDeadline(time.Now().Add(s.loginTimeout)); err != nil {
+			log.Printf("Failed to set login deadline for %s: %v", address, err)
+			return
+		}
 		// Read callsign with tight guard rails so a single telnet client cannot
 		// consume unbounded memory or smuggle control characters during login. The
 		// limit is configurable but defaults to 32 bytes which covers every valid
 		// callsign, including suffixes such as /QRP or /MM.
 		line, err := client.ReadLine(s.loginLineLimit, "login", false, false, false, false)
 		if err != nil {
+			if isTimeoutErr(err) {
+				log.Printf("Login timeout for %s", address)
+				return
+			}
 			var inputErr *InputValidationError
 			if errors.As(err, &inputErr) {
 				if msg := s.formatInputValidationMessage(inputErr); strings.TrimSpace(msg) != "" {
@@ -1671,7 +1807,7 @@ func (s *Server) handleClient(conn net.Conn) {
 			return
 		}
 
-		line = strings.ToUpper(strings.TrimSpace(line))
+		line = strutil.NormalizeUpper(line)
 		if line == "" {
 			s.sendPreLoginMessage(client, s.loginEmptyMessage, loginTime)
 			s.sendPreLoginMessage(client, s.loginPrompt, loginTime)
@@ -1691,7 +1827,7 @@ func (s *Server) handleClient(conn net.Conn) {
 	log.Printf("Client %s logged in as %s", address, client.callsign)
 
 	if s.reputationGate != nil {
-		s.reputationGate.RecordLogin(client.callsign, spotterIP(client.address), time.Now().UTC().UTC())
+		s.reputationGate.RecordLogin(client.callsign, spotterIP(client.address), time.Now().UTC())
 	}
 
 	// Capture the client's IP immediately after login so it is persisted before
@@ -1744,7 +1880,7 @@ func (s *Server) handleClient(conn net.Conn) {
 
 	// Register client
 	s.registerClient(client)
-	defer s.unregisterClient(client)
+	registered = true
 
 	// Send login confirmation
 	dialectSource := s.dialectSourceLabel(client.dialect, created, err, s.filterEngine.defaultDialect)
@@ -1767,16 +1903,20 @@ func (s *Server) handleClient(conn net.Conn) {
 		}
 	}
 
-	// Start spot sender goroutine
-	go client.spotSender()
-
 	// Read commands from client
 	for {
+		if err := client.setReadDeadline(time.Now().Add(s.readIdleTimeout)); err != nil {
+			log.Printf("Failed to set read deadline for %s: %v", client.callsign, err)
+			return
+		}
 		// Commands use the more relaxed limit because filter manipulation can
 		// legitimately include several tokens. The limit is still kept small
 		// (default 128 bytes) to keep parsing cheap and predictable.
 		line, err := client.ReadLine(s.commandLineLimit, "command", true, true, true, true)
 		if err != nil {
+			if isTimeoutErr(err) {
+				continue
+			}
 			var inputErr *InputValidationError
 			if errors.As(err, &inputErr) {
 				if msg := s.formatInputValidationMessage(inputErr); strings.TrimSpace(msg) != "" {
@@ -1864,7 +2004,8 @@ func (s *Server) handleClient(conn net.Conn) {
 
 		// Check for disconnect signal
 		if response == "BYE" {
-			client.Send("73!\n")
+			_ = client.SendAndClose("73!\n")
+			closeOnExit = false
 			log.Printf("Client %s logged out", client.callsign)
 			return
 		}
@@ -2040,7 +2181,7 @@ func (s *Server) pathGlyphsForClient(client *Client, sp *spot.Spot) string {
 	if strings.TrimSpace(mode) == "" {
 		mode = sp.Mode
 	}
-	now := time.Now().UTC().UTC()
+	now := time.Now().UTC()
 	res := s.pathPredictor.Predict(userCell, dxCell, userCoarse, dxCoarse, band, mode, noisePenalty, now)
 	s.recordPathPrediction(res, state.gridDerived, sp.DXMetadata.GridDerived)
 	if res.Source == pathreliability.SourceInsufficient {
@@ -2123,7 +2264,7 @@ func (s *Server) pathClassForClient(client *Client, sp *spot.Spot) string {
 	if mode == "" {
 		mode = strings.TrimSpace(sp.Mode)
 	}
-	now := time.Now().UTC().UTC()
+	now := time.Now().UTC()
 	res := s.pathPredictor.Predict(userCell, dxCell, userCoarse, dxCoarse, band, mode, noisePenalty, now)
 	if res.Source == pathreliability.SourceInsufficient {
 		return filter.PathClassInsufficient
@@ -2297,7 +2438,7 @@ func applyTemplateTokens(msg string, data templateData) string {
 	}
 	now := data.now
 	if now.IsZero() {
-		now = time.Now().UTC().UTC()
+		now = time.Now().UTC()
 	}
 	date := now.Format("02-Jan-2006")
 	tm := now.Format("15:04:05")
@@ -2406,7 +2547,7 @@ func formatUptime(now, start time.Time) string {
 
 func (s *Server) preLoginTemplateData(now time.Time) templateData {
 	if now.IsZero() {
-		now = time.Now().UTC().UTC()
+		now = time.Now().UTC()
 	}
 	dialect := ""
 	defaultDialect := ""
@@ -2439,7 +2580,7 @@ func (s *Server) sendPreLoginMessage(client *Client, template string, now time.T
 
 func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin time.Time, prevIP, dialectSource, dialectDefault string) templateData {
 	if now.IsZero() {
-		now = time.Now().UTC().UTC()
+		now = time.Now().UTC()
 	}
 	callsign := ""
 	grid := ""
@@ -2474,76 +2615,274 @@ func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin 
 	}
 }
 
-// spotSender sends spots and bulletins to the client from their buffered channels.
-func (c *Client) spotSender() {
+// writerLoop serializes all outbound traffic to the client and enforces
+// control-before-spot priority. It exits when the client is closed.
+func (c *Client) writerLoop() {
+	if c == nil {
+		return
+	}
+	controlCh := c.controlChan
 	spotCh := c.spotChan
-	bulletinCh := c.bulletinChan
-	for spotCh != nil || bulletinCh != nil {
+	for {
+		// Drain all pending control messages before considering spots.
+		for {
+			select {
+			case <-c.done:
+				return
+			case msg := <-controlCh:
+				if !c.handleControl(msg) {
+					return
+				}
+				continue
+			default:
+			}
+			break
+		}
+
 		select {
-		case env, ok := <-spotCh:
-			if !ok {
-				spotCh = nil
-				continue
-			}
-			if env == nil || env.spot == nil {
-				continue
-			}
-			if c.server != nil && !env.enqueueAt.IsZero() {
-				c.server.observeFirstByteLatency(time.Since(env.enqueueAt))
-			}
-			formatted := env.spot.FormatDXCluster() + "\n"
-			if c.server != nil {
-				formatted = c.server.formatSpotForClient(c, env.spot)
-			}
-			start := time.Now().UTC()
-			if err := c.Send(formatted); err != nil {
-				failures := uint64(0)
-				if c.server != nil {
-					failures = c.server.recordSenderFailure()
-				}
-				if failures > 0 {
-					log.Printf("Client %s disconnecting: sender write failure (spot): %v (total sender failures=%d)", c.callsign, err, failures)
-				} else {
-					log.Printf("Client %s disconnecting: sender write failure (spot): %v", c.callsign, err)
-				}
-				// Closing the connection forces the session read loop to exit so
-				// the client unregisters and stops accumulating drops.
-				if c.conn != nil {
-					_ = c.conn.Close()
-				}
+		case <-c.done:
+			return
+		case msg := <-controlCh:
+			if !c.handleControl(msg) {
 				return
 			}
-			if c.server != nil {
-				c.server.observeWriteStallLatency(time.Since(start))
-			}
-		case bulletin, ok := <-bulletinCh:
-			if !ok {
-				bulletinCh = nil
-				continue
-			}
-			start := time.Now().UTC()
-			if err := c.Send(bulletin.line); err != nil {
-				failures := uint64(0)
-				if c.server != nil {
-					failures = c.server.recordSenderFailure()
-				}
-				if failures > 0 {
-					log.Printf("Client %s disconnecting: sender write failure (bulletin): %v (total sender failures=%d)", c.callsign, err, failures)
-				} else {
-					log.Printf("Client %s disconnecting: sender write failure (bulletin): %v", c.callsign, err)
-				}
-				// Closing the connection forces the session read loop to exit so
-				// the client unregisters and stops accumulating drops.
-				if c.conn != nil {
-					_ = c.conn.Close()
-				}
+		case env := <-spotCh:
+			if !c.handleSpot(env) {
 				return
-			}
-			if c.server != nil {
-				c.server.observeWriteStallLatency(time.Since(start))
 			}
 		}
 	}
+}
+
+func (c *Client) handleControl(msg controlMessage) bool {
+	if msg.raw == nil && strings.TrimSpace(msg.line) == "" {
+		return true
+	}
+	start := time.Now().UTC()
+	var err error
+	if len(msg.raw) > 0 {
+		err = c.writeRaw(msg.raw)
+	} else {
+		err = c.writeLine(msg.line)
+	}
+	if err != nil {
+		c.logWriterFailure("control", err)
+		c.close("writer failure")
+		return false
+	}
+	if c.server != nil {
+		c.server.observeWriteStallLatency(time.Since(start))
+	}
+	if msg.closeAfter {
+		c.close("control close")
+		return false
+	}
+	return true
+}
+
+func (c *Client) handleSpot(env *spotEnvelope) bool {
+	if env == nil || env.spot == nil {
+		return true
+	}
+	if c.server != nil && !env.enqueueAt.IsZero() {
+		c.server.observeFirstByteLatency(time.Since(env.enqueueAt))
+	}
+	formatted := env.spot.FormatDXCluster() + "\n"
+	if c.server != nil {
+		formatted = c.server.formatSpotForClient(c, env.spot)
+	}
+	start := time.Now().UTC()
+	if err := c.writeLine(formatted); err != nil {
+		c.logWriterFailure("spot", err)
+		c.close("writer failure")
+		return false
+	}
+	if c.server != nil {
+		c.server.observeWriteStallLatency(time.Since(start))
+	}
+	return true
+}
+
+// enqueueControl pushes a control/bulletin message; a full queue disconnects the client.
+func (c *Client) enqueueControl(msg controlMessage) error {
+	if c == nil {
+		return errors.New("nil client")
+	}
+	if msg.raw == nil && strings.TrimSpace(msg.line) == "" {
+		return nil
+	}
+	select {
+	case <-c.done:
+		return errors.New("client closed")
+	default:
+	}
+	select {
+	case c.controlChan <- msg:
+		return nil
+	default:
+		if c.server != nil {
+			drops := atomic.AddUint64(&c.server.metrics.clientDrops, 1)
+			if _, ok := c.server.clientDropLog.Inc(); ok {
+				log.Printf("Client %s control queue full (%d/%d), disconnecting (total drops=%d)", c.identity(), len(c.controlChan), cap(c.controlChan), drops)
+			}
+		}
+		c.close("control queue full")
+		return errors.New("control queue full")
+	}
+}
+
+// enqueueSpot queues a spot delivery and updates drop metrics + extreme drop detection.
+func (c *Client) enqueueSpot(env *spotEnvelope) bool {
+	if c == nil || env == nil || env.spot == nil {
+		return false
+	}
+	select {
+	case <-c.done:
+		return false
+	default:
+	}
+	dropped := false
+	select {
+	case c.spotChan <- env:
+		if c.server != nil && !env.enqueueAt.IsZero() {
+			c.server.observeEnqueueLatency(time.Since(env.enqueueAt))
+		}
+	default:
+		dropped = true
+		if c.server != nil {
+			drops := atomic.AddUint64(&c.server.metrics.clientDrops, 1)
+			clientDrops := atomic.AddUint64(&c.dropCount, 1)
+			if _, ok := c.server.clientDropLog.Inc(); ok {
+				log.Printf("Client %s spot queue full (%d/%d), dropping spot (client drops=%d total=%d)", c.identity(), len(c.spotChan), cap(c.spotChan), clientDrops, drops)
+			}
+		}
+	}
+
+	if c.server != nil && c.server.dropExtremeRate > 0 && c.server.dropExtremeWindow > 0 {
+		minAttempts := c.server.dropExtremeMinAtt
+		if minAttempts <= 0 {
+			minAttempts = defaultDropExtremeMinAttempts
+		}
+		attempts, drops := c.dropWindow.record(time.Now().UTC(), dropped)
+		if attempts > 0 && attempts >= uint64(minAttempts) {
+			rate := float64(drops) / float64(attempts)
+			if rate >= c.server.dropExtremeRate {
+				log.Printf("Disconnecting %s due to extreme drop rate %.1f%% (%d/%d over %s)", c.identity(), rate*100, drops, attempts, c.server.dropExtremeWindow)
+				c.close("extreme drop rate")
+			}
+		}
+	}
+
+	return !dropped
+}
+
+func (c *Client) close(reason string) {
+	if c == nil {
+		return
+	}
+	c.closeOnce.Do(func() {
+		if c.done != nil {
+			close(c.done)
+		}
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
+		if strings.TrimSpace(reason) != "" {
+			log.Printf("Disconnected client %s: %s", c.identity(), reason)
+		}
+	})
+}
+
+func (c *Client) identity() string {
+	if c == nil {
+		return "unknown"
+	}
+	if strings.TrimSpace(c.callsign) != "" {
+		return c.callsign
+	}
+	if strings.TrimSpace(c.address) != "" {
+		return c.address
+	}
+	return "unknown"
+}
+
+func (c *Client) logWriterFailure(kind string, err error) {
+	if c == nil || err == nil {
+		return
+	}
+	if c.server != nil {
+		c.server.recordSenderFailure()
+	}
+	log.Printf("Writer failure for %s (%s): %v", c.identity(), kind, err)
+}
+
+func (c *Client) writeLine(message string) error {
+	if c == nil {
+		return errors.New("nil client")
+	}
+	normalized := strings.ReplaceAll(message, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\n", "\r\n")
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if err := c.setWriteDeadline(time.Now().UTC().Add(defaultSendDeadline)); err != nil {
+		return err
+	}
+	defer c.clearWriteDeadline()
+	if _, err := c.writer.WriteString(normalized); err != nil {
+		return err
+	}
+	return c.writer.Flush()
+}
+
+func (c *Client) writeRaw(data []byte) error {
+	if c == nil {
+		return errors.New("nil client")
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if err := c.setWriteDeadline(time.Now().UTC().Add(defaultSendDeadline)); err != nil {
+		return err
+	}
+	defer c.clearWriteDeadline()
+	if _, err := c.writer.Write(data); err != nil {
+		return err
+	}
+	return c.writer.Flush()
+}
+
+func (c *Client) setWriteDeadline(deadline time.Time) error {
+	if c == nil || c.conn == nil {
+		return nil
+	}
+	return c.conn.SetWriteDeadline(deadline)
+}
+
+func (c *Client) clearWriteDeadline() {
+	if c == nil || c.conn == nil {
+		return
+	}
+	_ = c.conn.SetWriteDeadline(time.Time{})
+}
+
+func (c *Client) setReadDeadline(deadline time.Time) error {
+	if c == nil || c.conn == nil {
+		return nil
+	}
+	return c.conn.SetReadDeadline(deadline)
+}
+
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, os.ErrDeadlineExceeded)
 }
 
 // registerClient adds a client to the active clients list
@@ -2566,9 +2905,10 @@ func (s *Server) registerClient(client *Client) {
 			if !strings.HasSuffix(msg, "\n") {
 				msg += "\n"
 			}
-			_ = evicted.Send(msg)
+			_ = evicted.SendAndClose(msg)
+		} else {
+			evicted.close("duplicate login")
 		}
-		evicted.conn.Close()
 		log.Printf("Evicted existing session for %s due to duplicate login", client.callsign)
 	}
 	log.Printf("Registered client: %s (total: %d)", client.callsign, total)
@@ -2586,11 +2926,7 @@ func (s *Server) unregisterClient(client *Client) {
 	s.clientsMutex.Unlock()
 	s.notifyClientListChange()
 
-	// Ensure all outstanding broadcast deliveries referencing this client complete before we close channels.
-	client.pendingDeliveries.Wait()
 	client.saveFilter()
-	close(client.spotChan)
-	close(client.bulletinChan)
 	log.Printf("Unregistered client: %s (total: %d)", client.callsign, total)
 }
 
@@ -2679,41 +3015,28 @@ func (s *Server) Stop() {
 	// Disconnect all clients
 	s.clientsMutex.Lock()
 	for _, client := range s.clients {
-		client.conn.Close()
+		client.close("server shutdown")
 	}
 	s.clientsMutex.Unlock()
 }
 
 // SendRaw sends raw bytes to the client
 func (c *Client) SendRaw(data []byte) error {
-	_, err := c.writer.Write(data)
-	if err != nil {
-		return err
-	}
-	return c.writer.Flush()
+	return c.enqueueControl(controlMessage{raw: data})
 }
 
 // Send writes a message to the client with proper line endings
 func (c *Client) Send(message string) error {
-	// Protect broadcast goroutines from stalling on slow or wedged clients by
-	// bounding how long a write can block. Each call refreshes the deadline and
-	// then clears it, so idle clients are not disconnected by an old timeout.
-	if c.conn != nil {
-		if err := c.conn.SetWriteDeadline(time.Now().UTC().Add(defaultSendDeadline)); err != nil {
-			return err
-		}
-		defer c.conn.SetWriteDeadline(time.Time{})
-	}
+	return c.enqueueControl(controlMessage{line: message})
+}
 
-	// Normalize any existing CRLF to LF, then replace LF with CRLF so callers
-	// don't need to worry about line endings (and we avoid doubling CRs).
-	message = strings.ReplaceAll(message, "\r\n", "\n")
-	message = strings.ReplaceAll(message, "\n", "\r\n")
-	_, err := c.writer.WriteString(message)
-	if err != nil {
-		return err
+// SendAndClose enqueues a control message and closes the connection after it is written.
+func (c *Client) SendAndClose(message string) error {
+	if strings.TrimSpace(message) == "" {
+		c.close("send and close")
+		return nil
 	}
-	return c.writer.Flush()
+	return c.enqueueControl(controlMessage{line: message, closeAfter: true})
 }
 
 // ReadLine reads a single logical line from the telnet client while enforcing
@@ -2769,15 +3092,17 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 		// End of line once LF is observed.
 		if b == '\n' {
 			if c.echoInput {
-				_, _ = c.writer.WriteString("\r\n")
-				_ = c.writer.Flush()
+				if err := c.writeRaw([]byte("\r\n")); err != nil {
+					return "", err
+				}
 			}
 			break
 		}
 		if b == '\r' {
 			if c.echoInput {
-				_, _ = c.writer.WriteString("\r\n")
-				_ = c.writer.Flush()
+				if err := c.writeRaw([]byte("\r\n")); err != nil {
+					return "", err
+				}
 			}
 			c.skipNextEOL = true
 			break
@@ -2828,10 +3153,9 @@ func (c *Client) ReadLine(maxLen int, context string, allowComma, allowWildcard,
 			normalized -= 'a' - 'A'
 		}
 		if c.echoInput {
-			if err := c.writer.WriteByte(normalized); err != nil {
-				return "", err
-			}
-			if err := c.writer.Flush(); err != nil {
+			var echoBuf [1]byte
+			echoBuf[0] = normalized
+			if err := c.writeRaw(echoBuf[:]); err != nil {
 				return "", err
 			}
 		}
@@ -2891,10 +3215,7 @@ func (c *Client) echoErase(count int) error {
 	if !c.echoInput || count <= 0 {
 		return nil
 	}
-	if _, err := c.writer.WriteString(strings.Repeat("\b \b", count)); err != nil {
-		return err
-	}
-	return c.writer.Flush()
+	return c.writeRaw([]byte(strings.Repeat("\b \b", count)))
 }
 
 func wordEraseCount(line []byte) int {

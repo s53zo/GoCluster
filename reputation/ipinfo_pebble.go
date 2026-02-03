@@ -89,7 +89,7 @@ func openIPInfoStore(path string, cacheBytes int64) (*ipinfoStore, error) {
 		return nil, fmt.Errorf("ipinfo pebble version %d unsupported (expected %d)", version, ipinfoPebbleVersion)
 	}
 	if store.builtAt.IsZero() {
-		store.builtAt = time.Now().UTC().UTC()
+		store.builtAt = time.Now().UTC()
 	}
 	return store, nil
 }
@@ -205,7 +205,7 @@ func buildIPInfoPebble(ctx context.Context, csvPath, rootDir string, compact boo
 		return "", fmt.Errorf("ipinfo pebble root mkdir: %w", err)
 	}
 
-	dirName := fmt.Sprintf("db-%s", time.Now().UTC().UTC().Format("20060102-150405"))
+	dirName := fmt.Sprintf("db-%s", time.Now().UTC().Format("20060102-150405"))
 	dbPath := filepath.Join(rootDir, dirName)
 	if err := os.MkdirAll(dbPath, 0o755); err != nil {
 		return "", fmt.Errorf("ipinfo pebble mkdir: %w", err)
@@ -346,7 +346,7 @@ func buildIPInfoPebble(ctx context.Context, csvPath, rootDir string, compact boo
 	if err := db.Set([]byte(ipinfoPebbleMetaVersion), encodeIPInfoMetaInt(ipinfoPebbleVersion), pebble.NoSync); err != nil {
 		return cleanup(err)
 	}
-	now := time.Now().UTC().UTC()
+	now := time.Now().UTC()
 	if err := db.Set([]byte(ipinfoPebbleMetaBuiltAt), encodeIPInfoMetaTime(now), pebble.NoSync); err != nil {
 		return cleanup(err)
 	}
@@ -611,4 +611,3 @@ func bytesCompare(a, b []byte) int {
 		return 0
 	}
 }
-

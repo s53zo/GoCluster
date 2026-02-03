@@ -5,7 +5,9 @@ package rbn
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"runtime/debug"
@@ -23,6 +25,7 @@ import (
 const (
 	minRBNDialFrequencyKHz = 100.0
 	maxRBNDialFrequencyKHz = 3000000.0
+	rbnMaxLineLength       = 1024
 )
 
 var (
@@ -33,24 +36,24 @@ var (
 
 // Client represents an RBN telnet client
 type Client struct {
-	host      string
-	port      int
-	callsign  string
-	name      string
-	conn      net.Conn
-	reader    *bufio.Reader
-	writer    *bufio.Writer
-	connected atomic.Bool
-	shutdown  chan struct{}
-	spotChan  chan *spot.Spot
-	skewStore *skew.Store
-	reconnect chan struct{}
-	stopOnce  sync.Once
-	writeMu   sync.Mutex
+	host       string
+	port       int
+	callsign   string
+	name       string
+	conn       net.Conn
+	reader     *bufio.Reader
+	writer     *bufio.Writer
+	connected  atomic.Bool
+	shutdown   chan struct{}
+	spotChan   chan *spot.Spot
+	skewStore  *skew.Store
+	reconnect  chan struct{}
+	stopOnce   sync.Once
+	writeMu    sync.Mutex
 	lastLineAt atomic.Int64
 	lastSpotAt atomic.Int64
 	spotDrops  atomic.Uint64
-	keepSSID  bool
+	keepSSID   bool
 
 	bufferSize int
 
@@ -71,6 +74,22 @@ type spotToken struct {
 	end       int
 	trimStart int
 	trimEnd   int
+}
+
+var trimPunctuation = [256]bool{
+	',': true,
+	';': true,
+	':': true,
+	'!': true,
+	'.': true,
+}
+
+type errLineTooLong struct {
+	length int
+}
+
+func (e errLineTooLong) Error() string {
+	return "rbn line too long"
 }
 
 // Purpose: Tokenize an RBN spot line into position-aware tokens.
@@ -95,19 +114,11 @@ func tokenizeSpotLine(line string) []spotToken {
 		raw := line[start:end]
 		trimStart := start
 		trimEnd := end
-		for trimStart < end {
-			if strings.ContainsRune(",;:!.", rune(line[trimStart])) {
-				trimStart++
-			} else {
-				break
-			}
+		for trimStart < end && trimPunctuation[line[trimStart]] {
+			trimStart++
 		}
-		for trimEnd > trimStart {
-			if strings.ContainsRune(",;:!.", rune(line[trimEnd-1])) {
-				trimEnd--
-			} else {
-				break
-			}
+		for trimEnd > trimStart && trimPunctuation[line[trimEnd-1]] {
+			trimEnd--
 		}
 		clean := line[trimStart:trimEnd]
 		tokens = append(tokens, spotToken{
@@ -376,6 +387,55 @@ func (c *Client) handleLogin() {
 	c.writer.Flush()
 }
 
+// readLineBounded reads a single line with a hard cap to avoid unbounded buffers.
+// It discards overlong lines and returns errLineTooLong so callers can continue safely.
+func (c *Client) readLineBounded(maxLen int) (string, error) {
+	if c == nil || c.reader == nil {
+		return "", io.EOF
+	}
+	if maxLen <= 0 {
+		maxLen = rbnMaxLineLength
+	}
+	buf := make([]byte, 0, maxLen)
+	for {
+		chunk, err := c.reader.ReadSlice('\n')
+		if err == nil {
+			if len(buf)+len(chunk) > maxLen {
+				return "", errLineTooLong{length: len(buf) + len(chunk)}
+			}
+			buf = append(buf, chunk...)
+			return string(buf), nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			if len(buf)+len(chunk) > maxLen {
+				if discardErr := c.discardLineRemainder(); discardErr != nil {
+					return "", discardErr
+				}
+				return "", errLineTooLong{length: len(buf) + len(chunk)}
+			}
+			buf = append(buf, chunk...)
+			continue
+		}
+		return "", err
+	}
+}
+
+func (c *Client) discardLineRemainder() error {
+	if c == nil || c.reader == nil {
+		return io.EOF
+	}
+	for {
+		_, err := c.reader.ReadSlice('\n')
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return err
+	}
+}
+
 // Purpose: Read and parse incoming lines from the RBN connection.
 // Key aspects: Uses read deadlines; triggers reconnect on errors.
 // Upstream: establishConnection goroutine.
@@ -407,8 +467,13 @@ func (c *Client) readLoop() {
 			// Set read timeout
 			c.conn.SetReadDeadline(time.Now().UTC().Add(5 * time.Minute))
 
-			line, err := c.reader.ReadString('\n')
+			line, err := c.readLineBounded(rbnMaxLineLength)
 			if err != nil {
+				var tooLong errLineTooLong
+				if errors.As(err, &tooLong) {
+					log.Printf("%s: dropping overlong line (%d bytes)", c.displayName(), tooLong.length)
+					continue
+				}
 				if c.isShutdown() {
 					return
 				}
@@ -417,7 +482,7 @@ func (c *Client) readLoop() {
 				return
 			}
 
-			now := time.Now().UTC().UTC()
+			now := time.Now().UTC()
 			line = strings.TrimSpace(line)
 
 			// Skip empty lines
@@ -494,7 +559,7 @@ const rbnMaxFutureSkew = 2 * time.Minute
 // Upstream: parseSpot.
 // Downstream: time.Date, time.Now.
 func parseTimeFromRBN(timeStr string) time.Time {
-	return parseTimeFromRBNAt(timeStr, time.Now().UTC().UTC())
+	return parseTimeFromRBNAt(timeStr, time.Now().UTC())
 }
 
 func parseTimeFromRBNAt(timeStr string, now time.Time) time.Time {
@@ -717,7 +782,7 @@ func (c *Client) parseSpot(line string) {
 	s.RefreshBeaconFlag()
 	s.EnsureNormalized()
 
-	c.lastSpotAt.Store(time.Now().UTC().UTC().UnixNano())
+	c.lastSpotAt.Store(time.Now().UTC().UnixNano())
 	select {
 	case c.spotChan <- s:
 	default:
@@ -870,4 +935,3 @@ func (c *Client) keepaliveLoop() {
 		}
 	}
 }
-

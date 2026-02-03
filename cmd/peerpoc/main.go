@@ -14,129 +14,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"dxcluster/peer"
 )
-
-const (
-	telnetIAC  = 255
-	telnetDONT = 254
-	telnetDO   = 253
-	telnetWONT = 252
-	telnetWILL = 251
-	telnetSB   = 250
-	telnetSE   = 240
-)
-
-type telnetParser struct{}
-
-func (p *telnetParser) Feed(input []byte) (output []byte, replies [][]byte) {
-	var out []byte
-	var inIAC, inSB bool
-	for i := 0; i < len(input); i++ {
-		b := input[i]
-		if inIAC {
-			switch b {
-			case telnetSB:
-				inSB = true
-			case telnetSE:
-				inSB = false
-			case telnetDO:
-				if i+1 < len(input) {
-					replies = append(replies, []byte{telnetIAC, telnetWONT, input[i+1]})
-					i++
-				}
-			case telnetWILL:
-				if i+1 < len(input) {
-					replies = append(replies, []byte{telnetIAC, telnetDONT, input[i+1]})
-					i++
-				}
-			case telnetIAC:
-				out = append(out, telnetIAC)
-			}
-			inIAC = false
-			continue
-		}
-		if b == telnetIAC {
-			inIAC = true
-			continue
-		}
-		if inSB {
-			continue
-		}
-		out = append(out, b)
-	}
-	return out, replies
-}
-
-type lineReader struct {
-	conn    net.Conn
-	parser  *telnetParser
-	buf     []byte
-	writeMu *sync.Mutex
-}
-
-func newLineReader(conn net.Conn, writeMu *sync.Mutex) *lineReader {
-	return &lineReader{
-		conn:    conn,
-		parser:  &telnetParser{},
-		buf:     make([]byte, 0, 4096),
-		writeMu: writeMu,
-	}
-}
-
-func (r *lineReader) ReadLine(deadline time.Time) (string, error) {
-	if err := r.conn.SetReadDeadline(deadline); err != nil {
-		return "", err
-	}
-	for {
-		chunk := make([]byte, 1024)
-		n, err := r.conn.Read(chunk)
-		if n > 0 {
-			out, replies := r.parser.Feed(chunk[:n])
-			if len(replies) > 0 {
-				for _, rep := range replies {
-					r.writeMu.Lock()
-					_, _ = r.conn.Write(rep)
-					r.writeMu.Unlock()
-				}
-			}
-			r.buf = append(r.buf, out...)
-			if idx := bytesIndexLine(r.buf); idx >= 0 {
-				line := string(trimLine(r.buf[:idx]))
-				r.buf = append([]byte{}, r.buf[idx:]...)
-				return line, nil
-			}
-		}
-		if err != nil {
-			if len(r.buf) > 0 {
-				line := string(trimLine(r.buf))
-				r.buf = r.buf[:0]
-				return line, nil
-			}
-			return "", err
-		}
-	}
-}
-
-func bytesIndexLine(b []byte) int {
-	for i, c := range b {
-		if c == '\n' {
-			return i + 1
-		}
-	}
-	return -1
-}
-
-func trimLine(b []byte) []byte {
-	// Drop trailing CR/LF.
-	for len(b) > 0 {
-		if b[len(b)-1] == '\n' || b[len(b)-1] == '\r' {
-			b = b[:len(b)-1]
-		} else {
-			break
-		}
-	}
-	return b
-}
 
 type timestampGenerator struct {
 	lastSec int
@@ -144,7 +24,7 @@ type timestampGenerator struct {
 }
 
 func (g *timestampGenerator) Next() string {
-	now := time.Now().UTC().UTC()
+	now := time.Now().UTC()
 	sec := now.Hour()*3600 + now.Minute()*60 + now.Second()
 	if sec != g.lastSec {
 		g.lastSec = sec
@@ -241,7 +121,11 @@ func runProbe(ctx context.Context, cfg probeConfig) error {
 	defer conn.Close()
 
 	var sendMu sync.Mutex
-	reader := newLineReader(conn, &sendMu)
+	reader := peer.NewLineReader(conn, 4096, 0, func(data []byte) {
+		sendMu.Lock()
+		_, _ = conn.Write(data)
+		sendMu.Unlock()
+	})
 	writer := bufio.NewWriter(conn)
 	tsGen := &timestampGenerator{}
 
@@ -473,4 +357,3 @@ func modeLabel(pc9x bool) string {
 	}
 	return "legacy"
 }
-

@@ -111,7 +111,7 @@ func main() {
 // readPeerFeed consumes PC frames from the peer connection and emits spot events for PC11/PC61.
 // It also replies to PC51 pings to keep the session alive. On read error, it reports the error
 // to errOut and returns so the caller can reconnect.
-func readPeerFeed(conn net.Conn, reader *lineReader, writeMu *sync.Mutex, localCall string, fallbackOrigin string, tsGen *timestampGenerator, idleTimeout time.Duration, out chan<- spotEvent, errOut chan<- error) {
+func readPeerFeed(conn net.Conn, reader *peer.LineReader, writeMu *sync.Mutex, localCall string, fallbackOrigin string, tsGen *timestampGenerator, idleTimeout time.Duration, out chan<- spotEvent, errOut chan<- error) {
 	for {
 		var deadline time.Time
 		if idleTimeout > 0 {
@@ -119,9 +119,9 @@ func readPeerFeed(conn net.Conn, reader *lineReader, writeMu *sync.Mutex, localC
 		}
 		line, err := reader.ReadLine(deadline)
 		if err != nil {
-			var tooLong errLineTooLong
+			var tooLong peer.ErrLineTooLong
 			if errors.As(err, &tooLong) {
-				log.Printf("peerprobe: line too long (%d bytes), dropping and continuing", tooLong.length)
+				log.Printf("peerprobe: line too long (%d bytes), dropping and continuing", tooLong.Length)
 				continue
 			}
 			if errOut != nil {
@@ -129,7 +129,7 @@ func readPeerFeed(conn net.Conn, reader *lineReader, writeMu *sync.Mutex, localC
 			}
 			return
 		}
-		arrival := time.Now().UTC().UTC()
+		arrival := time.Now().UTC()
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -173,7 +173,7 @@ func startTelnetTap(host string, port int, callsign string, out chan<- spotEvent
 			}
 			s.RefreshBeaconFlag()
 			s.EnsureNormalized()
-			arrival := time.Now().UTC().UTC()
+			arrival := time.Now().UTC()
 			log.Printf("TELNET ARRIVAL %s DX %s DE %s", arrival.Format(time.RFC3339Nano), s.DXCall, s.DECall)
 			out <- spotEvent{Spot: s, Arrival: arrival, Source: "telnet"}
 		}
@@ -278,7 +278,7 @@ func (s *eventStore) match(ev spotEvent) (bool, time.Duration, spotEvent) {
 }
 
 func (s *eventStore) prune() {
-	cutoff := time.Now().UTC().UTC().Add(-s.window)
+	cutoff := time.Now().UTC().Add(-s.window)
 	for key, list := range s.byKey {
 		filtered := list[:0]
 		for _, ev := range list {
@@ -450,7 +450,7 @@ func runPeerSession(cfg probeConfig, peerEvents chan<- spotEvent, tsGen *timesta
 	defer conn.Close()
 
 	writeMu := &sync.Mutex{}
-	reader := newLineReader(conn, cfg.maxLine)
+	reader := peer.NewLineReaderWithTransport(conn, cfg.maxLine, 0, conn.Read, nil, nil)
 	idleTimeout := time.Duration(cfg.idleSec) * time.Second
 
 	// Send credentials immediately to match common DXSpider expectations (banner often precedes prompts).
@@ -481,7 +481,7 @@ func runPeerSession(cfg probeConfig, peerEvents chan<- spotEvent, tsGen *timesta
 	return err
 }
 
-func handshake(ctx context.Context, reader *lineReader, writeMu *sync.Mutex, conn net.Conn, cfg probeConfig, tsGen *timestampGenerator) (bool, bool, error) {
+func handshake(ctx context.Context, reader *peer.LineReader, writeMu *sync.Mutex, conn net.Conn, cfg probeConfig, tsGen *timestampGenerator) (bool, bool, error) {
 	initSent := false
 	sentCall := cfg.localCall != ""
 	sentPass := cfg.password == ""
@@ -609,153 +609,6 @@ func payloadFields(fields []string) []string {
 	return out
 }
 
-// --- line reader (mirrors peer/reader.go to match production parsing) ---
-// The probe now relies on the external telnet library to strip IAC sequences
-// and respond to negotiations, so this reader only handles frame splitting.
-
-type lineReader struct {
-	conn    net.Conn
-	buf     []byte
-	maxLine int
-}
-
-// errLineTooLong carries a preview and length when a frame exceeds maxLine.
-type errLineTooLong struct {
-	preview string
-	length  int
-}
-
-func (e errLineTooLong) Error() string {
-	return "line too long"
-}
-
-func newLineReader(conn net.Conn, maxLine int) *lineReader {
-	if maxLine <= 0 {
-		maxLine = 4096
-	}
-	return &lineReader{
-		conn:    conn,
-		buf:     make([]byte, 0, maxLine),
-		maxLine: maxLine,
-	}
-}
-
-func (r *lineReader) ReadLine(deadline time.Time) (string, error) {
-	if err := r.conn.SetReadDeadline(deadline); err != nil {
-		return "", err
-	}
-	for {
-		chunk := make([]byte, 1024)
-		n, err := r.conn.Read(chunk)
-		if n > 0 {
-			r.buf = append(r.buf, chunk[:n]...)
-			for {
-				r.buf = trimLeadingTerminators(r.buf)
-				if len(r.buf) == 0 {
-					break
-				}
-				// Prefer explicit terminators (~, CRLF, CR, LF) when present.
-				if idx, size := bytesIndexTerminator(r.buf); idx >= 0 {
-					line := string(trimLine(r.buf[:idx]))
-					r.buf = append([]byte{}, r.buf[idx+size:]...)
-					return line, nil
-				}
-				// Resync: discard leading noise until a valid PCxx^ frame start that follows a terminator.
-				// This avoids splitting on "^PC" sequences that might appear inside payload fields.
-				if start := bytesIndexFrameStart(r.buf); start > 0 {
-					r.buf = r.buf[start:]
-					continue
-				}
-				if len(r.buf) > r.maxLine && r.maxLine > 0 {
-					// Drop the current buffer to avoid unbounded growth; caller can choose to continue.
-					preview := string(r.buf)
-					r.buf = r.buf[:0]
-					return "", errLineTooLong{preview: preview, length: len(preview)}
-				}
-				break
-			}
-		}
-		if err != nil {
-			return "", err
-		}
-	}
-}
-
-func trimLine(b []byte) []byte {
-	for len(b) > 0 {
-		if b[len(b)-1] == '\n' || b[len(b)-1] == '\r' {
-			b = b[:len(b)-1]
-		} else {
-			break
-		}
-	}
-	return b
-}
-
-// trimLeadingTerminators discards any leading CR/LF/~ bytes so frames start cleanly.
-func trimLeadingTerminators(b []byte) []byte {
-	for len(b) > 0 {
-		if isTerminator(b[0]) {
-			b = b[1:]
-			continue
-		}
-		break
-	}
-	return b
-}
-
-func isTerminator(b byte) bool {
-	return b == '\n' || b == '\r' || b == '~'
-}
-
-// bytesIndexTerminator returns the index and width of the first terminator (~, CRLF, CR, LF).
-// We prefer ~ as a hard frame end; CR/LF are legacy telnet line ends.
-func bytesIndexTerminator(b []byte) (int, int) {
-	for i := 0; i < len(b); i++ {
-		switch b[i] {
-		case '~':
-			return i, 1
-		case '\n':
-			return i, 1
-		case '\r':
-			if i+1 < len(b) && b[i+1] == '\n' {
-				return i, 2
-			}
-			return i, 1
-		}
-	}
-	return -1, 0
-}
-
-// bytesIndexFrameStart finds a valid PCxx^ frame start at buffer start or after a terminator.
-func bytesIndexFrameStart(b []byte) int {
-	if isFrameStartAt(b, 0) {
-		return 0
-	}
-	for i := 1; i < len(b); i++ {
-		if !isTerminator(b[i-1]) {
-			continue
-		}
-		if isFrameStartAt(b, i) {
-			return i
-		}
-	}
-	return -1
-}
-
-func isFrameStartAt(b []byte, i int) bool {
-	if i+4 >= len(b) {
-		return false
-	}
-	if b[i] != 'P' || b[i+1] != 'C' {
-		return false
-	}
-	if b[i+2] < '0' || b[i+2] > '9' || b[i+3] < '0' || b[i+3] > '9' {
-		return false
-	}
-	return b[i+4] == '^'
-}
-
 // timestampGenerator mirrors the session helper to produce PC92 timestamps.
 type timestampGenerator struct {
 	lastSec int
@@ -764,7 +617,7 @@ type timestampGenerator struct {
 }
 
 func (g *timestampGenerator) Next() string {
-	now := time.Now().UTC().UTC()
+	now := time.Now().UTC()
 	sec := now.Hour()*3600 + now.Minute()*60 + now.Second()
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -776,4 +629,3 @@ func (g *timestampGenerator) Next() string {
 	g.seq++
 	return fmt.Sprintf("%d.%02d", sec, g.seq)
 }
-

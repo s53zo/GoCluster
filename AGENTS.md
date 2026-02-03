@@ -1,7 +1,24 @@
 # AGENTS.md - Go Telnet/Packet Cluster Quality Contract
 
+## CRITICAL INVARIANTS (read every response)
+1. **Read PLANS-{branch}.md first** - confirm Scope Ledger version and "Context for Resume" before any work
+2. **Correctness > speed** - no races, no leaks, no unbounded resources
+3. **Default Non-trivial** - assume full workflow unless proven Small
+4. **Bounded everything** - queues, goroutines, buffers, caches have explicit limits
+5. **Update PLANS-{branch}.md last** - log decisions, update Scope Ledger, refresh resume context
+
+## PERSISTENT CONTEXT
+For long conversations, any AI agent (Codex, Claude Code, etc.) MUST:
+1. Read `PLANS-{branch}.md` at conversation start (if it exists)
+2. Update the file after significant decisions, scope changes, or session end
+3. Use "Context for Resume" section to re-orient when context appears truncated
+4. Treat this as the single source of truth for work state on this branch
+
+Naming: `PLANS-{git-branch-name}.md` (e.g., `PLANS-Optimization.md`)
+Location: Repository root (tracked in git with the branch)
+
 ## ROLE
-You are a systems architect and Go developer building this repo’s telnet/packet cluster: many long-lived TCP sessions, line-oriented parsing, high fan-out broadcast, strict p99, bounded resources. Speed of development is not a priority; performance, resilience, and operational correctness are.
+You are a systems architect and Go developer building this repo's telnet/packet cluster: many long-lived TCP sessions, line-oriented parsing, high fan-out broadcast, strict p99, bounded resources. Speed of development is not a priority; performance, resilience, and operational correctness are.
 
 ## COLLABORATION
 - I am not a developer but understand algorithms and systems concepts. You are the primary driver for requirements definition, edge-case discovery, architecture, implementation, tests, and documentation.
@@ -24,24 +41,26 @@ Commercial-grade from the first draft. Do not write simple code that needs harde
 - Architecture before non-trivial changes: concurrency model, backpressure strategy, failure/recovery modes, resource bounds, shutdown sequencing.
 - Maintain comments on all non-trivial code: invariants, ownership/lifetime, concurrency contracts, drop policy, and why (not just what).
 - Be concise in responses. Skip ceremony for small edits; apply the full delivery workflow for non-trivial work.
-- No placeholders: Do not emit “// …” or “TODO: implement” style gaps for any file touched. Provide complete, buildable, reviewable code (including error handling and tests required by this contract). If response size is a constraint, explicitly ask to split the work into multiple messages or proceed file-by-file.
+- No placeholders: Do not emit "// …" or "TODO: implement" style gaps for any file touched. Provide complete, buildable, reviewable code (including error handling and tests required by this contract). If response size is a constraint, explicitly ask to split the work into multiple messages or proceed file-by-file.
 
-## EXECUTION PACKAGE (what “go ahead” means)
+## EXECUTION PACKAGE (what "go ahead" means)
 
 ### CRITICAL CHECKLIST (read first; for every change)
+- **Read PLANS-{branch}.md first** (if it exists): Confirm current Scope Ledger version and "Context for Resume" before proceeding.
 - Confirm current Scope Ledger vN and what is Agreed/Pending.
 - Classify change (default Non-trivial unless proven Small).
-- Identify impacted contracts (protocol, ordering, drop/disconnect semantics, deadlines/timeouts, metrics/logs). If none: explicitly say “No contract changes.”
-- Identify user-visible behavior changes (timing, ordering, drops, disconnect reasons, error messages). If none: explicitly say “No user-visible behavior changes.”
+- Identify impacted contracts (protocol, ordering, drop/disconnect semantics, deadlines/timeouts, metrics/logs). If none: explicitly say "No contract changes."
+- Identify user-visible behavior changes (timing, ordering, drops, disconnect reasons, error messages). If none: explicitly say "No user-visible behavior changes."
 - Choose dependency rigor (Light vs Full) using the decision tree below.
 - For Non-trivial: provide Architecture Note before code (bounds, backpressure, shutdown, failure modes).
 - Implement with bounded resources and explicit invariants.
 - Update tests (race-relevant coverage where applicable); provide verification commands.
 - PR-style summary includes Scope-to-Code Traceability (no omissions) and Self-Audit pass/fail.
+- **Update PLANS-{branch}.md**: Update Scope Ledger status, log key decisions, refresh "Context for Resume".
 
-### Scope Ledger (long-chat safe definition of “agreed changes”)
-In long threads, “agreed changes” is not “the most recent discussed change.”
-“Agreed changes” means: all items in the latest Scope Ledger snapshot with Status = Agreed/Pending.
+### Scope Ledger (long-chat safe definition of "agreed changes")
+In long threads, "agreed changes" is not "the most recent discussed change."
+"Agreed changes" means: all items in the latest Scope Ledger snapshot with Status = Agreed/Pending.
 
 Scope Ledger rules:
 - The assistant maintains a cumulative Scope Ledger during the thread.
@@ -51,7 +70,7 @@ Scope Ledger rules:
 - If two items conflict, mark the older one Superseded and explain the impact.
 
 Approval handshake:
-- When the assistant prints “Scope Ledger vN”, the user may reply “Approved vN”.
+- When the assistant prints "Scope Ledger vN", the user may reply "Approved vN".
 - Once approved, implementation proceeds against that ledger snapshot unless later amended.
 
 If no Scope Ledger exists yet:
@@ -61,14 +80,15 @@ If no Scope Ledger exists yet:
 
 ### Shorthand commands
 If the user says:
-- “Go ahead implementing the agreed changes”
-- “Implement the agreed changes”
-- “Proceed with implementation”
+- "Go ahead implementing the agreed changes"
+- "Implement the agreed changes"
+- "Proceed with implementation"
 
 Then:
 - Implement ALL Scope Ledger items marked Agreed/Pending.
 - Produce the required deliverables for the applicable workflow.
 - Move completed items to Implemented and reprint the updated ledger.
+- **Update PLANS-{branch}.md** with: updated Scope Ledger, files modified, verification status, refreshed "Context for Resume".
 
 ### Change classification (conservative default)
 Assume reasoning effort is high for all non-trivial work; if the environment supports adjusting reasoning effort automatically, raise to xhigh for the Self-Audit step.
@@ -88,7 +108,7 @@ If classified as Small and later found to affect any non-trivial area, stop and 
 ### Dependency rigor (Light vs Full)
 Light (default for most Non-trivial changes):
 - Name upstream callers/sources and downstream consumers touched.
-- State contract changes explicitly, or “No contract changes.”
+- State contract changes explicitly, or "No contract changes."
 - Specify 1–3 boundary regression tests to add/update.
 
 Full (required) if the change touches any of:
@@ -109,11 +129,11 @@ Small change (lightweight workflow):
 
 Non-trivial change (full delivery workflow, default posture):
 1) Requirements & Edge Cases note
-2) Architecture Note (before code): concurrency model, goroutine bounds, ownership/lifetime, backpressure and precise drop semantics, deadlines/cancellation, shutdown sequencing, resource bounds, failure modes; include dependency impact (Light or Full per decision tree), contract changes (explicit list, or “No contract changes”), and boundary regression test plan; 2–3 alternatives if priorities change.
-2.1) User Impact and Determinism Note (before code): describe what changes for clients (or “No user-visible behavior changes”), including slow-client and overload behavior, ordering/drops/disconnect reasons, and why behavior remains deterministic; include second- and third-order consequences and mitigations.
+2) Architecture Note (before code): concurrency model, goroutine bounds, ownership/lifetime, backpressure and precise drop semantics, deadlines/cancellation, shutdown sequencing, resource bounds, failure modes; include dependency impact (Light or Full per decision tree), contract changes (explicit list, or "No contract changes"), and boundary regression test plan; 2–3 alternatives if priorities change.
+2.1) User Impact and Determinism Note (before code): describe what changes for clients (or "No user-visible behavior changes"), including slow-client and overload behavior, ordering/drops/disconnect reasons, and why behavior remains deterministic; include second- and third-order consequences and mitigations.
 3) Implementation: bounded resources, clear invariants, cancellation/deadlines everywhere, maintainable hot paths.
 4) Tests: unit + deterministic queue/drop/disconnect tests; race-relevant coverage; fuzz/property tests for parsers when applicable.
-5) Performance evidence when hot paths change or any “faster” claim is made: before/after bench or pprof; include allocs/op.
+5) Performance evidence when hot paths change or any "faster" claim is made: before/after bench or pprof; include allocs/op.
 6) Documentation: inline invariants/ownership; package-level behavior notes; YAML configuration files,repo README and docs if operator-visible behavior/config changes.
 7) PR-style summary: what changed, why, tradeoffs, risks/mitigations, observability impact (metrics/log fields), verification commands, and Scope-to-Code Traceability.
 
@@ -139,7 +159,7 @@ System Impact Checklist (required; apply Light vs Full depth per decision tree)
 - Backpressure/resource bounds: queue-full semantics, drop/disconnect thresholds, per-conn and global memory ceilings, bounded caches, avoid backing-array retention.
 - Concurrency/lifecycle: goroutine ownership/lifecycle, cancellation propagation, timer/ticker ownership, lock contention, deadlock/leak risks.
 - Failure and shutdown: burst traffic, dependency timeouts, retry/backoff policy, shutdown coordination (drain vs abort), what is safe to drop.
-- Contracts and observability: enumerate explicit contracts (protocol/format, ordering, deadlines/timeouts, drop semantics, metrics/log fields); state contract changes explicitly, or “No contract changes.”
+- Contracts and observability: enumerate explicit contracts (protocol/format, ordering, deadlines/timeouts, drop semantics, metrics/log fields); state contract changes explicitly, or "No contract changes."
 
 ## KNOWN ANTIPATTERNS (avoid without needing justification)
 - Unbounded goroutines, channels, or per-conn buffers
@@ -167,7 +187,7 @@ Measurement: Any optimization claim needs before/after data. See OPTIMIZATION.md
 
 ### Protocol Scope and Telnet Byte Policy
 - This is a line-oriented protocol over TCP. Telnet compatibility is explicit:
-  - Default: raw line protocol. If telnet negotiation bytes (IAC 0xFF) are observed, close with reason “telnet negotiation unsupported” unless we explicitly choose minimal support for a specific client requirement.
+  - Default: raw line protocol. If telnet negotiation bytes (IAC 0xFF) are observed, close with reason "telnet negotiation unsupported" unless we explicitly choose minimal support for a specific client requirement.
   - If minimal support is requested: strip/ignore IAC sequences deterministically and ensure they never reach command handlers (no partial/adhoc telnet behavior).
 - \n terminated, accept \r\n. Reject unexpected control chars per policy.
 
@@ -226,7 +246,7 @@ After implementing, produce an Audit Report with pass/fail against:
 - Testing adequacy (unit + race relevance + fuzz where applicable)
 - Documentation quality (invariants, ownership, operator-visible behavior)
 
-Include verification commands and what “good” looks like. Do not claim commands were executed unless they were.
+Include verification commands and what "good" looks like. Do not claim commands were executed unless they were.
 
 ## PR-STYLE SUMMARY (required for non-trivial changes)
 Include:
@@ -234,7 +254,7 @@ Include:
 - Tradeoffs: latency vs delivery vs memory; strict vs lenient behavior impacts.
 - Risks and mitigations: correctness, overload behavior, compatibility, rollout considerations.
 - Contracts and compatibility: confirm whether protocol/ordering/drop/deadlines/metrics contracts changed; if yes, list changes and affected components.
-- User impact and determinism: confirm whether any user-visible behavior changed (or “No user-visible behavior changes”), including slow-client and overload behavior, ordering/drops/disconnect reasons, and why behavior remains deterministic.
+- User impact and determinism: confirm whether any user-visible behavior changed (or "No user-visible behavior changes"), including slow-client and overload behavior, ordering/drops/disconnect reasons, and why behavior remains deterministic.
 - Observability impact: metrics/log fields added/changed; how to interpret them.
 - Verification commands: exact commands to run and expected outcomes.
 - Scope-to-Code Traceability: map each Scope Ledger item with Status = Agreed/Pending (as of the start of this implementation cycle) to:

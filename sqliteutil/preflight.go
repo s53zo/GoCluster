@@ -135,7 +135,7 @@ func collectExisting(path string) []fileState {
 }
 
 func quarantine(path string, existing []fileState, logf func(string, ...any)) (string, error) {
-	ts := time.Now().UTC().UTC().Format("20060102T150405Z")
+	ts := time.Now().UTC().Format("20060102T150405Z")
 	quarantinePath := fmt.Sprintf("%s.bad-%s", path, ts)
 
 	if len(existing) == 0 {
@@ -171,4 +171,3 @@ func quarantine(path string, existing []fileState, logf func(string, ...any)) (s
 	}
 	return quarantinePath, nil
 }
-

@@ -2,6 +2,7 @@ package spot
 
 import (
 	"dxcluster/bandmap"
+	"dxcluster/strutil"
 	"math"
 	"strings"
 	"sync"
@@ -127,7 +128,7 @@ type CorrectionTrace struct {
 // consensus-based call correction. Only CW/RTTY and USB/LSB voice modes
 // are considered because other digital modes already embed their own error correction.
 func IsCallCorrectionCandidate(mode string) bool {
-	_, ok := correctionEligibleModes[strings.ToUpper(strings.TrimSpace(mode))]
+	_, ok := correctionEligibleModes[strutil.NormalizeUpper(mode)]
 	return ok
 }
 
@@ -250,8 +251,8 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 		Strategy:                  strings.ToLower(strings.TrimSpace(cfg.Strategy)),
 		FrequencyKHz:              subject.Frequency,
 		SubjectCall:               strings.ToUpper(subjectCall),
-		Mode:                      strings.ToUpper(strings.TrimSpace(subject.Mode)),
-		Source:                    strings.ToUpper(strings.TrimSpace(subject.SourceNode)),
+		Mode:                      strutil.NormalizeUpper(subject.Mode),
+		Source:                    strutil.NormalizeUpper(subject.SourceNode),
 		MaxEditDistance:           cfg.MaxEditDistance,
 		MinReports:                cfg.MinConsensusReports,
 		MinAdvantage:              cfg.MinAdvantage,
@@ -269,7 +270,7 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 	case "RTTY":
 		trace.DistanceModel = normalizeRTTYDistanceModel(cfg.DistanceModelRTTY)
 	}
-	allReporters := map[string]struct{}{}
+	allReporters := make(map[string]struct{}, len(others)+1)
 	clusterSpots := make([]bandmap.SpotEntry, 0, len(others)+1)
 	clusterSpots = append(clusterSpots, bandmap.SpotEntry{
 		Call:    subject.DXCall,
@@ -603,7 +604,7 @@ func updateCallQualityForCluster(winnerCall string, freqHz float64, cfg *Correct
 		distinct[call] = struct{}{}
 	}
 	for call := range distinct {
-		if call == strings.ToUpper(strings.TrimSpace(winnerCall)) {
+		if call == strutil.NormalizeUpper(winnerCall) {
 			continue
 		}
 		callQuality.Add(call, freqHz, cfg.QualityBinHz, -cfg.QualityBustedDecrement)
@@ -703,7 +704,7 @@ func normalizeCorrectionSettings(settings CorrectionSettings) CorrectionSettings
 // Upstream: passesSNRThreshold and passesSNREntry.
 // Downstream: strings.ToUpper.
 func minSNRThresholdForMode(mode string, cfg CorrectionSettings) int {
-	switch strings.ToUpper(strings.TrimSpace(mode)) {
+	switch strutil.NormalizeUpper(mode) {
 	case "CW":
 		return cfg.MinSNRCW
 	case "RTTY":
@@ -1020,7 +1021,7 @@ func callDistanceCore(subject, candidate, mode, cwModel, rttyModel string) int {
 // Upstream: SuggestCallCorrection and findAnchorForCall.
 // Downstream: callDistanceCore and normalizeCW/RTTYDistanceModel.
 func callDistance(subject, candidate, mode, cwModel, rttyModel string) int {
-	modeKey := strings.ToUpper(strings.TrimSpace(mode))
+	modeKey := strutil.NormalizeUpper(mode)
 	return callDistanceCore(
 		subject,
 		candidate,

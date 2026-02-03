@@ -7,6 +7,13 @@ Telnet ingress now enforces strict limits to prevent memory abuse and control ch
 
 Both limits apply before parsing; the server drops the connection and logs the offending callsign when the guardrail triggers. Commands continue to support comma-separated filter inputs, so scripted clients do not need to swap to space delimiters when the limit is increased.
 
+## Telnet Session Timeouts
+
+These knobs govern how long the server waits for input before taking action:
+
+- `telnet.read_idle_timeout_seconds` &mdash; defaults to `86400` (24 hours). The server refreshes a read deadline for logged-in sessions; timeouts do **not** disconnect clients and simply continue waiting for input.
+- `telnet.login_timeout_seconds` &mdash; defaults to `120`. Pre-login sessions that do not complete callsign entry within this window are disconnected.
+
 ## PSKReporter MQTT Debug Logging
 
 Set `DXC_PSKR_MQTT_DEBUG=true` to enable verbose Paho MQTT debug logs for the PSKReporter client. Logs include DEBUG/WARN/ERROR/CRITICAL lines and should be used only while diagnosing reconnects or payload handling issues.

@@ -1345,14 +1345,14 @@ func TestBroadcastWWVRespectsFilter(t *testing.T) {
 	}
 
 	allow := &Client{
-		callsign:     "ALLOW",
-		bulletinChan: make(chan bulletin, 1),
-		filter:       filter.NewFilter(),
+		callsign:    "ALLOW",
+		controlChan: make(chan controlMessage, 1),
+		filter:      filter.NewFilter(),
 	}
 	block := &Client{
-		callsign:     "BLOCK",
-		bulletinChan: make(chan bulletin, 1),
-		filter:       filter.NewFilter(),
+		callsign:    "BLOCK",
+		controlChan: make(chan controlMessage, 1),
+		filter:      filter.NewFilter(),
 	}
 	block.filter.SetWWVEnabled(false)
 
@@ -1362,12 +1362,12 @@ func TestBroadcastWWVRespectsFilter(t *testing.T) {
 	server.BroadcastWWV("WWV", "WWV de TEST <00> : SFI=1 A=1 K=1")
 
 	select {
-	case <-allow.bulletinChan:
+	case <-allow.controlChan:
 	default:
 		t.Fatalf("expected bulletin delivered to allowed client")
 	}
 	select {
-	case <-block.bulletinChan:
+	case <-block.controlChan:
 		t.Fatalf("did not expect bulletin delivered to blocked client")
 	default:
 	}
@@ -1379,14 +1379,14 @@ func TestBroadcastAnnouncementRespectsFilter(t *testing.T) {
 	}
 
 	allow := &Client{
-		callsign:     "ALLOW",
-		bulletinChan: make(chan bulletin, 1),
-		filter:       filter.NewFilter(),
+		callsign:    "ALLOW",
+		controlChan: make(chan controlMessage, 1),
+		filter:      filter.NewFilter(),
 	}
 	block := &Client{
-		callsign:     "BLOCK",
-		bulletinChan: make(chan bulletin, 1),
-		filter:       filter.NewFilter(),
+		callsign:    "BLOCK",
+		controlChan: make(chan controlMessage, 1),
+		filter:      filter.NewFilter(),
 	}
 	block.filter.SetAnnounceEnabled(false)
 
@@ -1396,12 +1396,12 @@ func TestBroadcastAnnouncementRespectsFilter(t *testing.T) {
 	server.BroadcastAnnouncement("To ALL de TEST: hello")
 
 	select {
-	case <-allow.bulletinChan:
+	case <-allow.controlChan:
 	default:
 		t.Fatalf("expected announcement delivered to allowed client")
 	}
 	select {
-	case <-block.bulletinChan:
+	case <-block.controlChan:
 		t.Fatalf("did not expect announcement delivered to blocked client")
 	default:
 	}
@@ -1417,7 +1417,6 @@ func TestBroadcastSelfRespectsSelfToggle(t *testing.T) {
 
 	blocked := spot.NewSpot("K1ABC", "W1XYZ", 14074.0, "FT8")
 	client.filter.SetSelfEnabled(false)
-	client.pendingDeliveries.Add(1)
 	server.deliverJob(&broadcastJob{spot: blocked, clients: []*Client{client}})
 
 	select {
@@ -1429,7 +1428,6 @@ func TestBroadcastSelfRespectsSelfToggle(t *testing.T) {
 	client.filter.SetSelfEnabled(true)
 	client.filter.BlockAllBands = true
 	client.filter.AllBands = false
-	client.pendingDeliveries.Add(1)
 	server.deliverJob(&broadcastJob{spot: blocked, clients: []*Client{client}})
 
 	select {

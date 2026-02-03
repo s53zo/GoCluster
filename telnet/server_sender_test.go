@@ -62,21 +62,22 @@ func (a stubAddr) String() string {
 	return string(a)
 }
 
-func TestSpotSenderDisconnectsOnSpotSendFailure(t *testing.T) {
+func TestWriterLoopDisconnectsOnSpotSendFailure(t *testing.T) {
 	srv := &Server{}
 	conn := &errConn{writeErr: errors.New("write failed")}
 	client := &Client{
-		conn:         conn,
-		writer:       bufio.NewWriter(conn),
-		server:       srv,
-		callsign:     "N0CALL",
-		spotChan:     make(chan *spotEnvelope, 1),
-		bulletinChan: make(chan bulletin, 1),
+		conn:        conn,
+		writer:      bufio.NewWriter(conn),
+		server:      srv,
+		callsign:    "N0CALL",
+		spotChan:    make(chan *spotEnvelope, 1),
+		controlChan: make(chan controlMessage, 1),
+		done:        make(chan struct{}),
 	}
-	done := make(chan struct{})
+	loopDone := make(chan struct{})
 	go func() {
-		client.spotSender()
-		close(done)
+		client.writerLoop()
+		close(loopDone)
 	}()
 
 	client.spotChan <- &spotEnvelope{spot: &spot.Spot{
@@ -87,9 +88,9 @@ func TestSpotSenderDisconnectsOnSpotSendFailure(t *testing.T) {
 	}}
 
 	select {
-	case <-done:
+	case <-loopDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("spotSender did not exit after send failure")
+		t.Fatal("writerLoop did not exit after send failure")
 	}
 
 	if !conn.closed {
@@ -102,29 +103,30 @@ func TestSpotSenderDisconnectsOnSpotSendFailure(t *testing.T) {
 	}
 }
 
-func TestSpotSenderDisconnectsOnBulletinSendFailure(t *testing.T) {
+func TestWriterLoopDisconnectsOnControlSendFailure(t *testing.T) {
 	srv := &Server{}
 	conn := &errConn{writeErr: errors.New("write failed")}
 	client := &Client{
-		conn:         conn,
-		writer:       bufio.NewWriter(conn),
-		server:       srv,
-		callsign:     "N0CALL",
-		spotChan:     make(chan *spotEnvelope, 1),
-		bulletinChan: make(chan bulletin, 1),
+		conn:        conn,
+		writer:      bufio.NewWriter(conn),
+		server:      srv,
+		callsign:    "N0CALL",
+		spotChan:    make(chan *spotEnvelope, 1),
+		controlChan: make(chan controlMessage, 1),
+		done:        make(chan struct{}),
 	}
-	done := make(chan struct{})
+	loopDone := make(chan struct{})
 	go func() {
-		client.spotSender()
-		close(done)
+		client.writerLoop()
+		close(loopDone)
 	}()
 
-	client.bulletinChan <- bulletin{kind: "WWV", line: "WWV test\n"}
+	client.controlChan <- controlMessage{line: "WWV test\n"}
 
 	select {
-	case <-done:
+	case <-loopDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("spotSender did not exit after send failure")
+		t.Fatal("writerLoop did not exit after send failure")
 	}
 
 	if !conn.closed {

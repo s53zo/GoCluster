@@ -30,9 +30,9 @@ func TestLineReaderDropsOversizePC92(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected oversize PC92 to return an error")
 	}
-	var tooLong errLineTooLong
+	var tooLong ErrLineTooLong
 	if !errors.As(err, &tooLong) {
-		t.Fatalf("expected errLineTooLong, got %v", err)
+		t.Fatalf("expected ErrLineTooLong, got %v", err)
 	}
 
 	line, err := reader.ReadLine(deadline)

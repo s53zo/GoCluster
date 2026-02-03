@@ -187,7 +187,7 @@ func (m *Manager) HandleFrame(frame *Frame, sess *session) {
 	if frame == nil {
 		return
 	}
-	now := time.Now().UTC().UTC()
+	now := time.Now().UTC()
 	switch frame.Type {
 	case "PC92":
 		if m.topology != nil && m.pc92Ch != nil {
@@ -651,7 +651,7 @@ func (m *Manager) maintenanceLoop() {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
-			now := time.Now().UTC().UTC()
+			now := time.Now().UTC()
 			if m.topology != nil {
 				m.topology.prune(now)
 			}
@@ -719,4 +719,3 @@ func sessionLabel(s *session) string {
 	}
 	return s.id
 }
-

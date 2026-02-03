@@ -1,14 +1,43 @@
 package peer
 
 import (
+	"errors"
 	"net"
 	"time"
 )
 
+// TelnetParser strips telnet negotiation bytes and emits optional replies.
+type TelnetParser interface {
+	Feed(input []byte) (output []byte, replies [][]byte)
+}
+
+// LineReader wraps the peer line reader for use outside the peer package.
+type LineReader struct {
+	inner *lineReader
+}
+
+// NewLineReader constructs a LineReader with the default telnet parser.
+func NewLineReader(conn net.Conn, maxLine int, pc92Max int, replyFn func([]byte)) *LineReader {
+	return &LineReader{inner: newLineReader(conn, maxLine, pc92Max, replyFn)}
+}
+
+// NewLineReaderWithTransport constructs a LineReader with a custom reader/parser.
+func NewLineReaderWithTransport(conn net.Conn, maxLine int, pc92Max int, readFn func([]byte) (int, error), parser TelnetParser, replyFn func([]byte)) *LineReader {
+	return &LineReader{inner: newLineReaderWithTransport(conn, maxLine, pc92Max, readFn, parser, replyFn)}
+}
+
+// ReadLine reads a single line/frame using the underlying peer reader.
+func (r *LineReader) ReadLine(deadline time.Time) (string, error) {
+	if r == nil || r.inner == nil {
+		return "", errors.New("nil line reader")
+	}
+	return r.inner.ReadLine(deadline)
+}
+
 type lineReader struct {
 	conn     net.Conn
 	readFn   func([]byte) (int, error)
-	parser   *telnetParser
+	parser   TelnetParser
 	buf      []byte
 	replyFn  func([]byte)
 	maxLine  int
@@ -17,17 +46,17 @@ type lineReader struct {
 	readBuf  []byte
 }
 
-// errLineTooLong carries a preview and length when a frame exceeds maxLine.
-type errLineTooLong struct {
-	preview string
-	length  int
+// ErrLineTooLong carries a preview and length when a frame exceeds maxLine.
+type ErrLineTooLong struct {
+	Preview string
+	Length  int
 }
 
 // Purpose: Provide a generic error string for overlong lines.
 // Key aspects: Keeps the error message stable for callers.
 // Upstream: lineReader.tryReadLine.
 // Downstream: None.
-func (e errLineTooLong) Error() string {
+func (e ErrLineTooLong) Error() string {
 	return "line too long"
 }
 
@@ -43,7 +72,7 @@ func newLineReader(conn net.Conn, maxLine int, pc92Max int, replyFn func([]byte)
 // Key aspects: Allows pre-stripped IAC data by passing parser=nil.
 // Upstream: Peer session setup for external telnet transport.
 // Downstream: lineReader.ReadLine.
-func newLineReaderWithTransport(conn net.Conn, maxLine int, pc92Max int, readFn func([]byte) (int, error), parser *telnetParser, replyFn func([]byte)) *lineReader {
+func newLineReaderWithTransport(conn net.Conn, maxLine int, pc92Max int, readFn func([]byte) (int, error), parser TelnetParser, replyFn func([]byte)) *lineReader {
 	if readFn == nil {
 		readFn = conn.Read
 	}
@@ -116,7 +145,7 @@ func (r *lineReader) tryReadLine() (string, error, bool) {
 			if r.pc92Max > 0 && idx > r.pc92Max && frameTypeFromBuffer(r.buf) == "PC92" {
 				preview := string(r.buf[:idx])
 				r.buf = append([]byte{}, r.buf[idx+size:]...)
-				return "", errLineTooLong{preview: preview, length: idx}, true
+				return "", ErrLineTooLong{Preview: preview, Length: idx}, true
 			}
 			line := string(trimLine(r.buf[:idx]))
 			r.buf = append([]byte{}, r.buf[idx+size:]...)
@@ -132,13 +161,13 @@ func (r *lineReader) tryReadLine() (string, error, bool) {
 			preview := string(r.buf)
 			r.buf = r.buf[:0]
 			r.dropping = true
-			return "", errLineTooLong{preview: preview, length: len(preview)}, true
+			return "", ErrLineTooLong{Preview: preview, Length: len(preview)}, true
 		}
 		if len(r.buf) > r.maxLine && r.maxLine > 0 {
 			// Drop the current buffer to avoid unbounded growth; caller can choose to continue.
 			preview := string(r.buf)
 			r.buf = r.buf[:0]
-			return "", errLineTooLong{preview: preview, length: len(preview)}, true
+			return "", ErrLineTooLong{Preview: preview, Length: len(preview)}, true
 		}
 		return "", nil, false
 	}

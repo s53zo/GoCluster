@@ -156,12 +156,12 @@ func (s *session) Run(ctx context.Context) error {
 		}
 		line, err := s.reader.ReadLine(deadline)
 		if err != nil {
-			var tooLong errLineTooLong
+			var tooLong ErrLineTooLong
 			if errors.As(err, &tooLong) {
 				if s.logLineTooLong {
 					log.Printf("Peering: line too long from %s, dropping and continuing", s.peer.host)
 				}
-				appendOverlongSample(s.overlongPath, s.peer.host, tooLong.preview, tooLong.length)
+				appendOverlongSample(s.overlongPath, s.peer.host, tooLong.Preview, tooLong.Length)
 				continue
 			}
 			return err
@@ -440,10 +440,10 @@ func (s *session) runOutboundHandshake() error {
 		}
 		line, err := s.reader.ReadLine(deadline)
 		if err != nil {
-			var tooLong errLineTooLong
+			var tooLong ErrLineTooLong
 			if errors.As(err, &tooLong) {
 				log.Printf("%s RX line too long, dropping", logPrefix)
-				appendOverlongSample(s.overlongPath, s.peer.host, tooLong.preview, tooLong.length)
+				appendOverlongSample(s.overlongPath, s.peer.host, tooLong.Preview, tooLong.Length)
 				continue
 			}
 			return err
@@ -698,7 +698,7 @@ type timestampGenerator struct {
 }
 
 func (g *timestampGenerator) Next() string {
-	now := time.Now().UTC().UTC()
+	now := time.Now().UTC()
 	sec := now.Hour()*3600 + now.Minute()*60 + now.Second()
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -734,4 +734,3 @@ type sessionSettings struct {
 	logKeepalive    bool
 	logLineTooLong  bool
 }
-

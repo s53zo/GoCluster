@@ -508,6 +508,7 @@ func displayDXCall(call string) string {
 // Upstream: telnet broadcast and archive formatting.
 // Downstream: formatZoneGridComment, writeSpaces, and stringBuilder helpers.
 // FormatDXCluster formats the spot as a fixed-width DX-cluster line.
+// Callers must ensure the spot has been normalized after any mutations.
 //
 // The returned string is always exactly the configured line length (no CRLF).
 // Telnet output appends '\n' and `telnet.Client.Send` normalizes to CRLF.
@@ -529,7 +530,6 @@ func displayDXCall(call string) string {
 //   - CW/RTTY: no '+' prefix (e.g., "CW 23 dB")
 //   - All other modes: '+' is shown for non-negative values (e.g., "FT8 +12 dB")
 func (s *Spot) FormatDXCluster() string {
-	s.EnsureNormalized()
 	layout := currentDXClusterLayout()
 	// Purpose: Populate s.formatted once for reuse on repeat formatting.
 	// Key aspects: Uses sync.Once to avoid redundant allocations.
@@ -581,7 +581,11 @@ func (s *Spot) FormatDXCluster() string {
 
 		// DX callsigns longer than the available space are truncated to keep the
 		// mode anchor fixed at column 40.
-		dxCall := displayDXCall(s.DXCallNorm)
+		dxCallRaw := s.DXCallNorm
+		if dxCallRaw == "" {
+			dxCallRaw = NormalizeCallsign(s.DXCall)
+		}
+		dxCall := displayDXCall(dxCallRaw)
 		if dxCall == "" {
 			dxCall = displayDXCall(s.DXCall)
 		}

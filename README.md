@@ -413,10 +413,14 @@ The telnet server fans every post-dedup spot to every connected client. When PSK
 - `broadcast_queue_size` controls the global queue depth ahead of the worker pool (default `2048`); larger buffers smooth bursty ingest before anything is dropped.
 - `worker_queue_size` controls how many per-shard jobs each worker buffers before dropping a shard assignment (default `128`).
 - `client_buffer_size` defines how many spots a single telnet session can fall behind before its personal queue starts dropping (default `128`).
+- `control_queue_size` bounds per-client control output (bulletins, prompts, keepalives). Control always drains before spots; a full control queue disconnects the client.
 - `broadcast_batch_interval_ms` micro-batches outbound broadcasts to reduce mutex/IO churn (default `250`; set to `0` for immediate sends). Each shard flushes on interval or when the batch reaches its max size, preserving order per shard.
 - `login_line_limit` caps how many bytes a user can enter at the login prompt (default `32`). Keep this tight to prevent hostile clients from allocating massive buffers before authentication.
 - `command_line_limit` caps how long any post-login command may be (default `128`). Raise this when operators expect comma-heavy filter commands or scripted clients that send longer payloads.
-- `keepalive_seconds` emits a CRLF to every connected client on a cadence (default `60`; `0` disables). Blank lines sent by clients are treated as keepalives and get an immediate CRLF reply so idle TCP sessions stay open.
+- `read_idle_timeout_seconds` refreshes the read deadline for logged-in sessions (default `86400`); timeouts do not disconnect, they simply continue waiting for input.
+- `login_timeout_seconds` disconnects if pre-login callsign entry does not complete within the window (default `120`).
+- `drop_extreme_rate`, `drop_extreme_window_seconds`, and `drop_extreme_min_attempts` enforce a safety valve for slow clients: once the drop rate crosses the threshold over the window (after the minimum attempts), the session is disconnected.
+- `keepalive_seconds` emits a CRLF to every connected client on a cadence (default `120`; `0` disables). Blank lines sent by clients are treated as keepalives and get an immediate CRLF reply so idle TCP sessions stay open.
 
 Increase the queue sizes if you see the broadcast-channel drop message frequently, or raise `broadcast_workers` when you have CPU headroom and thousands of concurrent clients.
 

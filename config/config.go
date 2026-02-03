@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"dxcluster/strutil"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,7 +33,7 @@ const (
 // Upstream: Load config normalization.
 // Downstream: TelnetTransport constants.
 func normalizeTelnetTransport(value string) (string, bool) {
-	trimmed := strings.ToLower(strings.TrimSpace(value))
+	trimmed := strutil.NormalizeLower(value)
 	if trimmed == "" {
 		return TelnetTransportNative, true
 	}
@@ -48,7 +50,7 @@ func normalizeTelnetTransport(value string) (string, bool) {
 // Upstream: Load config normalization.
 // Downstream: TelnetEcho* constants.
 func normalizeTelnetEchoMode(value string) (string, bool) {
-	trimmed := strings.ToLower(strings.TrimSpace(value))
+	trimmed := strutil.NormalizeLower(value)
 	if trimmed == "" {
 		return TelnetEchoServer, true
 	}
@@ -158,12 +160,18 @@ type TelnetConfig struct {
 	BroadcastQueue   int    `yaml:"broadcast_queue_size"`
 	WorkerQueue      int    `yaml:"worker_queue_size"`
 	ClientBuffer     int    `yaml:"client_buffer_size"`
-	SkipHandshake    bool   `yaml:"skip_handshake"`
+	// ControlQueueSize bounds per-client control output (bulletins, prompts, keepalives).
+	ControlQueueSize int  `yaml:"control_queue_size"`
+	SkipHandshake    bool `yaml:"skip_handshake"`
 	// BroadcastBatchIntervalMS controls telnet broadcast micro-batching. 0 disables batching.
 	BroadcastBatchIntervalMS int `yaml:"broadcast_batch_interval_ms"`
 	// KeepaliveSeconds, when >0, emits a periodic CRLF to all connected clients to keep idle
 	// network devices from timing out otherwise quiet sessions.
 	KeepaliveSeconds int `yaml:"keepalive_seconds"`
+	// ReadIdleTimeoutSeconds sets the read deadline for logged-in sessions; timeouts do not disconnect.
+	ReadIdleTimeoutSeconds int `yaml:"read_idle_timeout_seconds"`
+	// LoginTimeoutSeconds sets the maximum time to complete pre-login callsign entry.
+	LoginTimeoutSeconds int `yaml:"login_timeout_seconds"`
 	// LoginLineLimit bounds how many bytes are accepted for the initial callsign
 	// prompt. Keep this tight to prevent DoS via huge login banners.
 	LoginLineLimit int `yaml:"login_line_limit"`
@@ -173,6 +181,12 @@ type TelnetConfig struct {
 	// OutputLineLength controls the DX-cluster output line length (no CRLF).
 	// Length uses 1-based columns and must be >= 65.
 	OutputLineLength int `yaml:"output_line_length"`
+	// DropExtremeRate disconnects lenient clients when their spot drop rate exceeds this threshold.
+	DropExtremeRate float64 `yaml:"drop_extreme_rate"`
+	// DropExtremeWindowSeconds is the sliding window used for extreme drop evaluation.
+	DropExtremeWindowSeconds int `yaml:"drop_extreme_window_seconds"`
+	// DropExtremeMinAttempts gates extreme drop checks until this many attempts accrue.
+	DropExtremeMinAttempts int `yaml:"drop_extreme_min_attempts"`
 }
 
 // ReputationConfig controls the passwordless telnet reputation gate.
@@ -1315,11 +1329,20 @@ func Load(path string) (*Config, error) {
 	if cfg.Telnet.ClientBuffer <= 0 {
 		cfg.Telnet.ClientBuffer = 128
 	}
+	if cfg.Telnet.ControlQueueSize <= 0 {
+		cfg.Telnet.ControlQueueSize = 32
+	}
 	if cfg.Telnet.BroadcastBatchIntervalMS <= 0 {
 		cfg.Telnet.BroadcastBatchIntervalMS = 250
 	}
 	if cfg.Telnet.KeepaliveSeconds < 0 {
 		cfg.Telnet.KeepaliveSeconds = 0
+	}
+	if cfg.Telnet.ReadIdleTimeoutSeconds <= 0 {
+		cfg.Telnet.ReadIdleTimeoutSeconds = 24 * 60 * 60
+	}
+	if cfg.Telnet.LoginTimeoutSeconds <= 0 {
+		cfg.Telnet.LoginTimeoutSeconds = 120
 	}
 	if cfg.Telnet.LoginLineLimit <= 0 {
 		cfg.Telnet.LoginLineLimit = 32
@@ -1329,6 +1352,18 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Telnet.OutputLineLength <= 0 {
 		cfg.Telnet.OutputLineLength = 78
+	}
+	if cfg.Telnet.DropExtremeRate <= 0 {
+		cfg.Telnet.DropExtremeRate = 0.80
+	}
+	if cfg.Telnet.DropExtremeRate > 1 {
+		return nil, fmt.Errorf("invalid telnet.drop_extreme_rate %.2f (must be 0 < rate <= 1)", cfg.Telnet.DropExtremeRate)
+	}
+	if cfg.Telnet.DropExtremeWindowSeconds <= 0 {
+		cfg.Telnet.DropExtremeWindowSeconds = 30
+	}
+	if cfg.Telnet.DropExtremeMinAttempts <= 0 {
+		cfg.Telnet.DropExtremeMinAttempts = 100
 	}
 	if cfg.Telnet.OutputLineLength < 65 {
 		return nil, fmt.Errorf("invalid telnet.output_line_length %d (minimum 65)", cfg.Telnet.OutputLineLength)

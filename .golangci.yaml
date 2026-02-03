@@ -1,0 +1,152 @@
+version: "2"
+
+run:
+  timeout: 5m
+  relative-path-mode: gomod
+  modules-download-mode: readonly
+  tests: true
+  allow-parallel-runners: true
+  # Optional; safe for single-toolchain. Otherwise omit and rely on go.mod.
+  go: "1.25"
+
+linters:
+  default: none
+  enable:
+    # Core Correctness & Static Analysis
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - unconvert
+    - unparam
+    - wastedassign
+    - copyloopvar
+
+    # Error Handling & Wrapping
+    - errcheck
+    - errorlint
+    - nilerr
+    - nilnil
+
+    # Performance & Resource Hygiene
+    - bodyclose
+    - noctx
+    - prealloc
+    - asasalint
+    - contextcheck
+
+    # Production Hygiene
+    - nolintlint
+    - revive
+    - misspell
+    - gosec
+
+    # You had settings for this; enable it or remove its settings.
+    - gocritic
+
+  settings:
+    govet:
+      disable-all: true
+      enable:
+        - shadow
+        - atomic
+        - atomicalign
+        - bools
+        - buildtag
+        - cgocall
+        - composites
+        - copylocks
+        - defers
+        - errorsas
+        - httpresponse
+        - loopclosure
+        - lostcancel
+        - nilfunc
+        - printf
+        - shift
+        - sigchanyzer
+        - stdmethods
+        - stringintconv
+        - tests
+        - unmarshal
+        - unreachable
+        - unusedresult
+        - waitgroup
+      settings:
+        shadow:
+          strict: true
+
+    prealloc:
+      simple: true
+      range-loops: true
+      # Recommend starting false; prealloc itself defaults for-loops=false for a reason.
+      for-loops: false
+
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    revive:
+      rules:
+        - name: atomic
+        - name: context-as-first-argument
+        - name: error-return
+        - name: error-naming
+        - name: var-naming
+        - name: indent-error-flow
+
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - appendAssign
+        - argOrder
+        - badCall
+        - exitAfterDefer
+        - nilValReturn
+        - offBy1
+        - rangeValCopy
+        - truncateCmp
+
+    nolintlint:
+      require-explanation: true
+      allow-unused: false
+
+    misspell:
+      locale: US
+
+    gosec:
+      severity: medium
+      confidence: medium
+      excludes:
+        - G104
+
+  exclusions:
+    generated: strict
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
+    paths:
+      - "^vendor/"
+      - "^third_party/"
+      - ".*\\.pb\\.go$"
+      - ".*\\.pb\\.gw\\.go$"
+      - ".*_mock\\.go$"
+      - ".*\\.gen\\.go$"
+      - "^zz_generated\\..*\\.go$"
+    rules:
+      - path: ".*_test\\.go$"
+        linters:
+          - gosec
+          - errcheck
+          - gocritic
+          - prealloc
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+output:
+  sort-order:
+    - linter
+    - file
