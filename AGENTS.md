@@ -1,18 +1,19 @@
 # AGENTS.md - Go Telnet/Packet Cluster Quality Contract
 
 ## CRITICAL INVARIANTS (read every response)
-1. **Read PLANS-{branch}.md first** - confirm Scope Ledger version and "Context for Resume" before any work
+1. **Read PLANS-{branch}.md first** - confirm current Plan vN, Scope Ledger version, and "Context for Resume" before any work
 2. **Correctness > speed** - no races, no leaks, no unbounded resources
 3. **Default Non-trivial** - assume full workflow unless proven Small
 4. **Bounded everything** - queues, goroutines, buffers, caches have explicit limits
-5. **Update PLANS-{branch}.md last** - log decisions, update Scope Ledger, refresh resume context
+5. **Update PLANS-{branch}.md pre/post for Non-trivial changes only** - pre: refresh Plan vN (goals/non-goals/assumptions/requirements/architecture/contracts/test/rollout). post: log decisions, update Scope Ledger, refresh resume context
 
 ## PERSISTENT CONTEXT
 For long conversations, any AI agent (Codex, Claude Code, etc.) MUST:
 1. Read `PLANS-{branch}.md` at conversation start (if it exists)
-2. Update the file after significant decisions, scope changes, or session end
-3. Use "Context for Resume" section to re-orient when context appears truncated
-4. Treat this as the single source of truth for work state on this branch
+2. For Non-trivial work: update/refresh the Current Plan (Plan vN) *before* writing code
+3. Update the file after significant decisions, scope changes, and at session end (post-implementation notes, decisions, Scope Ledger status, resume context)
+4. Use "Context for Resume" section to re-orient when context appears truncated
+5. Treat this as the single source of truth for work state on this branch
 
 Naming: `PLANS-{git-branch-name}.md` (e.g., `PLANS-Optimization.md`)
 Location: Repository root (tracked in git with the branch)
@@ -46,7 +47,16 @@ Commercial-grade from the first draft. Do not write simple code that needs harde
 ## EXECUTION PACKAGE (what "go ahead" means)
 
 ### CRITICAL CHECKLIST (read first; for every change)
-- **Read PLANS-{branch}.md first** (if it exists): Confirm current Scope Ledger version and "Context for Resume" before proceeding.
+- **Read PLANS-{branch}.md first** (if it exists): Confirm current Plan vN, Scope Ledger version, and "Context for Resume" before proceeding.
+- Confirm whether the requested change is already represented in PLANS-{branch}.md (Current Plan) and/or the latest Scope Ledger snapshot.
+- If the change is Non-trivial (default): **update/refresh the Current Plan (Plan vN) in PLANS-{branch}.md before code**:
+  - goals/non-goals/assumptions
+  - requirements & edge cases
+  - architecture and resource bounds
+  - explicit contracts list (or "No contract changes")
+  - test plan (and performance/measurement plan when applicable)
+  - rollout/ops notes (when operator-visible behavior could change)
+- If PLANS-{branch}.md is missing or stale (scope diverged or last update >7 days): stop and produce copy/pasteable Proposed PLANS-{branch}.md edits (Plan vN) before writing code.
 - Confirm current Scope Ledger vN and what is Agreed/Pending.
 - Classify change (default Non-trivial unless proven Small).
 - Identify impacted contracts (protocol, ordering, drop/disconnect semantics, deadlines/timeouts, metrics/logs). If none: explicitly say "No contract changes."
@@ -56,7 +66,7 @@ Commercial-grade from the first draft. Do not write simple code that needs harde
 - Implement with bounded resources and explicit invariants.
 - Update tests (race-relevant coverage where applicable); provide verification commands.
 - PR-style summary includes Scope-to-Code Traceability (no omissions) and Self-Audit pass/fail.
-- **Update PLANS-{branch}.md**: Update Scope Ledger status, log key decisions, refresh "Context for Resume".
+- **Update PLANS-{branch}.md post-implementation**: record deviations, update Scope Ledger status, log key decisions, list files modified, update verification status, refresh "Context for Resume".
 
 ### Scope Ledger (long-chat safe definition of "agreed changes")
 In long threads, "agreed changes" is not "the most recent discussed change."
@@ -78,6 +88,27 @@ If no Scope Ledger exists yet:
 - Mark any ambiguous items as Needs confirmation.
 - Proceed only with the smallest safe subset unless the user approves the full ledger.
 
+### PLANS-{branch}.md (Plan-of-Record; long-chat safe)
+PLANS-{branch}.md is the durable plan-of-record for this branch. It exists to keep long threads coherent and to prevent “code-first, explain-later” drift.
+When creating a new plan on a new branch, copy `PLANS-TEMPLATE.md` from the repo root and fill it in.
+
+Required when:
+- Any Non-trivial change (default posture), or
+- Any change that touches: parsing/protocol, fan-out/broadcast, backpressure, drop/disconnect policy, deadlines/timeouts, shutdown sequencing, config schema, or observability contracts.
+
+Versioning and structure:
+- Each plan is a versioned entry: Plan vN (date, short title, status, approval).
+- Each Plan vN MUST reference the Scope Ledger snapshot it implements (Scope Ledger vM).
+- Plan vN has two phases:
+  - Pre-code: goals, non-goals, assumptions, requirements/edge cases, architecture, contracts, test plan, perf/measurement plan (if applicable), rollout/ops plan.
+  - Post-code: deviations, verification commands actually run (if any), final contract statement, and Scope Ledger status updates.
+
+Copy/pasteability rule:
+- If the assistant proposes architectural or contract decisions, it must provide copy/pasteable PLANS edits in the same response (not just a narrative explanation).
+
+Conciseness rule:
+- PLANS should be concise and durable. Prefer references to packages/docs/tests over duplicating long explanations. Keep history append-only (Plan Index and Decision Log).
+
 ### Shorthand commands
 If the user says:
 - "Go ahead implementing the agreed changes"
@@ -88,7 +119,7 @@ Then:
 - Implement ALL Scope Ledger items marked Agreed/Pending.
 - Produce the required deliverables for the applicable workflow.
 - Move completed items to Implemented and reprint the updated ledger.
-- **Update PLANS-{branch}.md** with: updated Scope Ledger, files modified, verification status, refreshed "Context for Resume".
+- For Non-trivial work: ensure PLANS-{branch}.md Plan vN was refreshed pre-code and is updated post-implementation.
 
 ### Change classification (conservative default)
 Assume reasoning effort is high for all non-trivial work; if the environment supports adjusting reasoning effort automatically, raise to xhigh for the Self-Audit step.
@@ -143,6 +174,7 @@ Non-trivial change (full delivery workflow, default posture):
 - Tests added/updated appropriately; no silent omission of critical cases.
 - Documentation updated for human readability and operator understanding.
 - Dependencies: upstream/downstream contracts reviewed; any contract changes explicitly documented; regression tests added for affected boundaries.
+- PLANS-{branch}.md updated (or explicitly "No PLANS changes required" with justification) and consistent with final behavior/contracts.
 - Verification commands provided; do not claim commands were executed unless they were.
 
 ## REQUIREMENTS DISCOVERY (default behavior for non-trivial changes)
@@ -237,6 +269,7 @@ Measurement: Any optimization claim needs before/after data. See OPTIMIZATION.md
 After implementing, produce an Audit Report with pass/fail against:
 - Scope completeness vs Scope Ledger and Definition of Done
 - Dependency impact: upstream/downstream dependencies identified; contract changes listed; tests cover affected boundaries; no hidden behavior changes.
+- PLANS consistency: PLANS updated where required; contracts/test/rollout notes match implementation; no undocumented behavior change.
 - Correctness and protocol semantics (including telnet/IAC policy)
 - Concurrency/cancellation/shutdown (no leaks)
 - Backpressure/queues/drop semantics (precise + tested)
@@ -251,6 +284,7 @@ Include verification commands and what "good" looks like. Do not claim commands 
 ## PR-STYLE SUMMARY (required for non-trivial changes)
 Include:
 - Summary: what changed and why (bullets).
+- Plan-of-record: PLANS-{branch}.md Plan vN updated; references Scope Ledger vM; note any deviations from plan.
 - Tradeoffs: latency vs delivery vs memory; strict vs lenient behavior impacts.
 - Risks and mitigations: correctness, overload behavior, compatibility, rollout considerations.
 - Contracts and compatibility: confirm whether protocol/ordering/drop/deadlines/metrics contracts changed; if yes, list changes and affected components.
@@ -258,6 +292,7 @@ Include:
 - Observability impact: metrics/log fields added/changed; how to interpret them.
 - Verification commands: exact commands to run and expected outcomes.
 - Scope-to-Code Traceability: map each Scope Ledger item with Status = Agreed/Pending (as of the start of this implementation cycle) to:
+  - PLANS references (Plan vN section anchors) that document the item
   - Code locations (packages/files/functions)
   - Tests (names/files) that cover it
   - Docs/comments updated (where and what)
