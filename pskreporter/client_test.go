@@ -47,7 +47,11 @@ func TestConvertToSpotOmitsCommentAndCarriesGrids(t *testing.T) {
 		ReceiverLocator: "em10",
 	}
 
-	spot := client.convertToSpot(msg)
+	modeInfo, ok := parseModeInfo(msg.Mode)
+	if !ok {
+		t.Fatalf("expected valid mode info for %q", msg.Mode)
+	}
+	spot := client.convertToSpot(msg, modeInfo)
 	if spot == nil {
 		t.Fatalf("expected spot, got nil")
 	}

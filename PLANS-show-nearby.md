@@ -13,36 +13,45 @@
 
 ## Current Plan (ACTIVE)
 
-### Plan v5 — Atomic CallQuality Swap
+### Plan v6 — Resource Efficiency Optimization (Allocation + Retention)
 - **Date**: 2026-02-04
-- **Status**: Implemented
-- **Scope Ledger snapshot**: v5
+- **Status**: In Progress
+- **Scope Ledger snapshot**: v6
 - **Owner**: Assistant (with user approval)
-- **Approval**: Approved v5 (user request)
+- **Approval**: Approved v6 (user request)
 
 1) Goals
-- Remove data-race potential by making callQuality swaps atomic.
-- Ensure cleanup stop/start ordering is deterministic when reconfiguring.
+- Reduce allocation churn in steady-state ingest by 30–50% vs baseline.
+- Reduce GC pressure spikes during ULS refresh and archive cleanup.
+- Keep live heap stable and bounded without harming p99 latency.
 
 2) Non-goals
-- No behavioral changes to correction logic or TTL/cap policy.
 - No protocol/format changes.
+- No changes to ordering/drop/disconnect semantics.
+- No UI removal (tview stays).
 
 3) Assumptions
-- ConfigureCallQualityStore is usually called at startup, but may be called at runtime in the future.
+- CPU is not the primary bottleneck; allocations and GC are.
+- PSKReporter + RBN parsing and spot normalization dominate allocation volume.
+- Pebble cache churn dominates cleanup spikes.
 
 4) Requirements and edge cases
 Functional:
-- Atomic swap ensures readers never observe a partially updated global pointer.
-- Old cleanup goroutine is stopped after swap.
-Edge cases:
-- callQuality pointer may be nil during early init; callers must handle nil safely.
+- Preserve correction, dedup, and broadcast semantics.
+- Parsing remains bounded and resilient to malformed input.
+- PSKReporter Phase B keeps allowlist/path-only filtering before full normalization; buffer reuse must be bounded and non-blocking.
+- RBN Phase C preserves token boundaries, punctuation trimming, and DX/DE matching; comment reconstruction remains order-preserving with single-space joins.
+Non-functional:
+- No unbounded buffers or goroutines.
+- No regression in p99 latency.
 
 5) Architecture (plan before code)
-- Replace global callQuality variable with `atomic.Pointer[*CallQualityStore]`.
-- Add helper to load the current store once per call site.
-- ConfigureCallQualityStore uses atomic swap and stop/start ordering.
-- Dependency rigor: Light (single component, no contract changes).
+Phased checkpoints:
+A) Baseline: capture allocs/heap pprof under normal load; record top allocators.
+B) PSKReporter: reduce JSON/string churn; reuse buffers; normalize once. Add a bounded payload buffer pool (size + count caps, non-blocking get/put) and pass pre-parsed mode info through conversion to avoid duplicate canonicalization.
+C) RBN parsing: reduce tokenization allocations; reuse slices. Details: drop per-token uppercase allocation, avoid split/join in RBN callsign normalization, and build comments in a single pass with a builder.
+D) Spot normalization: avoid repeated normalization and transient strings.
+E) Archive + Pebble cleanup: reduce iterator/buffer churn; cap batches.
 
 6) Contracts and compatibility
 - Protocol/format: No change.
@@ -55,22 +64,64 @@ Edge cases:
 - No user-visible behavior changes.
 
 8) Config impact
-- None.
+- None unless cleanup batching needs tunable limits.
 
 9) Observability plan
-- None.
+- Use DXC_HEAP_LOG_INTERVAL + alloc/heap pprof snapshots before/after each phase.
 
 10) Test plan (before code)
-- No new tests required (atomic pointer change); existing callQuality tests remain valid.
+- Run `go test ./...` after each phase.
+- Use pprof comparisons only (no benchmarks unless needed).
 
 11) Performance/measurement plan
-- None.
+- Report total alloc_space and top allocators before/after each phase.
 
 12) Rollout/ops plan
-- None.
+- Stage in dev; compare 24h logs before/after.
 
 13) Open questions / needs-confirmation
 - None.
+
+---
+
+## Post-implementation notes (Plan v6 - Phase B)
+Implementation notes:
+- Added bounded payload buffer pooling for PSKReporter ingest (size + count caps, non-blocking).
+- Parsed PSKReporter mode once and passed canonical/variant data through conversion to avoid duplicate normalization.
+- Returned payload buffers on drop and after processing to reduce alloc churn.
+- Phase B pprof comparison completed (baseline 12:29 vs Phase B 13:49 on 2026-02-04): PSKReporter CPU share ~2.8% → ~2.4% of total samples; PSKReporter inuse heap ~114.5MB → ~107.3MB; alloc-space share ~9.3% → ~9.8% (within noise). No regressions observed.
+
+Deviations:
+- None.
+
+Verification commands actually run:
+- `go test ./...`
+
+Final contract statement:
+- No protocol/format, ordering, drop/disconnect, deadlines/timeouts, or observability changes.
+
+Scope Ledger status updates:
+- S15 -> Implemented.
+
+---
+
+## Post-implementation notes (Plan v6 - Phase C)
+Implementation notes:
+- Removed per-token uppercase allocation in RBN tokenization; DX/DE matching uses ASCII fold comparison.
+- Replaced split/join in RBN callsign normalization with last-dash slicing.
+- Built RBN comments in a single pass (builder) to avoid slice/join allocations.
+
+Deviations:
+- None.
+
+Verification commands actually run:
+- `go test ./...`
+
+Final contract statement:
+- No protocol/format, ordering, drop/disconnect, deadlines/timeouts, or observability changes.
+
+Scope Ledger status updates:
+- S16 -> Implemented.
 
 ---
 
@@ -396,14 +447,28 @@ Completed items remain inline - never removed, only status changes.
 
 ---
 
+## Scope Ledger v6
+| ID | Item | Status | Notes |
+|----|------|--------|-------|
+| S14 | Establish baseline pprof (allocs + heap) under normal load. | Agreed/Pending | Phase A |
+| S15 | Reduce allocations in PSKReporter parsing/normalization. | Implemented | Phase B |
+| S16 | Reduce allocations in RBN parsing/tokenization. | Implemented | Phase C |
+| S17 | Reduce allocations in spot normalization path. | Agreed/Pending | Phase D |
+| S18 | Reduce Pebble/cache churn during archive cleanup. | Agreed/Pending | Phase E |
+| S19 | Provide pprof before/after comparisons per phase. | Agreed/Pending | Phase B comparison complete (12:29 vs 13:49); remaining phases pending |
+
+---
+
 ## Active Implementation
 ### Current Phase
-Complete
+In Progress
 
 ### In Progress
-- [ ] (none)
+- [ ] Baseline pprof capture + analysis (Phase A)
 
 ### Completed This Session
+- [x] RBN Phase C: tokenization alloc reductions + callsign normalization cleanup
+- [x] PSKReporter Phase B: bounded payload pool + single-pass mode normalization
 - [x] Atomic callQuality swap + stop/start ordering
 - [x] Bounded callQuality store + config wiring
 - [x] Stats source label mapping
@@ -442,6 +507,26 @@ Complete
 - **Chosen**: atomic.Pointer swap + stop/start ordering.
 - **Alternatives**: RWMutex around global pointer; restrict to startup only.
 - **Impact**: Eliminates data-race risk during reconfiguration; no behavioral change.
+
+### D5 — 2026-02-04 PSKReporter payload pooling + single-pass mode normalization
+- **Context**: PSKReporter parsing shows heavy allocation churn from per-payload copies and repeated mode canonicalization.
+- **Chosen**: Add a bounded payload buffer pool (size + count caps, non-blocking) and parse mode once for allowlist + conversion.
+- **Alternatives**: Use sync.Pool (unbounded); leave as-is and rely on GC; replace JSON decode with generated parser.
+- **Impact**: Reduces alloc churn without changing ingest semantics; pool memory remains bounded.
+
+### D6 — 2026-02-04 RBN tokenization allocation reductions
+- **Context**: RBN parsing hot spots include tokenization uppercase allocations and callsign split/join churn.
+- **Chosen**: Drop per-token uppercase storage, use ASCII fold comparison for DX/DE, replace split/join with last-dash slicing, and rebuild comments via a single-pass builder.
+- **Alternatives**: Full parser rewrite to avoid token slices; sync.Pool for tokens; leave as-is.
+- **Impact**: Reduces allocation churn while preserving RBN parsing semantics.
+
+---
+
+## Files Modified (Plan v6)
+- PLANS-show-nearby.md
+- pskreporter/client.go
+- pskreporter/client_test.go
+- rbn/client.go
 
 ---
 
@@ -482,6 +567,8 @@ Complete
 ---
 
 ## Verification Status
+- [x] `go test ./...` (Plan v6 Phase C)
+- [x] `go test ./...` (Plan v6 Phase B)
 - [x] `go test ./...` (Plan v5)
 - [x] `go test ./...` (Plan v4)
 - [x] `go test ./filter ./telnet` (timed out) [Plan v1]
@@ -490,6 +577,7 @@ Complete
 ---
 
 ## Plan Index (history)
+- Plan v6 — Resource Efficiency Optimization (Allocation + Retention) — 2026-02-04 — Scope Ledger v6 — status: In Progress
 - Plan v5 — Atomic CallQuality Swap — 2026-02-04 — Scope Ledger v5 — status: Implemented
 - Plan v4 — GC Compaction + Map Diagnostics — 2026-02-04 — Scope Ledger v4 — status: Implemented
 - Plan v1 — PASS NEARBY ON/OFF (H3 L1/L2) — 2026-02-04 — Scope Ledger v1 — status: Implemented
@@ -499,4 +587,4 @@ Complete
 ---
 
 ## Context for Resume
-Implemented: atomic callQuality swap + stop/start ordering. Also: bounded call-quality store with pinned priors + TTL/cap + config knobs; categorical stats source labels; peak-based map compaction for path reliability + dedup caches; DXC_MAP_LOG_INTERVAL diagnostics; tests and docs updated. NEARBY 60m uses L1 (res-1); other NEARBY semantics unchanged.
+Implemented: Phase B PSKReporter optimizations (bounded payload buffer pool + single-pass mode normalization) and Phase C RBN tokenization allocation reductions (no per-token uppercase, faster callsign normalization, builder-based comment). Also: atomic callQuality swap + stop/start ordering; bounded call-quality store with pinned priors + TTL/cap + config knobs; categorical stats source labels; peak-based map compaction for path reliability + dedup caches; DXC_MAP_LOG_INTERVAL diagnostics; tests and docs updated. NEARBY 60m uses L1 (res-1); other NEARBY semantics unchanged.

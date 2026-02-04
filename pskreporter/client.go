@@ -32,6 +32,13 @@ type normalizedPSK struct {
 	freqKHz     float64
 }
 
+// pskModeInfo carries canonical mode data for allowlist checks and conversion.
+type pskModeInfo struct {
+	canonical string
+	variant   string
+	isPSK     bool
+}
+
 // Client represents a PSKReporter MQTT client
 type Client struct {
 	broker       string
@@ -44,11 +51,14 @@ type Client struct {
 	shutdown     chan struct{}
 	workers      int
 	processing   chan []byte
-	processingMu sync.RWMutex
-	workerWg     sync.WaitGroup
-	skewStore    *skew.Store
-	appendSSID   bool
-	spotterCache *spot.CallCache
+	payloadPool  chan []byte
+	// payloadPoolMaxBytes caps pooled buffer sizes to avoid retaining large arrays.
+	payloadPoolMaxBytes int
+	processingMu        sync.RWMutex
+	workerWg            sync.WaitGroup
+	skewStore           *skew.Store
+	appendSSID          bool
+	spotterCache        *spot.CallCache
 
 	maxPayloadBytes         int
 	mqttInboundWorkers      int
@@ -92,6 +102,25 @@ type PSKRMessage struct {
 	Band            string `json:"b"`  // Band (e.g., "20m", "15m")
 }
 
+// Purpose: Canonicalize a PSKReporter mode token once for filtering + conversion.
+// Key aspects: Returns canonical/variant/isPSK; empty canonical means invalid.
+// Upstream: handlePayload allowlist checks.
+// Downstream: normalizeMessage conversion path.
+func parseModeInfo(raw string) (pskModeInfo, bool) {
+	canonical, variant, isPSK := spot.CanonicalPSKMode(raw)
+	if canonical == "" {
+		return pskModeInfo{}, false
+	}
+	if variant == "" {
+		variant = canonical
+	}
+	return pskModeInfo{
+		canonical: canonical,
+		variant:   variant,
+		isPSK:     isPSK,
+	}, true
+}
+
 const (
 	pskReporterQueuePerWorker = 256
 	mqttInboundQueuePerWorker = 256
@@ -100,6 +129,8 @@ const (
 	defaultMaxPayloadBytes    = 4096
 	defaultDropLogInterval    = 10 * time.Second
 	envPSKReporterMQTTDebug   = "DXC_PSKR_MQTT_DEBUG"
+	payloadPoolMaxCountCap    = 1024      // hard cap on pooled buffers
+	payloadPoolMaxBytesCap    = 16 * 1024 // avoid retaining large payload arrays
 )
 
 var (
@@ -341,6 +372,80 @@ func (c *Client) onConnectionLost(client mqtt.Client, err error) {
 	log.Println("PSKReporter: Will attempt to reconnect...")
 }
 
+// Purpose: Initialize a bounded payload buffer pool to reduce per-message allocs.
+// Key aspects: Bounded by size and count; non-blocking get/put.
+// Upstream: startWorkerPool.
+// Downstream: messageHandler/workerLoop.
+func (c *Client) initPayloadPool(queueCapacity int) {
+	if c == nil || c.payloadPool != nil {
+		return
+	}
+	if queueCapacity <= 0 || c.maxPayloadBytes <= 0 {
+		return
+	}
+	poolCap := queueCapacity
+	if poolCap > payloadPoolMaxCountCap {
+		poolCap = payloadPoolMaxCountCap
+	}
+	if poolCap <= 0 {
+		return
+	}
+	maxBytes := c.maxPayloadBytes
+	if maxBytes > payloadPoolMaxBytesCap {
+		maxBytes = payloadPoolMaxBytesCap
+	}
+	if maxBytes <= 0 {
+		return
+	}
+	c.payloadPoolMaxBytes = maxBytes
+	c.payloadPool = make(chan []byte, poolCap)
+}
+
+// Purpose: Acquire a payload buffer (from pool when available).
+// Key aspects: Non-blocking; allocates when pool empty or size exceeds cap.
+// Upstream: messageHandler.
+// Downstream: handlePayload.
+func (c *Client) acquirePayloadBuffer(size int) []byte {
+	if c == nil || size <= 0 {
+		return nil
+	}
+	pool := c.payloadPool
+	if pool == nil || c.payloadPoolMaxBytes <= 0 || size > c.payloadPoolMaxBytes {
+		return make([]byte, size)
+	}
+	select {
+	case buf := <-pool:
+		if cap(buf) < size {
+			return make([]byte, size)
+		}
+		return buf[:size]
+	default:
+		return make([]byte, size)
+	}
+}
+
+// Purpose: Return a payload buffer to the pool when eligible.
+// Key aspects: Non-blocking; skips oversized buffers.
+// Upstream: workerLoop + messageHandler drop paths.
+// Downstream: payloadPool channel.
+func (c *Client) releasePayloadBuffer(buf []byte) {
+	if c == nil || buf == nil {
+		return
+	}
+	pool := c.payloadPool
+	if pool == nil || c.payloadPoolMaxBytes <= 0 {
+		return
+	}
+	if cap(buf) == 0 || cap(buf) > c.payloadPoolMaxBytes {
+		return
+	}
+	buf = buf[:0]
+	select {
+	case pool <- buf:
+	default:
+	}
+}
+
 // Purpose: Enqueue incoming MQTT payloads for worker processing.
 // Key aspects: Copies payload to avoid reuse; drops on full queue.
 // Upstream: MQTT subscription callback.
@@ -365,8 +470,6 @@ func (c *Client) messageHandler(client mqtt.Client, msg mqtt.Message) {
 		}
 		return
 	}
-	payload := make([]byte, len(raw))
-	copy(payload, raw)
 	c.processingMu.RLock()
 	processing := c.processing
 	c.processingMu.RUnlock()
@@ -376,12 +479,19 @@ func (c *Client) messageHandler(client mqtt.Client, msg mqtt.Message) {
 		}
 		return
 	}
+	payload := c.acquirePayloadBuffer(len(raw))
+	if payload == nil {
+		return
+	}
+	copy(payload, raw)
 	select {
 	case <-c.shutdown:
+		c.releasePayloadBuffer(payload)
 		return
 	case processing <- payload:
 		// payload enqueued for workers
 	default:
+		c.releasePayloadBuffer(payload)
 		if count, ok := c.payloadDropCounter.Inc(); ok {
 			log.Printf("PSKReporter: Processing queue full, dropped %d payload(s) total", count)
 		}
@@ -407,6 +517,7 @@ func (c *Client) startWorkerPool() {
 	}
 	processing := make(chan []byte, capacity)
 	c.processing = processing
+	c.initPayloadPool(capacity)
 	c.processingMu.Unlock()
 	c.workerWg.Add(c.workers)
 	for i := 0; i < c.workers; i++ {
@@ -433,6 +544,7 @@ func (c *Client) workerLoop(id int, processing <-chan []byte) {
 			return
 		case payload := <-processing:
 			c.handlePayload(payload)
+			c.releasePayloadBuffer(payload)
 		}
 	}
 }
@@ -460,18 +572,17 @@ func (c *Client) handlePayload(payload []byte) {
 	if pskrMsg.Report == nil || *pskrMsg.Report == 0 {
 		return
 	}
-	modeUpper := strings.ToUpper(strings.TrimSpace(pskrMsg.Mode))
-	canonical, variant, isPSK := spot.CanonicalPSKMode(modeUpper)
-	pathOnly := c.modeMatchesList(canonical, variant, isPSK, c.pathOnlyModes)
+	modeInfo, ok := parseModeInfo(pskrMsg.Mode)
+	if !ok {
+		return
+	}
+	pathOnly := c.hasPathOnly && c.modeMatchesList(modeInfo.canonical, modeInfo.variant, modeInfo.isPSK, c.pathOnlyModes)
 	if !c.allowAllModes {
-		if canonical == "" && !pathOnly {
-			return
-		}
-		if !pathOnly && !c.modeMatchesList(canonical, variant, isPSK, c.allowedModes) {
+		if !pathOnly && !c.modeMatchesList(modeInfo.canonical, modeInfo.variant, modeInfo.isPSK, c.allowedModes) {
 			return
 		}
 	}
-	s := c.convertToSpot(&pskrMsg)
+	s := c.convertToSpot(&pskrMsg, modeInfo)
 	if s == nil {
 		return
 	}
@@ -500,20 +611,21 @@ func (c *Client) handlePayload(payload []byte) {
 // Key aspects: Preserves observation timestamp; applies skew correction and attaches grids.
 // Upstream: handlePayload.
 // Downstream: normalizeMessage, skew.ApplyCorrection.
-// convertToSpot converts PSKReporter message to our Spot format
+// convertToSpot converts PSKReporter message to our Spot format.
+// modeInfo must come from parseModeInfo to avoid re-normalization.
 // IMPORTANT: This function sets the spot's Time field to the actual observation time
 // from the PSKReporter message, NOT the current system time. This is critical for
 // deduplication to work correctly, as the Hash32() function includes the timestamp
 // truncated to the minute. If we used the current time instead of the observation time,
 // identical spots arriving a few seconds apart could cross a minute boundary and
 // generate different hashes, preventing proper deduplication.
-func (c *Client) convertToSpot(msg *PSKRMessage) *spot.Spot {
+func (c *Client) convertToSpot(msg *PSKRMessage, modeInfo pskModeInfo) *spot.Spot {
 	// Validate required fields
 	if msg.SenderCall == "" || msg.ReceiverCall == "" || msg.Frequency == 0 {
 		return nil
 	}
 
-	norm := c.normalizeMessage(msg)
+	norm := c.normalizeMessage(msg, modeInfo)
 	if norm == nil {
 		return nil
 	}
@@ -599,23 +711,20 @@ func isCWorRTTY(mode string) bool {
 }
 
 // Purpose: Normalize and validate a PSKReporter message.
-// Key aspects: Uppercases fields, validates frequency, and normalizes callsigns.
+// Key aspects: Uses pre-parsed mode info, validates frequency, normalizes callsigns, uppercases grids.
 // Upstream: convertToSpot.
 // Downstream: spot.NormalizeCallsign, decorateSpotterCall.
-func (c *Client) normalizeMessage(msg *PSKRMessage) *normalizedPSK {
+func (c *Client) normalizeMessage(msg *PSKRMessage, modeInfo pskModeInfo) *normalizedPSK {
 	if msg == nil {
 		return nil
 	}
-	modeUpper := strings.ToUpper(strings.TrimSpace(msg.Mode))
-	if modeUpper == "" || msg.SenderCall == "" || msg.ReceiverCall == "" {
+	if modeInfo.canonical == "" || msg.SenderCall == "" || msg.ReceiverCall == "" {
 		return nil
 	}
-	canonical, variant, ok := spot.CanonicalPSKMode(modeUpper)
-	if ok {
-		modeUpper = canonical
-	}
-	if variant == "" {
-		variant = modeUpper
+	modeUpper := modeInfo.canonical
+	displayMode := modeInfo.variant
+	if displayMode == "" {
+		displayMode = modeUpper
 	}
 	freqKHz := float64(msg.Frequency) / 1000.0
 	if freqKHz <= 0 {
@@ -627,7 +736,7 @@ func (c *Client) normalizeMessage(msg *PSKRMessage) *normalizedPSK {
 	deGrid := strings.ToUpper(strings.TrimSpace(msg.ReceiverLocator))
 	return &normalizedPSK{
 		modeUpper:   modeUpper,
-		displayMode: variant,
+		displayMode: displayMode,
 		dxCall:      dxCall,
 		deCall:      deCall,
 		dxGrid:      dxGrid,

@@ -69,7 +69,6 @@ type Client struct {
 type spotToken struct {
 	raw       string
 	clean     string
-	upper     string
 	start     int
 	end       int
 	trimStart int
@@ -93,7 +92,7 @@ func (e errLineTooLong) Error() string {
 }
 
 // Purpose: Tokenize an RBN spot line into position-aware tokens.
-// Key aspects: Records raw/clean/uppercase slices and punctuation-trim indices.
+// Key aspects: Records raw/clean slices and punctuation-trim indices.
 // Upstream: parseSpot for minimal parsing.
 // Downstream: None.
 func tokenizeSpotLine(line string) []spotToken {
@@ -124,7 +123,6 @@ func tokenizeSpotLine(line string) []spotToken {
 		tokens = append(tokens, spotToken{
 			raw:       raw,
 			clean:     clean,
-			upper:     strings.ToUpper(clean),
 			start:     start,
 			end:       end,
 			trimStart: trimStart,
@@ -132,6 +130,29 @@ func tokenizeSpotLine(line string) []spotToken {
 		})
 	}
 	return tokens
+}
+
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca := a[i]
+		cb := b[i]
+		if ca == cb {
+			continue
+		}
+		if ca >= 'a' && ca <= 'z' {
+			ca -= 'a' - 'A'
+		}
+		if cb >= 'a' && cb <= 'z' {
+			cb -= 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
 }
 
 // Purpose: Configure the callsign normalization cache for RBN spotters.
@@ -526,14 +547,10 @@ func normalizeRBNCallsign(call string) string {
 	// Remove the -# suffix temporarily
 	withoutHash := strings.TrimSuffix(call, "-#")
 
-	// Split by hyphen to find SSID
-	parts := strings.Split(withoutHash, "-")
-
-	// If there are multiple hyphens, remove the last one (the SSID)
-	// W3LPL-1 becomes W3LPL
-	if len(parts) > 1 {
-		// Take all parts except the last (which is the SSID)
-		basecall := strings.Join(parts[:len(parts)-1], "-")
+	// If there are multiple hyphens, remove the last one (the SSID).
+	// W3LPL-1 becomes W3LPL.
+	if lastDash := strings.LastIndexByte(withoutHash, '-'); lastDash > 0 {
+		basecall := withoutHash[:lastDash]
 		normalized := basecall + "-#"
 		rbnNormalizeCache.Add(call, normalized)
 		return normalized
@@ -599,21 +616,41 @@ func parseTimeFromRBNAt(timeStr string, now time.Time) time.Time {
 // Upstream: parseSpot minimal parsing.
 // Downstream: None.
 func buildComment(tokens []spotToken, consumed []bool) string {
-	parts := make([]string, 0, len(tokens))
+	if len(tokens) == 0 || len(consumed) == 0 {
+		return ""
+	}
+	totalLen := 0
+	count := 0
 	for i, tok := range tokens {
 		if consumed[i] {
 			continue
 		}
-		clean := strings.TrimSpace(tok.clean)
-		if clean == "" {
+		if tok.clean == "" {
 			continue
 		}
-		parts = append(parts, clean)
+		if count > 0 {
+			totalLen++
+		}
+		totalLen += len(tok.clean)
+		count++
 	}
-	if len(parts) == 0 {
+	if count == 0 {
 		return ""
 	}
-	return strings.Join(parts, " ")
+	var b strings.Builder
+	b.Grow(totalLen)
+	written := 0
+	for i, tok := range tokens {
+		if consumed[i] || tok.clean == "" {
+			continue
+		}
+		if written > 0 {
+			_ = b.WriteByte(' ')
+		}
+		_, _ = b.WriteString(tok.clean)
+		written++
+	}
+	return b.String()
 }
 
 func isAllDigitsASCII(s string) bool {
@@ -672,7 +709,7 @@ func (c *Client) parseSpot(line string) {
 	if len(tokens) < 3 {
 		return
 	}
-	if strings.ToUpper(tokens[0].clean) != "DX" || strings.ToUpper(tokens[1].clean) != "DE" {
+	if !equalFoldASCII(tokens[0].clean, "DX") || !equalFoldASCII(tokens[1].clean, "DE") {
 		return
 	}
 	consumed := make([]bool, len(tokens))
