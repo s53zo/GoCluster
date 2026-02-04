@@ -41,6 +41,7 @@ Functional:
 - Parsing remains bounded and resilient to malformed input.
 - PSKReporter Phase B keeps allowlist/path-only filtering before full normalization; buffer reuse must be bounded and non-blocking.
 - RBN Phase C preserves token boundaries, punctuation trimming, and DX/DE matching; comment reconstruction remains order-preserving with single-space joins.
+- Phase D avoids duplicate normalization in spot creation: ModeNorm/BandNorm prefilled when possible, canonical PSK mode derived once, and uppercase normalization uses ASCII fast paths without changing output.
 Non-functional:
 - No unbounded buffers or goroutines.
 - No regression in p99 latency.
@@ -50,7 +51,7 @@ Phased checkpoints:
 A) Baseline: capture allocs/heap pprof under normal load; record top allocators.
 B) PSKReporter: reduce JSON/string churn; reuse buffers; normalize once. Add a bounded payload buffer pool (size + count caps, non-blocking get/put) and pass pre-parsed mode info through conversion to avoid duplicate canonicalization.
 C) RBN parsing: reduce tokenization allocations; reuse slices. Details: drop per-token uppercase allocation, avoid split/join in RBN callsign normalization, and build comments in a single pass with a builder.
-D) Spot normalization: avoid repeated normalization and transient strings.
+D) Spot normalization: avoid repeated normalization and transient strings. Details: add ASCII-fast upper+trim helper, avoid double uppercasing, prefill ModeNorm/BandNorm in NewSpot* using canonical PSK lookup without re-normalizing.
 E) Archive + Pebble cleanup: reduce iterator/buffer churn; cap batches.
 
 6) Contracts and compatibility
@@ -122,6 +123,26 @@ Final contract statement:
 
 Scope Ledger status updates:
 - S16 -> Implemented.
+
+---
+
+## Post-implementation notes (Plan v6 - Phase D)
+Implementation notes:
+- Added ASCII-fast upper+trim helper for spot normalization and PSK canonicalization.
+- Prefilled ModeNorm/BandNorm in NewSpot* and removed double uppercasing of mode tokens.
+- EnsureNormalized now uses ASCII-fast normalization for mode/continent/grid fields.
+
+Deviations:
+- None.
+
+Verification commands actually run:
+- `go test ./...`
+
+Final contract statement:
+- No protocol/format, ordering, drop/disconnect, deadlines/timeouts, or observability changes.
+
+Scope Ledger status updates:
+- S17 -> Implemented.
 
 ---
 
@@ -453,7 +474,7 @@ Completed items remain inline - never removed, only status changes.
 | S14 | Establish baseline pprof (allocs + heap) under normal load. | Agreed/Pending | Phase A |
 | S15 | Reduce allocations in PSKReporter parsing/normalization. | Implemented | Phase B |
 | S16 | Reduce allocations in RBN parsing/tokenization. | Implemented | Phase C |
-| S17 | Reduce allocations in spot normalization path. | Agreed/Pending | Phase D |
+| S17 | Reduce allocations in spot normalization path. | Implemented | Phase D |
 | S18 | Reduce Pebble/cache churn during archive cleanup. | Agreed/Pending | Phase E |
 | S19 | Provide pprof before/after comparisons per phase. | Agreed/Pending | Phase B comparison complete (12:29 vs 13:49); remaining phases pending |
 
@@ -467,6 +488,7 @@ In Progress
 - [ ] Baseline pprof capture + analysis (Phase A)
 
 ### Completed This Session
+- [x] Spot Phase D: prefill normalized fields + ASCII-fast upper normalization
 - [x] RBN Phase C: tokenization alloc reductions + callsign normalization cleanup
 - [x] PSKReporter Phase B: bounded payload pool + single-pass mode normalization
 - [x] Atomic callQuality swap + stop/start ordering
@@ -520,6 +542,12 @@ In Progress
 - **Alternatives**: Full parser rewrite to avoid token slices; sync.Pool for tokens; leave as-is.
 - **Impact**: Reduces allocation churn while preserving RBN parsing semantics.
 
+### D7 — 2026-02-04 Spot normalization fast-paths
+- **Context**: Spot normalization dominates alloc churn (Mode/ModeNorm, BandNorm, uppercase trims).
+- **Chosen**: Add ASCII-fast upper+trim helper, prefill ModeNorm/BandNorm during spot creation, and avoid double uppercasing/canonicalization.
+- **Alternatives**: Keep EnsureNormalized as-is; use sync.Pool for spot allocations; rewrite normalization at call sites.
+- **Impact**: Reduces per-spot normalization allocations while preserving canonical fields.
+
 ---
 
 ## Files Modified (Plan v6)
@@ -527,6 +555,9 @@ In Progress
 - pskreporter/client.go
 - pskreporter/client_test.go
 - rbn/client.go
+- spot/mode_alloc.go
+- spot/normalize_ascii.go
+- spot/spot.go
 
 ---
 
@@ -567,6 +598,7 @@ In Progress
 ---
 
 ## Verification Status
+- [x] `go test ./...` (Plan v6 Phase D)
 - [x] `go test ./...` (Plan v6 Phase C)
 - [x] `go test ./...` (Plan v6 Phase B)
 - [x] `go test ./...` (Plan v5)
@@ -587,4 +619,4 @@ In Progress
 ---
 
 ## Context for Resume
-Implemented: Phase B PSKReporter optimizations (bounded payload buffer pool + single-pass mode normalization) and Phase C RBN tokenization allocation reductions (no per-token uppercase, faster callsign normalization, builder-based comment). Also: atomic callQuality swap + stop/start ordering; bounded call-quality store with pinned priors + TTL/cap + config knobs; categorical stats source labels; peak-based map compaction for path reliability + dedup caches; DXC_MAP_LOG_INTERVAL diagnostics; tests and docs updated. NEARBY 60m uses L1 (res-1); other NEARBY semantics unchanged.
+Implemented: Phase B PSKReporter optimizations (bounded payload buffer pool + single-pass mode normalization), Phase C RBN tokenization allocation reductions (no per-token uppercase, faster callsign normalization, builder-based comment), and Phase D spot normalization fast paths (ASCII upper+trim helper, prefilled ModeNorm/BandNorm, avoid double uppercasing). Also: atomic callQuality swap + stop/start ordering; bounded call-quality store with pinned priors + TTL/cap + config knobs; categorical stats source labels; peak-based map compaction for path reliability + dedup caches; DXC_MAP_LOG_INTERVAL diagnostics; tests and docs updated. NEARBY 60m uses L1 (res-1); other NEARBY semantics unchanged.

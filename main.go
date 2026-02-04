@@ -1354,8 +1354,8 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 		pskFT8 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "FT8")
 		pskFT4 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "FT4")
 		pskMSK144 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "PSKREPORTER", "MSK144")
-		// Peer ingest is summarized under the synthetic P92 label.
-		p92Total := diffCounter(sourceTotals, prevSourceCounts, "P92")
+		// Peer ingest is summarized under the synthetic P92 label (stats key is PEER).
+		p92Total := diffCounter(sourceTotals, prevSourceCounts, "PEER")
 
 		totalCorrections := tracker.CallCorrections()
 		totalUnlicensed := tracker.UnlicensedDrops()

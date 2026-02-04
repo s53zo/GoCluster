@@ -85,12 +85,8 @@ var pskVariantMap = map[string]string{
 // original token. When mode is not a PSK variant, it returns the input as both
 // canonical and variant with isPSK=false.
 func CanonicalPSKMode(mode string) (canonical string, variant string, isPSK bool) {
-	upper := strings.ToUpper(strings.TrimSpace(mode))
-	canonical, ok := pskVariantMap[upper]
-	if !ok {
-		return upper, upper, false
-	}
-	return canonical, upper, true
+	upper := normalizeUpperASCIITrim(mode)
+	return canonicalPSKModeUpper(upper)
 }
 
 // CallMetadata stores geographic metadata for a callsign
@@ -112,20 +108,27 @@ type CallMetadata struct {
 func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
 	freq = roundFrequencyTo100Hz(freq)
 	mode = NormalizeVoiceMode(mode, freq)
+	modeNorm := mode
+	if canonical, _, ok := canonicalPSKModeUpper(mode); ok {
+		modeNorm = canonical
+	}
+	band := FreqToBand(freq)
 	dxNorm := NormalizeCallsign(dxCall)
 	deNorm := NormalizeCallsign(deCall)
 	spot := &Spot{
 		DXCall:     dxNorm,
 		DECall:     deNorm,
 		Frequency:  freq,
-		Mode:       strings.ToUpper(mode),
-		Band:       FreqToBand(freq),
+		Mode:       mode,
+		Band:       band,
 		Time:       time.Now().UTC(),
 		SourceType: SourceManual,
 		TTL:        5, // Default hop count
 		Report:     0, // Meaningful only when HasReport is true
 		HasReport:  false,
 		IsHuman:    true,
+		ModeNorm:   modeNorm,
+		BandNorm:   band,
 		DXCallNorm: dxNorm,
 		DECallNorm: deNorm,
 		DXCellID:   0,
@@ -144,20 +147,27 @@ func NewSpot(dxCall, deCall string, freq float64, mode string) *Spot {
 func NewSpotNormalized(dxCallNorm, deCallNorm string, freq float64, mode string) *Spot {
 	freq = roundFrequencyTo100Hz(freq)
 	mode = NormalizeVoiceMode(mode, freq)
+	modeNorm := mode
+	if canonical, _, ok := canonicalPSKModeUpper(mode); ok {
+		modeNorm = canonical
+	}
+	band := FreqToBand(freq)
 	dxCall := strings.TrimSpace(dxCallNorm)
 	deCall := strings.TrimSpace(deCallNorm)
 	spot := &Spot{
 		DXCall:     dxCall,
 		DECall:     deCall,
 		Frequency:  freq,
-		Mode:       strings.ToUpper(mode),
-		Band:       FreqToBand(freq),
+		Mode:       mode,
+		Band:       band,
 		Time:       time.Now().UTC(),
 		SourceType: SourceManual,
 		TTL:        5, // Default hop count
 		Report:     0, // Meaningful only when HasReport is true
 		HasReport:  false,
 		IsHuman:    true,
+		ModeNorm:   modeNorm,
+		BandNorm:   band,
 		DXCallNorm: dxCall,
 		DECallNorm: deCall,
 		DXCellID:   0,
@@ -372,10 +382,11 @@ func (sb *stringBuilder) AppendByte(b byte) {
 // EnsureNormalized populates cached normalized fields to avoid repeated string operations on hot paths.
 func (s *Spot) EnsureNormalized() {
 	if s.ModeNorm == "" && s.Mode != "" {
-		s.ModeNorm = strings.ToUpper(strings.TrimSpace(s.Mode))
-		if canonical, _, ok := CanonicalPSKMode(s.ModeNorm); ok {
-			s.ModeNorm = canonical
+		modeUpper := normalizeUpperASCIITrim(s.Mode)
+		if canonical, _, ok := canonicalPSKModeUpper(modeUpper); ok {
+			modeUpper = canonical
 		}
+		s.ModeNorm = modeUpper
 	}
 	if s.BandNorm == "" && s.Band != "" {
 		// Normalize band to canonical lowercase (e.g., "20m") so allowlists match.
@@ -391,16 +402,16 @@ func (s *Spot) EnsureNormalized() {
 		s.DECallNormStripped = NormalizeCallsign(s.DECallStripped)
 	}
 	if s.DXContinentNorm == "" && s.DXMetadata.Continent != "" {
-		s.DXContinentNorm = strings.ToUpper(strings.TrimSpace(s.DXMetadata.Continent))
+		s.DXContinentNorm = normalizeUpperASCIITrim(s.DXMetadata.Continent)
 	}
 	if s.DEContinentNorm == "" && s.DEMetadata.Continent != "" {
-		s.DEContinentNorm = strings.ToUpper(strings.TrimSpace(s.DEMetadata.Continent))
+		s.DEContinentNorm = normalizeUpperASCIITrim(s.DEMetadata.Continent)
 	}
 	if s.DXGridNorm == "" && s.DXMetadata.Grid != "" {
-		s.DXGridNorm = strings.ToUpper(strings.TrimSpace(s.DXMetadata.Grid))
+		s.DXGridNorm = normalizeUpperASCIITrim(s.DXMetadata.Grid)
 	}
 	if s.DEGridNorm == "" && s.DEMetadata.Grid != "" {
-		s.DEGridNorm = strings.ToUpper(strings.TrimSpace(s.DEMetadata.Grid))
+		s.DEGridNorm = normalizeUpperASCIITrim(s.DEMetadata.Grid)
 	}
 	if s.DXGrid2 == "" && len(s.DXGridNorm) >= 2 {
 		s.DXGrid2 = s.DXGridNorm[:2]

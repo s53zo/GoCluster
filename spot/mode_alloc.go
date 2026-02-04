@@ -80,7 +80,7 @@ func GuessModeFromAlloc(freqKHz float64) string {
 // Downstream: strings.ToUpper.
 // NormalizeVoiceMode maps generic SSB to LSB/USB depending on frequency.
 func NormalizeVoiceMode(mode string, freqKHz float64) string {
-	upper := strings.ToUpper(strings.TrimSpace(mode))
+	upper := normalizeUpperASCIITrim(mode)
 	if upper == "SSB" {
 		if freqKHz >= 10000 {
 			return "USB"

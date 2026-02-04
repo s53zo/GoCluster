@@ -8,6 +8,16 @@
   - Pre-code: goals/non-goals/assumptions/requirements/architecture/contracts/test plan/rollout.
   - Post-code: deviations, verification commands actually run (if any), final contract statement, and Scope Ledger status updates.
 - Keep history append-only: use Plan Index and Decision Log.
+- The **Current State Snapshot** is mandatory and must be updated on every plan change, scope decision, or end-of-session update.
+- The **Turn Log** is mandatory and append-only; add one line per significant turn (decision, scope change, implementation step, verification run).
+
+---
+
+## Current State Snapshot
+- **Active Plan**: Plan vN — <short title> — <status>
+- **Scope Ledger**: vM — Pending: <N>, Implemented: <N>, Deferred: <N>, Superseded: <N>
+- **Next up**: <1–3 bullets>
+- **Last updated**: YYYY-MM-DD HH:MM (local)
 
 ---
 
@@ -90,6 +100,11 @@ Scope Ledger status updates:
 
 ---
 
+## Pending Work Summary
+- S# — <short description> — <blocking detail or next step>
+
+---
+
 ## Scope Ledger vM
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
@@ -112,6 +127,12 @@ Planned | In Progress | Complete
 
 ### Blocked / Questions
 - [ ] <item>
+
+---
+
+## Turn Log (Append-Only)
+- REQUIRED: add one line per significant turn (decision, scope change, implementation step, verification run).
+- YYYY-MM-DD HH:MM — <short description of change or decision>
 
 ---
 
