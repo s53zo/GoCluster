@@ -209,29 +209,30 @@ type Server struct {
 //
 // The client remains active until they type BYE or their connection drops.
 type Client struct {
-	conn         net.Conn               // TCP connection to client
-	reader       *bufio.Reader          // Buffered reader for client input
-	writer       *bufio.Writer          // Buffered writer for client output
-	writeMu      sync.Mutex             // Guards writer/deadline usage for echo + writer loop
-	callsign     string                 // Client's amateur radio callsign
-	connected    time.Time              // Timestamp when client connected
-	server       *Server                // Back-reference to server for formatting/helpers
-	address      string                 // Client's IP address
-	recentIPs    []string               // Most-recent-first IP history for this callsign
-	spotChan     chan *spotEnvelope     // Buffered channel for spot delivery (configurable capacity)
-	controlChan  chan controlMessage    // Buffered channel for control/bulletin delivery
-	done         chan struct{}          // Closed to stop writer and prevent new enqueues
-	closeOnce    sync.Once              // Ensures close logic runs once
-	echoInput    bool                   // True when we should echo typed characters back to the client
-	dialect      DialectName            // Active command dialect for filter commands
-	grid         string                 // User grid (4+ chars) for path reliability
-	gridDerived  bool                   // True when grid was derived from CTY prefix info
-	gridCell     pathreliability.CellID // Cached cell for path reliability
-	noiseClass   string                 // Noise class token (e.g., QUIET, URBAN)
-	noisePenalty float64                // dB penalty applied DX->user
-	skipNextEOL  bool                   // Consume a single LF/NUL after CR (RFC 854 compliance)
-	dedupePolicy atomic.Uint32          // Secondary dedupe policy (fast/med/slow)
-	diagEnabled  atomic.Bool            // Diagnostic comment override enabled
+	conn           net.Conn               // TCP connection to client
+	reader         *bufio.Reader          // Buffered reader for client input
+	writer         *bufio.Writer          // Buffered writer for client output
+	writeMu        sync.Mutex             // Guards writer/deadline usage for echo + writer loop
+	callsign       string                 // Client's amateur radio callsign
+	connected      time.Time              // Timestamp when client connected
+	server         *Server                // Back-reference to server for formatting/helpers
+	address        string                 // Client's IP address
+	recentIPs      []string               // Most-recent-first IP history for this callsign
+	spotChan       chan *spotEnvelope     // Buffered channel for spot delivery (configurable capacity)
+	controlChan    chan controlMessage    // Buffered channel for control/bulletin delivery
+	done           chan struct{}          // Closed to stop writer and prevent new enqueues
+	closeOnce      sync.Once              // Ensures close logic runs once
+	echoInput      bool                   // True when we should echo typed characters back to the client
+	dialect        DialectName            // Active command dialect for filter commands
+	grid           string                 // User grid (4+ chars) for path reliability
+	gridDerived    bool                   // True when grid was derived from CTY prefix info
+	gridCell       pathreliability.CellID // Cached cell for path reliability
+	gridCoarseCell pathreliability.CellID // Cached coarse (res-1) cell for nearby filtering
+	noiseClass     string                 // Noise class token (e.g., QUIET, URBAN)
+	noisePenalty   float64                // dB penalty applied DX->user
+	skipNextEOL    bool                   // Consume a single LF/NUL after CR (RFC 854 compliance)
+	dedupePolicy   atomic.Uint32          // Secondary dedupe policy (fast/med/slow)
+	diagEnabled    atomic.Bool            // Diagnostic comment override enabled
 	// solarMu guards solar summary settings shared across goroutines.
 	solarMu             sync.Mutex
 	solarSummaryMinutes int
@@ -383,11 +384,12 @@ func (c *Client) updateFilter(fn func(f *filter.Filter)) {
 }
 
 type pathState struct {
-	grid         string
-	gridDerived  bool
-	gridCell     pathreliability.CellID
-	noiseClass   string
-	noisePenalty float64
+	grid           string
+	gridDerived    bool
+	gridCell       pathreliability.CellID
+	gridCoarseCell pathreliability.CellID
+	noiseClass     string
+	noisePenalty   float64
 }
 
 func (c *Client) pathSnapshot() pathState {
@@ -396,11 +398,12 @@ func (c *Client) pathSnapshot() pathState {
 	}
 	c.pathMu.RLock()
 	state := pathState{
-		grid:         c.grid,
-		gridDerived:  c.gridDerived,
-		gridCell:     c.gridCell,
-		noiseClass:   c.noiseClass,
-		noisePenalty: c.noisePenalty,
+		grid:           c.grid,
+		gridDerived:    c.gridDerived,
+		gridCell:       c.gridCell,
+		gridCoarseCell: c.gridCoarseCell,
+		noiseClass:     c.noiseClass,
+		noisePenalty:   c.noisePenalty,
 	}
 	c.pathMu.RUnlock()
 	return state
@@ -672,11 +675,18 @@ func (s *Server) handlePathSettingsCommand(client *Client, line string) (string,
 		if cell == pathreliability.InvalidCell {
 			return "Invalid grid. Please provide a 4-6 character Maidenhead locator.\n", true
 		}
+		coarseCell := pathreliability.EncodeCoarseCell(grid)
 		client.pathMu.Lock()
 		client.grid = grid
 		client.gridDerived = false
 		client.gridCell = cell
+		client.gridCoarseCell = coarseCell
 		client.pathMu.Unlock()
+		client.updateFilter(func(f *filter.Filter) {
+			if f.NearbyActive() {
+				f.UpdateNearbyUserCells(cell, coarseCell)
+			}
+		})
 		if err := client.saveFilter(); err != nil {
 			return fmt.Sprintf("Grid set to %s (warning: failed to persist: %v)\n", grid, err), true
 		}
@@ -931,7 +941,7 @@ const (
 )
 
 const (
-	passFilterUsageMsg      = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern>[,<pattern>...] | PASS DECALL <pattern>[,<pattern>...] | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS PATH <class>[,<class>...] (classes: HIGH,MEDIUM,LOW,UNLIKELY,INSUFFICIENT or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; removes from block list; ALL allows all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
+	passFilterUsageMsg      = "Usage: PASS <type> ...\nPASS BAND <band>[,<band>...] | PASS MODE <mode>[,<mode>...] | PASS SOURCE <HUMAN|SKIMMER|ALL> | PASS DXCALL <pattern>[,<pattern>...] | PASS DECALL <pattern>[,<pattern>...] | PASS CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | PASS PATH <class>[,<class>...] (classes: HIGH,MEDIUM,LOW,UNLIKELY,INSUFFICIENT or ALL) | PASS BEACON | PASS WWV | PASS WCY | PASS ANNOUNCE | PASS NEARBY ON|OFF | PASS DXGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DEGRID2 <grid>[,<grid>...] (two characters or ALL) | PASS DXCONT <cont>[,<cont>...] | PASS DECONT <cont>[,<cont>...] | PASS DXZONE <zone>[,<zone>...] | PASS DEZONE <zone>[,<zone>...] | PASS DXDXCC <code>[,<code>...] | PASS DEDXCC <code>[,<code>...] (PASS = allow list; removes from block list; ALL allows all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
 	rejectFilterUsageMsg    = "Usage: REJECT <type> ...\nREJECT BAND <band>[,<band>...] | REJECT MODE <mode>[,<mode>...] | REJECT SOURCE <HUMAN|SKIMMER|ALL> | REJECT DXCALL <pattern>[,<pattern>...] | REJECT DECALL <pattern>[,<pattern>...] | REJECT CONFIDENCE <symbol>[,<symbol>...] (symbols: ?,S,C,P,V,B or ALL) | REJECT PATH <class>[,<class>...] (classes: HIGH,MEDIUM,LOW,UNLIKELY,INSUFFICIENT or ALL) | REJECT BEACON | REJECT WWV | REJECT WCY | REJECT ANNOUNCE | REJECT DXGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DEGRID2 <grid>[,<grid>...] (two characters or ALL) | REJECT DXCONT <cont>[,<cont>...] | REJECT DECONT <cont>[,<cont>...] | REJECT DXZONE <zone>[,<zone>...] | REJECT DEZONE <zone>[,<zone>...] | REJECT DXDXCC <code>[,<code>...] | REJECT DEDXCC <code>[,<code>...] (REJECT = block list; removes from allow list; ALL blocks all). Supported modes include: CW, LSB, USB, JS8, SSTV, RTTY, FT4, FT8, MSK144, PSK.\nType HELP for usage.\n"
 	unknownPassTypeMsg      = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, PATH, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 	unknownRejectTypeMsg    = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, PATH, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
@@ -1740,20 +1750,21 @@ func (s *Server) handleClient(conn net.Conn) {
 		writerConn = tconn
 	}
 	client := &Client{
-		conn:         conn,
-		reader:       bufio.NewReader(readerConn),
-		writer:       bufio.NewWriter(writerConn),
-		connected:    time.Now().UTC(),
-		server:       s,
-		address:      address,
-		spotChan:     make(chan *spotEnvelope, spotQueueSize),
-		controlChan:  make(chan controlMessage, controlQueueSize),
-		done:         make(chan struct{}),
-		filter:       filter.NewFilter(), // Start with no filters (accept all)
-		dialect:      s.filterEngine.defaultDialect,
-		gridCell:     pathreliability.InvalidCell,
-		noiseClass:   "QUIET",
-		noisePenalty: 0,
+		conn:           conn,
+		reader:         bufio.NewReader(readerConn),
+		writer:         bufio.NewWriter(writerConn),
+		connected:      time.Now().UTC(),
+		server:         s,
+		address:        address,
+		spotChan:       make(chan *spotEnvelope, spotQueueSize),
+		controlChan:    make(chan controlMessage, controlQueueSize),
+		done:           make(chan struct{}),
+		filter:         filter.NewFilter(), // Start with no filters (accept all)
+		dialect:        s.filterEngine.defaultDialect,
+		gridCell:       pathreliability.InvalidCell,
+		gridCoarseCell: pathreliability.InvalidCell,
+		noiseClass:     "QUIET",
+		noisePenalty:   0,
 		// Echo policy is configured explicitly so we can support local echo even
 		// when clients toggle their own modes.
 		echoInput: s.echoMode == telnetEchoServer,
@@ -1841,6 +1852,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		client.grid = strings.ToUpper(strings.TrimSpace(record.Grid))
 		client.gridDerived = false
 		client.gridCell = pathreliability.EncodeCell(client.grid)
+		client.gridCoarseCell = pathreliability.EncodeCoarseCell(client.grid)
 		client.noiseClass = strings.ToUpper(strings.TrimSpace(record.NoiseClass))
 		client.noisePenalty = s.noisePenaltyForClass(client.noiseClass)
 		client.setSolarSummaryMinutes(record.SolarSummaryMinutes, loginTime)
@@ -1855,6 +1867,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		client.dialect = s.filterEngine.defaultDialect
 		client.setDedupePolicy(s.resolveDedupePolicy(dedupePolicyMed))
 		client.gridCell = pathreliability.InvalidCell
+		client.gridCoarseCell = pathreliability.InvalidCell
 		client.gridDerived = false
 		client.noiseClass = "QUIET"
 		client.noisePenalty = s.noisePenaltyForClass(client.noiseClass)
@@ -1870,6 +1883,7 @@ func (s *Server) handleClient(conn net.Conn) {
 			client.grid = strings.ToUpper(strings.TrimSpace(g))
 			client.gridDerived = derived
 			client.gridCell = pathreliability.EncodeCell(client.grid)
+			client.gridCoarseCell = pathreliability.EncodeCoarseCell(client.grid)
 		}
 	}
 	// Normalize noise defaults when absent.

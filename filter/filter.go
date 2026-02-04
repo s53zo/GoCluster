@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 
+	"dxcluster/pathreliability"
 	"dxcluster/spot"
 )
 
@@ -419,9 +420,59 @@ type Filter struct {
 	AllDEDXCC            bool            // If true, accept all DE ADIF codes (except blocked)
 	BlockAllDEDXCC       bool            // If true, reject all DE ADIF codes
 
+	// NearbyEnabled toggles H3 nearby matching that bypasses location filters.
+	// This is per-session only and is not persisted.
+	NearbyEnabled bool `yaml:"-"`
+	// NearbySnapshot stores the prior location filter state to restore on disable.
+	NearbySnapshot *NearbyLocationSnapshot `yaml:"-"`
+	// NearbyUserFine stores the user's H3 res-2 cell for nearby comparisons.
+	NearbyUserFine pathreliability.CellID `yaml:"-"`
+	// NearbyUserCoarse stores the user's H3 res-1 cell for nearby comparisons.
+	NearbyUserCoarse pathreliability.CellID `yaml:"-"`
+
 	// LegacyMinConfidence captures the old percentage-based filter persisted to
 	// YAML so we can migrate user data to the new glyph-based approach.
 	LegacyMinConfidence int `yaml:"minconfidence,omitempty"`
+}
+
+// NearbyLocationSnapshot stores location filter state for restoration when
+// PASS NEARBY is disabled. It is not persisted.
+type NearbyLocationSnapshot struct {
+	DXContinents         map[string]bool
+	BlockDXContinents    map[string]bool
+	DEContinents         map[string]bool
+	BlockDEContinents    map[string]bool
+	AllDXContinents      bool
+	BlockAllDXContinents bool
+	AllDEContinents      bool
+	BlockAllDEContinents bool
+
+	DXZones         map[int]bool
+	BlockDXZones    map[int]bool
+	DEZones         map[int]bool
+	BlockDEZones    map[int]bool
+	AllDXZones      bool
+	BlockAllDXZones bool
+	AllDEZones      bool
+	BlockAllDEZones bool
+
+	DXGrid2Prefixes map[string]bool
+	BlockDXGrid2    map[string]bool
+	DEGrid2Prefixes map[string]bool
+	BlockDEGrid2    map[string]bool
+	AllDXGrid2      bool
+	BlockAllDXGrid2 bool
+	AllDEGrid2      bool
+	BlockAllDEGrid2 bool
+
+	DXDXCC         map[int]bool
+	BlockDXDXCC    map[int]bool
+	DEDXCC         map[int]bool
+	BlockDEDXCC    map[int]bool
+	AllDXDXCC      bool
+	BlockAllDXDXCC bool
+	AllDEDXCC      bool
+	BlockAllDEDXCC bool
 }
 
 // Purpose: Construct a new filter with defaults applied.
@@ -490,6 +541,10 @@ func NewFilter() *Filter {
 		BlockAllDXDXCC:       false,
 		AllDEDXCC:            true,
 		BlockAllDEDXCC:       false,
+		NearbyEnabled:        false,
+		NearbySnapshot:       nil,
+		NearbyUserFine:       pathreliability.InvalidCell,
+		NearbyUserCoarse:     pathreliability.InvalidCell,
 	}
 	for _, mode := range defaultModeSelection {
 		f.Modes[mode] = true
@@ -1142,6 +1197,7 @@ func (f *Filter) Reset() {
 	f.SetWCYEnabled(true)
 	f.SetAnnounceEnabled(true)
 	f.SetSelfEnabled(true)
+	f.DisableNearby()
 }
 
 // Purpose: Reset all filter criteria back to configured defaults.
@@ -1155,6 +1211,169 @@ func (f *Filter) ResetToDefaults() {
 	// Replace contents in place so callers retain the same *Filter pointer.
 	defaults := NewFilter()
 	*f = *defaults
+}
+
+// Purpose: Enable nearby filtering with cached user H3 cells.
+// Key aspects: Requires valid res-1 and res-2 cells; snapshots location filters.
+// Upstream: PASS NEARBY ON.
+// Downstream: MatchesWithPath (nearby evaluation).
+func (f *Filter) EnableNearby(userFine, userCoarse pathreliability.CellID) error {
+	if f == nil {
+		return errors.New("nil filter")
+	}
+	if userFine == pathreliability.InvalidCell || userCoarse == pathreliability.InvalidCell {
+		return errors.New("invalid user cell")
+	}
+	if !f.NearbyEnabled {
+		f.NearbySnapshot = f.captureLocationSnapshot()
+	}
+	f.NearbyEnabled = true
+	f.NearbyUserFine = userFine
+	f.NearbyUserCoarse = userCoarse
+	return nil
+}
+
+// Purpose: Disable nearby filtering and restore location filters.
+// Key aspects: Restores snapshot when present; clears cached user cells.
+// Upstream: PASS NEARBY OFF.
+// Downstream: None.
+func (f *Filter) DisableNearby() {
+	if f == nil {
+		return
+	}
+	if f.NearbySnapshot != nil {
+		f.restoreLocationSnapshot(f.NearbySnapshot)
+	}
+	f.NearbyEnabled = false
+	f.NearbySnapshot = nil
+	f.NearbyUserFine = pathreliability.InvalidCell
+	f.NearbyUserCoarse = pathreliability.InvalidCell
+}
+
+// Purpose: Update cached user H3 cells for nearby filtering.
+// Key aspects: No-op when filter is nil.
+// Upstream: SET GRID updates.
+// Downstream: MatchesWithPath.
+func (f *Filter) UpdateNearbyUserCells(userFine, userCoarse pathreliability.CellID) {
+	if f == nil {
+		return
+	}
+	f.NearbyUserFine = userFine
+	f.NearbyUserCoarse = userCoarse
+}
+
+// Purpose: Report whether nearby filtering is active.
+// Key aspects: Safe on nil filters.
+// Upstream: Telnet command handling and filter summaries.
+// Downstream: None.
+func (f *Filter) NearbyActive() bool {
+	if f == nil {
+		return false
+	}
+	return f.NearbyEnabled
+}
+
+func (f *Filter) captureLocationSnapshot() *NearbyLocationSnapshot {
+	if f == nil {
+		return nil
+	}
+	return &NearbyLocationSnapshot{
+		DXContinents:         copyStringBoolMap(f.DXContinents),
+		BlockDXContinents:    copyStringBoolMap(f.BlockDXContinents),
+		DEContinents:         copyStringBoolMap(f.DEContinents),
+		BlockDEContinents:    copyStringBoolMap(f.BlockDEContinents),
+		AllDXContinents:      f.AllDXContinents,
+		BlockAllDXContinents: f.BlockAllDXContinents,
+		AllDEContinents:      f.AllDEContinents,
+		BlockAllDEContinents: f.BlockAllDEContinents,
+		DXZones:              copyIntBoolMap(f.DXZones),
+		BlockDXZones:         copyIntBoolMap(f.BlockDXZones),
+		DEZones:              copyIntBoolMap(f.DEZones),
+		BlockDEZones:         copyIntBoolMap(f.BlockDEZones),
+		AllDXZones:           f.AllDXZones,
+		BlockAllDXZones:      f.BlockAllDXZones,
+		AllDEZones:           f.AllDEZones,
+		BlockAllDEZones:      f.BlockAllDEZones,
+		DXGrid2Prefixes:      copyStringBoolMap(f.DXGrid2Prefixes),
+		BlockDXGrid2:         copyStringBoolMap(f.BlockDXGrid2),
+		DEGrid2Prefixes:      copyStringBoolMap(f.DEGrid2Prefixes),
+		BlockDEGrid2:         copyStringBoolMap(f.BlockDEGrid2),
+		AllDXGrid2:           f.AllDXGrid2,
+		BlockAllDXGrid2:      f.BlockAllDXGrid2,
+		AllDEGrid2:           f.AllDEGrid2,
+		BlockAllDEGrid2:      f.BlockAllDEGrid2,
+		DXDXCC:               copyIntBoolMap(f.DXDXCC),
+		BlockDXDXCC:          copyIntBoolMap(f.BlockDXDXCC),
+		DEDXCC:               copyIntBoolMap(f.DEDXCC),
+		BlockDEDXCC:          copyIntBoolMap(f.BlockDEDXCC),
+		AllDXDXCC:            f.AllDXDXCC,
+		BlockAllDXDXCC:       f.BlockAllDXDXCC,
+		AllDEDXCC:            f.AllDEDXCC,
+		BlockAllDEDXCC:       f.BlockAllDEDXCC,
+	}
+}
+
+func (f *Filter) restoreLocationSnapshot(snapshot *NearbyLocationSnapshot) {
+	if f == nil || snapshot == nil {
+		return
+	}
+	f.DXContinents = copyStringBoolMap(snapshot.DXContinents)
+	f.BlockDXContinents = copyStringBoolMap(snapshot.BlockDXContinents)
+	f.DEContinents = copyStringBoolMap(snapshot.DEContinents)
+	f.BlockDEContinents = copyStringBoolMap(snapshot.BlockDEContinents)
+	f.AllDXContinents = snapshot.AllDXContinents
+	f.BlockAllDXContinents = snapshot.BlockAllDXContinents
+	f.AllDEContinents = snapshot.AllDEContinents
+	f.BlockAllDEContinents = snapshot.BlockAllDEContinents
+
+	f.DXZones = copyIntBoolMap(snapshot.DXZones)
+	f.BlockDXZones = copyIntBoolMap(snapshot.BlockDXZones)
+	f.DEZones = copyIntBoolMap(snapshot.DEZones)
+	f.BlockDEZones = copyIntBoolMap(snapshot.BlockDEZones)
+	f.AllDXZones = snapshot.AllDXZones
+	f.BlockAllDXZones = snapshot.BlockAllDXZones
+	f.AllDEZones = snapshot.AllDEZones
+	f.BlockAllDEZones = snapshot.BlockAllDEZones
+
+	f.DXGrid2Prefixes = copyStringBoolMap(snapshot.DXGrid2Prefixes)
+	f.BlockDXGrid2 = copyStringBoolMap(snapshot.BlockDXGrid2)
+	f.DEGrid2Prefixes = copyStringBoolMap(snapshot.DEGrid2Prefixes)
+	f.BlockDEGrid2 = copyStringBoolMap(snapshot.BlockDEGrid2)
+	f.AllDXGrid2 = snapshot.AllDXGrid2
+	f.BlockAllDXGrid2 = snapshot.BlockAllDXGrid2
+	f.AllDEGrid2 = snapshot.AllDEGrid2
+	f.BlockAllDEGrid2 = snapshot.BlockAllDEGrid2
+
+	f.DXDXCC = copyIntBoolMap(snapshot.DXDXCC)
+	f.BlockDXDXCC = copyIntBoolMap(snapshot.BlockDXDXCC)
+	f.DEDXCC = copyIntBoolMap(snapshot.DEDXCC)
+	f.BlockDEDXCC = copyIntBoolMap(snapshot.BlockDEDXCC)
+	f.AllDXDXCC = snapshot.AllDXDXCC
+	f.BlockAllDXDXCC = snapshot.BlockAllDXDXCC
+	f.AllDEDXCC = snapshot.AllDEDXCC
+	f.BlockAllDEDXCC = snapshot.BlockAllDEDXCC
+}
+
+func copyStringBoolMap(src map[string]bool) map[string]bool {
+	if len(src) == 0 {
+		return make(map[string]bool)
+	}
+	dst := make(map[string]bool, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func copyIntBoolMap(src map[int]bool) map[int]bool {
+	if len(src) == 0 {
+		return make(map[int]bool)
+	}
+	dst := make(map[int]bool, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // Purpose: Clear DX continent filters and accept all.
@@ -1308,36 +1527,42 @@ func (f *Filter) matchesWithPath(s *spot.Spot, pathClass string) bool {
 		return false
 	}
 
-	// DX/DE continent filters.
-	if !passesStringFilter(dxCont, f.DXContinents, f.BlockDXContinents, f.AllDXContinents, f.BlockAllDXContinents) {
-		return false
-	}
-	if !passesStringFilter(deCont, f.DEContinents, f.BlockDEContinents, f.AllDEContinents, f.BlockAllDEContinents) {
-		return false
-	}
+	if f.NearbyEnabled {
+		if !f.matchesNearby(s, bandNorm) {
+			return false
+		}
+	} else {
+		// DX/DE continent filters.
+		if !passesStringFilter(dxCont, f.DXContinents, f.BlockDXContinents, f.AllDXContinents, f.BlockAllDXContinents) {
+			return false
+		}
+		if !passesStringFilter(deCont, f.DEContinents, f.BlockDEContinents, f.AllDEContinents, f.BlockAllDEContinents) {
+			return false
+		}
 
-	// DX/DE CQ zones.
-	if !passesIntFilter(s.DXMetadata.CQZone, f.DXZones, f.BlockDXZones, f.AllDXZones, f.BlockAllDXZones, IsSupportedZone) {
-		return false
-	}
-	if !passesIntFilter(s.DEMetadata.CQZone, f.DEZones, f.BlockDEZones, f.AllDEZones, f.BlockAllDEZones, IsSupportedZone) {
-		return false
-	}
+		// DX/DE CQ zones.
+		if !passesIntFilter(s.DXMetadata.CQZone, f.DXZones, f.BlockDXZones, f.AllDXZones, f.BlockAllDXZones, IsSupportedZone) {
+			return false
+		}
+		if !passesIntFilter(s.DEMetadata.CQZone, f.DEZones, f.BlockDEZones, f.AllDEZones, f.BlockAllDEZones, IsSupportedZone) {
+			return false
+		}
 
-	// DX/DE ADIF (DXCC) filters.
-	if !passesIntFilter(s.DXMetadata.ADIF, f.DXDXCC, f.BlockDXDXCC, f.AllDXDXCC, f.BlockAllDXDXCC, nil) {
-		return false
-	}
-	if !passesIntFilter(s.DEMetadata.ADIF, f.DEDXCC, f.BlockDEDXCC, f.AllDEDXCC, f.BlockAllDEDXCC, nil) {
-		return false
-	}
+		// DX/DE ADIF (DXCC) filters.
+		if !passesIntFilter(s.DXMetadata.ADIF, f.DXDXCC, f.BlockDXDXCC, f.AllDXDXCC, f.BlockAllDXDXCC, nil) {
+			return false
+		}
+		if !passesIntFilter(s.DEMetadata.ADIF, f.DEDXCC, f.BlockDEDXCC, f.AllDEDXCC, f.BlockAllDEDXCC, nil) {
+			return false
+		}
 
-	// 2-character grid filters.
-	if !passesStringFilter(prefix2(dxGrid2), f.DXGrid2Prefixes, f.BlockDXGrid2, f.AllDXGrid2, f.BlockAllDXGrid2) {
-		return false
-	}
-	if !passesStringFilter(prefix2(deGrid2), f.DEGrid2Prefixes, f.BlockDEGrid2, f.AllDEGrid2, f.BlockAllDEGrid2) {
-		return false
+		// 2-character grid filters.
+		if !passesStringFilter(prefix2(dxGrid2), f.DXGrid2Prefixes, f.BlockDXGrid2, f.AllDXGrid2, f.BlockAllDXGrid2) {
+			return false
+		}
+		if !passesStringFilter(prefix2(deGrid2), f.DEGrid2Prefixes, f.BlockDEGrid2, f.AllDEGrid2, f.BlockAllDEGrid2) {
+			return false
+		}
 	}
 
 	// Apply DX callsign blocklist first (deny wins).
@@ -1407,6 +1632,64 @@ func (f *Filter) matchesWithPath(s *spot.Spot, pathClass string) bool {
 	}
 
 	return true // Passed all filters
+}
+
+func (f *Filter) matchesNearby(s *spot.Spot, bandNorm string) bool {
+	if f == nil || s == nil {
+		return false
+	}
+	if bandNorm == "" || bandNorm == "???" {
+		bandNorm = spot.NormalizeBand(spot.FreqToBand(s.Frequency))
+	}
+	if bandNorm == "" || bandNorm == "???" {
+		return false
+	}
+	useCoarse := bandNorm == "160m" || bandNorm == "80m" || bandNorm == "60m"
+	userCell := f.NearbyUserFine
+	if useCoarse {
+		userCell = f.NearbyUserCoarse
+	}
+	if userCell == pathreliability.InvalidCell {
+		return false
+	}
+	dxCell, deCell := f.nearbySpotCells(s, useCoarse)
+	if dxCell == pathreliability.InvalidCell || deCell == pathreliability.InvalidCell {
+		return false
+	}
+	return userCell == dxCell || userCell == deCell
+}
+
+func (f *Filter) nearbySpotCells(s *spot.Spot, useCoarse bool) (pathreliability.CellID, pathreliability.CellID) {
+	if s == nil {
+		return pathreliability.InvalidCell, pathreliability.InvalidCell
+	}
+	dxGrid := strings.TrimSpace(s.DXMetadata.Grid)
+	deGrid := strings.TrimSpace(s.DEMetadata.Grid)
+	if useCoarse {
+		if dxGrid == "" || deGrid == "" {
+			return pathreliability.InvalidCell, pathreliability.InvalidCell
+		}
+		return pathreliability.EncodeCoarseCell(dxGrid),
+			pathreliability.EncodeCoarseCell(deGrid)
+	}
+	if dxGrid == "" || deGrid == "" {
+		return pathreliability.InvalidCell, pathreliability.InvalidCell
+	}
+	dxCell := pathreliability.InvalidCell
+	if s.DXCellID != 0 {
+		dxCell = pathreliability.CellID(s.DXCellID)
+	}
+	if dxCell == pathreliability.InvalidCell {
+		dxCell = pathreliability.EncodeCell(dxGrid)
+	}
+	deCell := pathreliability.InvalidCell
+	if s.DECellID != 0 {
+		deCell = pathreliability.CellID(s.DECellID)
+	}
+	if deCell == pathreliability.InvalidCell {
+		deCell = pathreliability.EncodeCell(deGrid)
+	}
+	return dxCell, deCell
 }
 
 // Purpose: Evaluate a string token against allow/block lists.
@@ -2189,6 +2472,10 @@ func (f *Filter) normalizeDefaults() {
 	if len(f.DEDXCC) == 0 {
 		f.AllDEDXCC = true
 	}
+	f.NearbyEnabled = false
+	f.NearbySnapshot = nil
+	f.NearbyUserFine = pathreliability.InvalidCell
+	f.NearbyUserCoarse = pathreliability.InvalidCell
 }
 
 // Purpose: Allow or block a DX 2-character grid prefix.

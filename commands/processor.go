@@ -294,6 +294,18 @@ func buildHelpCatalog(dialect string) helpCatalog {
 	)
 	add("SET NOISE", "SET NOISE - Set noise class.", setNoiseLines)
 
+	passNearbyLines := helpEntryLines(
+		"PASS NEARBY - Toggle nearby filtering.",
+		[]string{"PASS NEARBY ON|OFF"},
+		nil,
+		[]string{
+			"Requires SET GRID. Uses H3 L1 on 160/80/60m and L2 on all other bands.",
+			"Location filters are suspended while NEARBY is ON.",
+			"Setting location filters while NEARBY is ON is rejected with a warning.",
+		},
+	)
+	add("PASS NEARBY", "PASS NEARBY - Toggle nearby filtering.", passNearbyLines)
+
 	setSolarLines := helpEntryLines(
 		"SET SOLAR - Opt into solar summaries.",
 		[]string{"SET SOLAR <15|30|60|OFF>"},
@@ -474,6 +486,7 @@ func buildHelpCatalog(dialect string) helpCatalog {
 			"SET DIAG",
 			"SET GRID",
 			"SET NOISE",
+			"PASS NEARBY",
 			"SHOW/FILTER",
 			"SH/FILTER",
 			"RESET FILTER",
@@ -585,6 +598,7 @@ func buildHelpCatalog(dialect string) helpCatalog {
 			"SET DIAG",
 			"SET GRID",
 			"SET NOISE",
+			"PASS NEARBY",
 			"SHOW FILTER",
 			"PASS",
 			"REJECT",
@@ -605,6 +619,8 @@ func normalizeHelpTopic(dialect string, topic string) string {
 	upper = strings.Join(strings.Fields(upper), " ")
 
 	switch {
+	case strings.HasPrefix(upper, "PASS NEARBY"):
+		return "PASS NEARBY"
 	case strings.HasPrefix(upper, "SHOW DXCC"):
 		return "SHOW DXCC"
 	case strings.HasPrefix(upper, "SHOW MYDX"):
@@ -633,6 +649,8 @@ func normalizeHelpTopic(dialect string, topic string) string {
 		return "DX"
 	case upper == "SHOW":
 		return "SHOW"
+	case upper == "NEARBY":
+		return "PASS NEARBY"
 	}
 
 	if dialect == "cc" {
@@ -840,6 +858,7 @@ func filterHelpLines(dialect string) []string {
 		"PASS WCY | REJECT WCY",
 		"PASS ANNOUNCE | REJECT ANNOUNCE",
 		"PASS SELF | REJECT SELF",
+		"PASS NEARBY ON|OFF",
 	}
 	if strings.EqualFold(strings.TrimSpace(dialect), "cc") {
 		lines = append(lines,

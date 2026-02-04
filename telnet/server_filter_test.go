@@ -23,6 +23,13 @@ func newTestPathPredictor() *pathreliability.Predictor {
 	return pathreliability.NewPredictor(cfg, []string{"20m"})
 }
 
+func requireH3Mappings(t *testing.T) {
+	t.Helper()
+	if err := pathreliability.InitH3MappingsFromDir("data/h3"); err != nil {
+		t.Skipf("InitH3Mappings unavailable: %v", err)
+	}
+}
+
 const sampleCTYPLIST = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
@@ -1336,6 +1343,81 @@ func TestDialectWelcomeLine(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToUpper(line), "HELP") {
 		t.Fatalf("expected welcome line to mention HELP, got %q", line)
+	}
+}
+
+func TestPassNearbyOnOff(t *testing.T) {
+	requireH3Mappings(t)
+	client := newTestClient()
+	engine := newFilterCommandEngine()
+
+	grid := "FN31"
+	client.grid = grid
+	client.gridCell = pathreliability.EncodeCell(grid)
+	client.gridCoarseCell = pathreliability.EncodeCoarseCell(grid)
+
+	resp, handled := engine.Handle(client, "PASS NEARBY ON")
+	if !handled {
+		t.Fatalf("PASS NEARBY ON not handled")
+	}
+	if resp != "Nearby filter enabled.\n" {
+		t.Fatalf("unexpected response: %q", resp)
+	}
+	if !client.filter.NearbyActive() {
+		t.Fatalf("expected nearby filter to be enabled")
+	}
+
+	resp, handled = engine.Handle(client, "PASS NEARBY OFF")
+	if !handled {
+		t.Fatalf("PASS NEARBY OFF not handled")
+	}
+	if resp != "Nearby filter disabled.\n" {
+		t.Fatalf("unexpected response: %q", resp)
+	}
+	if client.filter.NearbyActive() {
+		t.Fatalf("expected nearby filter to be disabled")
+	}
+}
+
+func TestPassNearbyOnRequiresGrid(t *testing.T) {
+	client := newTestClient()
+	engine := newFilterCommandEngine()
+
+	resp, handled := engine.Handle(client, "PASS NEARBY ON")
+	if !handled {
+		t.Fatalf("PASS NEARBY ON not handled")
+	}
+	if resp != nearbyMissingGridMsg {
+		t.Fatalf("unexpected response: %q", resp)
+	}
+	if client.filter.NearbyActive() {
+		t.Fatalf("expected nearby to remain disabled when grid is missing")
+	}
+}
+
+func TestNearbyBlocksLocationFilters(t *testing.T) {
+	requireH3Mappings(t)
+	client := newTestClient()
+	engine := newFilterCommandEngine()
+
+	grid := "FN31"
+	client.grid = grid
+	client.gridCell = pathreliability.EncodeCell(grid)
+	client.gridCoarseCell = pathreliability.EncodeCoarseCell(grid)
+
+	if resp, handled := engine.Handle(client, "PASS NEARBY ON"); !handled || resp == "" {
+		t.Fatalf("expected nearby enable to succeed, got %q", resp)
+	}
+
+	resp, handled := engine.Handle(client, "PASS DXCONT EU")
+	if !handled {
+		t.Fatalf("PASS DXCONT not handled")
+	}
+	if resp != nearbyLocationFilterWarning {
+		t.Fatalf("unexpected response: %q", resp)
+	}
+	if client.filter.DXContinents["EU"] {
+		t.Fatalf("expected location filter changes to be rejected while nearby is on")
 	}
 }
 

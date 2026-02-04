@@ -3,6 +3,7 @@ package filter
 import (
 	"testing"
 
+	"dxcluster/pathreliability"
 	"dxcluster/spot"
 )
 
@@ -590,5 +591,117 @@ func TestMatchesDefaultsToInsufficientPathClass(t *testing.T) {
 	s := &spot.Spot{Mode: "CW", Band: "20m"}
 	if f.Matches(s) {
 		t.Fatalf("expected default path class to be insufficient and fail HIGH-only filter")
+	}
+}
+
+func requireH3Mappings(t *testing.T) {
+	t.Helper()
+	if err := pathreliability.InitH3MappingsFromDir("data/h3"); err != nil {
+		t.Skipf("InitH3Mappings unavailable: %v", err)
+	}
+}
+
+func TestNearbyFiltersMatchAndBypassLocationFilters(t *testing.T) {
+	requireH3Mappings(t)
+	userFine := pathreliability.EncodeCell("FN31")
+	userCoarse := pathreliability.EncodeCoarseCell("FN31")
+	if userFine == pathreliability.InvalidCell || userCoarse == pathreliability.InvalidCell {
+		t.Fatalf("expected valid H3 cells for FN31")
+	}
+
+	f := NewFilter()
+	if err := f.EnableNearby(userFine, userCoarse); err != nil {
+		t.Fatalf("EnableNearby failed: %v", err)
+	}
+	f.SetDXContinent("EU", true) // should be ignored while nearby is on
+
+	s := spot.NewSpot("K1ABC", "W1XYZ", 14074.0, "FT8")
+	s.DXMetadata.Grid = "FN31"
+	s.DEMetadata.Grid = "EM10"
+	s.DXMetadata.Continent = "NA"
+	s.DEMetadata.Continent = "NA"
+	s.EnsureNormalized()
+
+	if !f.Matches(s) {
+		t.Fatalf("expected nearby match to pass and bypass location filters")
+	}
+}
+
+func TestNearbyRejectsMissingGridOrBand(t *testing.T) {
+	requireH3Mappings(t)
+	userFine := pathreliability.EncodeCell("FN31")
+	userCoarse := pathreliability.EncodeCoarseCell("FN31")
+	f := NewFilter()
+	if err := f.EnableNearby(userFine, userCoarse); err != nil {
+		t.Fatalf("EnableNearby failed: %v", err)
+	}
+
+	missingGrid := &spot.Spot{Mode: "CW", Band: "20m"}
+	if f.Matches(missingGrid) {
+		t.Fatalf("expected missing grids to be rejected when nearby is enabled")
+	}
+
+	unknownBand := &spot.Spot{
+		Mode: "CW",
+		Band: "???",
+		DXMetadata: spot.CallMetadata{
+			Grid: "FN31",
+		},
+		DEMetadata: spot.CallMetadata{
+			Grid: "FN31",
+		},
+	}
+	if f.Matches(unknownBand) {
+		t.Fatalf("expected unknown band to be rejected when nearby is enabled")
+	}
+}
+
+func TestNearbyUsesCoarseFor60m(t *testing.T) {
+	requireH3Mappings(t)
+	userFine := pathreliability.EncodeCell("FN31")
+	userCoarse := pathreliability.EncodeCoarseCell("FN31")
+	if userFine == pathreliability.InvalidCell || userCoarse == pathreliability.InvalidCell {
+		t.Fatalf("expected valid H3 cells for FN31")
+	}
+
+	f := NewFilter()
+	if err := f.EnableNearby(userFine, userCoarse); err != nil {
+		t.Fatalf("EnableNearby failed: %v", err)
+	}
+
+	spotSameFine := &spot.Spot{
+		Mode: "CW",
+		Band: "60m",
+		DXMetadata: spot.CallMetadata{
+			Grid: "FN31",
+		},
+		DEMetadata: spot.CallMetadata{
+			Grid: "EM10",
+		},
+	}
+	if !f.Matches(spotSameFine) {
+		t.Fatalf("expected 60m nearby match to pass with coarse match")
+	}
+}
+
+func TestNearbySnapshotRestore(t *testing.T) {
+	requireH3Mappings(t)
+	userFine := pathreliability.EncodeCell("FN31")
+	userCoarse := pathreliability.EncodeCoarseCell("FN31")
+	f := NewFilter()
+	f.SetDXContinent("EU", true)
+	f.SetDEZone(5, true)
+	if err := f.EnableNearby(userFine, userCoarse); err != nil {
+		t.Fatalf("EnableNearby failed: %v", err)
+	}
+	f.ResetDXContinents()
+	f.ResetDEZones()
+	f.DisableNearby()
+
+	if f.AllDXContinents {
+		t.Fatalf("expected DX continent whitelist to be restored after disabling nearby")
+	}
+	if !f.DEZones[5] {
+		t.Fatalf("expected DE zone whitelist to be restored after disabling nearby")
 	}
 }

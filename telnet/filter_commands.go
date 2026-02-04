@@ -8,6 +8,7 @@ import (
 
 	"dxcluster/cty"
 	"dxcluster/filter"
+	"dxcluster/pathreliability"
 	"dxcluster/spot"
 )
 
@@ -57,6 +58,22 @@ type filterCommandEngine struct {
 	ctyLookup      func() *cty.CTYDatabase
 }
 
+const nearbyLocationFilterWarning = "This filter is disabled when NEARBY ON. Disable NEARBY if you want to use regular location filters\n"
+const nearbyUsageMsg = "Usage: PASS NEARBY ON|OFF\nType HELP for usage.\n"
+const nearbyMissingGridMsg = "Grid not set. Use SET GRID <4-6 char maidenhead>.\n"
+const nearbyUnavailableMsg = "Unable to enable NEARBY: invalid grid or H3 tables unavailable.\n"
+
+var locationFilterDomains = map[string]bool{
+	"DXGRID2": true,
+	"DEGRID2": true,
+	"DXCONT":  true,
+	"DECONT":  true,
+	"DXZONE":  true,
+	"DEZONE":  true,
+	"DXDXCC":  true,
+	"DEDXCC":  true,
+}
+
 func newFilterCommandEngine() *filterCommandEngine {
 	return newFilterCommandEngineWithCTY(nil)
 }
@@ -104,6 +121,7 @@ func (e *filterCommandEngine) registerDomains() {
 		newCallPatternHandler("DECALL"),
 		newConfidenceHandler(),
 		newPathHandler(),
+		newNearbyHandler(),
 		newContinentHandler("DXCONT", func(f *filter.Filter, value string, allowed bool) { f.SetDXContinent(value, allowed) },
 			func(f *filter.Filter) (bool, bool, map[string]bool, map[string]bool) {
 				return f.AllDXContinents, f.BlockAllDXContinents, f.DXContinents, f.BlockDXContinents
@@ -271,6 +289,18 @@ func (e *filterCommandEngine) execute(client *Client, cmd parsedFilterCommand) (
 			return unknownRejectTypeMsg, false
 		default:
 			return invalidFilterCommandMsg, false
+		}
+	}
+
+	if cmd.action == actionAllow || cmd.action == actionBlock {
+		domainKey := strings.ToUpper(strings.TrimSpace(cmd.domain))
+		if locationFilterDomains[domainKey] {
+			client.filterMu.RLock()
+			nearby := client.filter != nil && client.filter.NearbyActive()
+			client.filterMu.RUnlock()
+			if nearby {
+				return nearbyLocationFilterWarning, false
+			}
 		}
 	}
 
@@ -855,6 +885,51 @@ func newPathHandler() *domainHandler {
 	}
 }
 
+func newNearbyHandler() *domainHandler {
+	return &domainHandler{
+		name: "NEARBY",
+		apply: func(c *Client, action filterAction, args []string) (string, bool) {
+			if c == nil || c.filter == nil {
+				return "Filter unavailable.\n", false
+			}
+			if len(args) != 1 {
+				return nearbyUsageMsg, false
+			}
+			mode := strings.ToUpper(strings.TrimSpace(args[0]))
+			switch mode {
+			case "ON":
+				state := c.pathSnapshot()
+				grid := strings.TrimSpace(state.grid)
+				if grid == "" {
+					return nearbyMissingGridMsg, false
+				}
+				userFine := state.gridCell
+				if userFine == pathreliability.InvalidCell {
+					userFine = pathreliability.EncodeCell(grid)
+				}
+				userCoarse := state.gridCoarseCell
+				if userCoarse == pathreliability.InvalidCell {
+					userCoarse = pathreliability.EncodeCoarseCell(grid)
+				}
+				if userFine == pathreliability.InvalidCell || userCoarse == pathreliability.InvalidCell {
+					return nearbyUnavailableMsg, false
+				}
+				c.updateFilter(func(f *filter.Filter) {
+					_ = f.EnableNearby(userFine, userCoarse)
+				})
+				return "Nearby filter enabled.\n", true
+			case "OFF":
+				c.updateFilter(func(f *filter.Filter) {
+					f.DisableNearby()
+				})
+				return "Nearby filter disabled.\n", true
+			default:
+				return nearbyUsageMsg, false
+			}
+		},
+	}
+}
+
 func newContinentHandler(name string, setter func(*filter.Filter, string, bool), snapshot func(*filter.Filter) (bool, bool, map[string]bool, map[string]bool)) *domainHandler {
 	return &domainHandler{
 		name: name,
@@ -1332,6 +1407,12 @@ func formatFilterSnapshot(f *filter.Filter, ctyLookup func() *cty.CTYDatabase) s
 	wcySummary, wcyLine := toggleSnapshot("WCY", f.WCYEnabled(), f.AllowWCY)
 	announceSummary, announceLine := toggleSnapshot("ANNOUNCE", f.AnnounceEnabled(), f.AllowAnnounce)
 	selfSummary, selfLine := toggleSnapshot("SELF", f.SelfEnabled(), f.AllowSelf)
+	nearbySummary := "NEARBY=OFF"
+	nearbyLine := "NEARBY: OFF\n"
+	if f.NearbyActive() {
+		nearbySummary = "NEARBY=ON"
+		nearbyLine = "NEARBY: ON (location filters suspended)\n"
+	}
 
 	var b strings.Builder
 	summaryPrefix := "Current filters: "
@@ -1357,6 +1438,7 @@ func formatFilterSnapshot(f *filter.Filter, ctyLookup func() *cty.CTYDatabase) s
 		summaryAllowBlockField("DEDXCC", deDXCC, maxFieldLen),
 		summaryAllowBlockField("DXGRID2", dxGrid2, maxFieldLen),
 		summaryAllowBlockField("DEGRID2", deGrid2, maxFieldLen),
+		clampSummaryField(nearbySummary, maxFieldLen),
 		clampSummaryField(beaconSummary, maxFieldLen),
 		clampSummaryField(wwvSummary, maxFieldLen),
 		clampSummaryField(wcySummary, maxFieldLen),
@@ -1382,6 +1464,7 @@ func formatFilterSnapshot(f *filter.Filter, ctyLookup func() *cty.CTYDatabase) s
 	b.WriteString(formatAllowBlockLine("DEDXCC", deDXCC))
 	b.WriteString(formatAllowBlockLine("DXGRID2", dxGrid2))
 	b.WriteString(formatAllowBlockLine("DEGRID2", deGrid2))
+	b.WriteString(nearbyLine)
 	b.WriteString(beaconLine)
 	b.WriteString(wwvLine)
 	b.WriteString(wcyLine)

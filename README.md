@@ -211,6 +211,7 @@ Effective labels in the snapshot use a fixed vocabulary: `all pass`, `all except
 - `PASS DECALL <pattern>[,<pattern>...]` - begins delivering only spots with DE/spotter calls matching the supplied patterns.
 - `PASS CONFIDENCE <symbol>[,<symbol>...]` - enables the comma- or space-separated list of consensus glyphs (valid symbols: `?`, `S`, `C`, `P`, `V`, `B`; use `ALL` to accept every glyph).
 - `PASS PATH <class>[,<class>...]` - enables the comma- or space-separated list of path prediction classes (HIGH/MEDIUM/LOW/UNLIKELY/INSUFFICIENT; use `ALL` to accept every class). When the path predictor is disabled, PATH commands are ignored with a warning.
+- `PASS NEARBY ON|OFF` - when ON, deliver spots whose DX or DE H3 cell matches your grid (L1 for 160/80/60m, L2 otherwise). Location filters (DX/DE CONT, ZONE, GRID2, DXCC) are suspended while NEARBY is ON, and attempts to change them are rejected with a warning. OFF restores the prior location filter state. Requires `SET GRID`.
 - `PASS BEACON` - explicitly enable delivery of beacon spots (DX calls ending `/B`; enabled by default).
 - `PASS SELF` - always deliver spots where the DX callsign matches your normalized callsign (even if filters would normally block).
 - `REJECT BAND <band>[,<band>...]` - disables only the comma- or space-separated list of bands provided (use `ALL` to block every band).
