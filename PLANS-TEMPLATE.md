@@ -10,6 +10,7 @@
 - Keep history append-only: use Plan Index and Decision Log.
 - The **Current State Snapshot** is mandatory and must be updated on every plan change, scope decision, or end-of-session update.
 - The **Turn Log** is mandatory and append-only; add one line per significant turn (decision, scope change, implementation step, verification run).
+- **Compaction rule (mandatory)**: When this file exceeds ~1,000 lines or every 25–50 turns (whichever comes first), move implemented plan entries, old Turn Log entries, and any superseded Scope Ledger rows to `PLANS-ARCHIVE-{branch}.md`. Keep only the current plan, live Scope Ledger, last 20 Turn Log entries, Decision Log, and Plan Index in this file. Update the Current State Snapshot and Plan Index to reference the archive.
 
 ---
 
@@ -105,13 +106,13 @@ Scope Ledger status updates:
 
 ---
 
-## Scope Ledger vM
+## Scope Ledger vM (LIVE)
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
 | S1 | <scope item> | Agreed/Pending | |
 
 Status values: Agreed/Pending, Implemented, Deferred, Superseded (per AGENTS.md)  
-Completed items remain inline - never removed, only status changes.
+Completed items remain inline until compaction; superseded items move to archive during compaction.
 
 ---
 
@@ -161,4 +162,25 @@ Planned | In Progress | Complete
 ---
 
 ## Context for Resume
-Summarize the current plan, scope state, and any critical decisions.
+**Done**:
+- S# — <short description>
+**In Progress**:
+- S# — <short description> — <blocker if any>
+**Next**:
+- S# — <short description>
+**Key Decisions**:
+- D# — <short title>
+**Files Hot**:
+- <file paths likely to be touched next>
+
+---
+
+## PLANS-ARCHIVE-{branch}.md Guidelines (Template)
+- Purpose: store implemented Plan vN entries, older Turn Log entries, and superseded Scope Ledger rows.
+- Structure:
+  - Archive Index (date + ranges of moved content)
+  - Archived Plans (full Plan vN blocks)
+  - Archived Scope Ledger rows (only rows moved during compaction)
+  - Archived Turn Log (older entries, optionally summarized every 20–50 turns)
+- Do not delete history; only move it from the main PLANS file to the archive.
+*** End Patch"}}
