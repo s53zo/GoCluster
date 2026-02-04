@@ -626,10 +626,14 @@ type CallCorrectionConfig struct {
 	// callcorr_YYYY-MM-DD.db file is written under data/analysis.
 	DebugLogFile string `yaml:"debug_log_file"`
 	// Quality-based anchors: optional per-frequency-bin confidence store.
-	QualityBinHz            int `yaml:"quality_bin_hz"`
-	QualityGoodThreshold    int `yaml:"quality_good_threshold"`
-	QualityNewCallIncrement int `yaml:"quality_newcall_increment"`
-	QualityBustedDecrement  int `yaml:"quality_busted_decrement"`
+	QualityBinHz                      int   `yaml:"quality_bin_hz"`
+	QualityGoodThreshold              int   `yaml:"quality_good_threshold"`
+	QualityNewCallIncrement           int   `yaml:"quality_newcall_increment"`
+	QualityBustedDecrement            int   `yaml:"quality_busted_decrement"`
+	CallQualityTTLSeconds             int   `yaml:"call_quality_ttl_seconds"`
+	CallQualityMaxEntries             int   `yaml:"call_quality_max_entries"`
+	CallQualityCleanupIntervalSeconds int   `yaml:"call_quality_cleanup_interval_seconds"`
+	CallQualityPinPriors              *bool `yaml:"call_quality_pin_priors"`
 	// Strategy selects how consensus is computed:
 	//   - "majority": pick the most-reported call on-frequency (unique spotters); distance is only a safety cap.
 	//     Other values are accepted for compatibility but currently coerced to majority.
@@ -1137,6 +1141,19 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.CallCorrection.QualityBustedDecrement == 0 {
 		cfg.CallCorrection.QualityBustedDecrement = 1
+	}
+	if cfg.CallCorrection.CallQualityTTLSeconds <= 0 {
+		cfg.CallCorrection.CallQualityTTLSeconds = 86400
+	}
+	if cfg.CallCorrection.CallQualityMaxEntries <= 0 {
+		cfg.CallCorrection.CallQualityMaxEntries = 200000
+	}
+	if cfg.CallCorrection.CallQualityCleanupIntervalSeconds <= 0 {
+		cfg.CallCorrection.CallQualityCleanupIntervalSeconds = 600
+	}
+	if cfg.CallCorrection.CallQualityPinPriors == nil {
+		v := true
+		cfg.CallCorrection.CallQualityPinPriors = &v
 	}
 	if strings.TrimSpace(cfg.CallCorrection.Strategy) == "" {
 		cfg.CallCorrection.Strategy = "majority"
@@ -2080,6 +2097,15 @@ func (c *Config) Print() {
 		c.CallCorrection.VoiceFrequencyToleranceHz,
 		c.CallCorrection.VoiceCandidateWindowKHz,
 		c.CallCorrection.MinSNRVoice)
+	pinPriors := true
+	if c.CallCorrection.CallQualityPinPriors != nil {
+		pinPriors = *c.CallCorrection.CallQualityPinPriors
+	}
+	fmt.Printf("Call correction quality: ttl=%ds max_entries=%d cleanup=%ds pin_priors=%t\n",
+		c.CallCorrection.CallQualityTTLSeconds,
+		c.CallCorrection.CallQualityMaxEntries,
+		c.CallCorrection.CallQualityCleanupIntervalSeconds,
+		pinPriors)
 
 	harmonicStatus := "disabled"
 	if c.Harmonics.Enabled {

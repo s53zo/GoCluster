@@ -34,6 +34,7 @@ type cacheShard struct {
 	cache          map[uint32]cachedEntry
 	processedCount uint64
 	duplicateCount uint64
+	peak           int
 }
 
 // cachedEntry tracks when we last saw a hash and the associated SNR so we can
@@ -46,6 +47,11 @@ type cachedEntry struct {
 
 // shardCount must remain a power of two so we can use bit masking for fast shard selection.
 const shardCount = 64
+
+const (
+	dedupCompactMinPeak     = 1024
+	dedupCompactShrinkRatio = 0.5
+)
 
 // Purpose: Construct a deduplicator with windowed suppression and channels.
 // Key aspects: Sizes input/output buffers and initializes shard maps.
@@ -181,6 +187,7 @@ func (d *Deduplicator) processSpot(s *spot.Spot) {
 		if upgradeToReported || stronger {
 			// Replace the cached timestamp/SNR with the stronger or newly reported spot and forward it.
 			shard.cache[hash] = cachedEntry{when: s.Time, snr: s.Report, hasReport: s.HasReport}
+			d.updateShardPeakLocked(shard)
 			shard.mu.Unlock()
 		} else {
 			shard.duplicateCount++
@@ -190,6 +197,7 @@ func (d *Deduplicator) processSpot(s *spot.Spot) {
 	} else {
 		// Add to cache
 		shard.cache[hash] = cachedEntry{when: s.Time, snr: s.Report, hasReport: s.HasReport}
+		d.updateShardPeakLocked(shard)
 		shard.mu.Unlock()
 	}
 
@@ -289,6 +297,7 @@ func (d *Deduplicator) cleanup() {
 				delete(shard.cache, hash)
 				removed++
 			}
+			d.maybeCompactShardLocked(shard)
 			shard.mu.Unlock()
 		}
 	}
@@ -319,4 +328,32 @@ func (d *Deduplicator) GetStats() (processed uint64, duplicates uint64, cacheSiz
 func (d *Deduplicator) shardFor(hash uint32) *cacheShard {
 	idx := hash & (shardCount - 1)
 	return &d.shards[idx]
+}
+
+func (d *Deduplicator) updateShardPeakLocked(shard *cacheShard) {
+	if shard == nil {
+		return
+	}
+	if size := len(shard.cache); size > shard.peak {
+		shard.peak = size
+	}
+}
+
+func (d *Deduplicator) maybeCompactShardLocked(shard *cacheShard) {
+	if shard == nil {
+		return
+	}
+	if shard.peak < dedupCompactMinPeak {
+		return
+	}
+	threshold := int(float64(shard.peak) * dedupCompactShrinkRatio)
+	if len(shard.cache) >= threshold {
+		return
+	}
+	next := make(map[uint32]cachedEntry, len(shard.cache))
+	for k, v := range shard.cache {
+		next[k] = v
+	}
+	shard.cache = next
+	shard.peak = len(next)
 }

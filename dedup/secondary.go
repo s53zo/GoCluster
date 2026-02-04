@@ -18,6 +18,11 @@ import (
 // secondaryShardCount is kept small and power-of-two for fast masking.
 const secondaryShardCount = 64
 
+const (
+	secondaryCompactMinPeak     = 1024
+	secondaryCompactShrinkRatio = 0.5
+)
+
 // SecondaryKeyMode selects which DE metadata dimension is hashed for secondary dedupe.
 type SecondaryKeyMode uint8
 
@@ -51,6 +56,7 @@ type secondaryShard struct {
 	cache          map[uint32]secondaryEntry
 	processedCount uint64
 	duplicateCount uint64
+	peak           int
 }
 
 type secondaryEntry struct {
@@ -141,6 +147,7 @@ func (d *SecondaryDeduper) ShouldForward(s *spot.Spot) bool {
 		if upgradeToReported || stronger {
 			// Track and forward the stronger or newly reported representative.
 			shard.cache[hash] = secondaryEntry{when: s.Time, snr: s.Report, hasReport: s.HasReport}
+			d.updateShardPeakLocked(shard)
 			shard.mu.Unlock()
 			return true
 		}
@@ -150,6 +157,7 @@ func (d *SecondaryDeduper) ShouldForward(s *spot.Spot) bool {
 	}
 
 	shard.cache[hash] = secondaryEntry{when: s.Time, snr: s.Report, hasReport: s.HasReport}
+	d.updateShardPeakLocked(shard)
 	shard.mu.Unlock()
 	return true
 }
@@ -178,6 +186,34 @@ func (d *SecondaryDeduper) GetStats() (processed uint64, duplicates uint64, cach
 func (d *SecondaryDeduper) shardFor(hash uint32) *secondaryShard {
 	idx := hash & (secondaryShardCount - 1)
 	return &d.shards[idx]
+}
+
+func (d *SecondaryDeduper) updateShardPeakLocked(shard *secondaryShard) {
+	if shard == nil {
+		return
+	}
+	if size := len(shard.cache); size > shard.peak {
+		shard.peak = size
+	}
+}
+
+func (d *SecondaryDeduper) maybeCompactShardLocked(shard *secondaryShard) {
+	if shard == nil {
+		return
+	}
+	if shard.peak < secondaryCompactMinPeak {
+		return
+	}
+	threshold := int(float64(shard.peak) * secondaryCompactShrinkRatio)
+	if len(shard.cache) >= threshold {
+		return
+	}
+	next := make(map[uint32]secondaryEntry, len(shard.cache))
+	for k, v := range shard.cache {
+		next[k] = v
+	}
+	shard.cache = next
+	shard.peak = len(next)
 }
 
 // Purpose: Periodically purge expired secondary dedupe entries.
@@ -210,11 +246,16 @@ func (d *SecondaryDeduper) cleanup() {
 	for i := range d.shards {
 		shard := &d.shards[i]
 		shard.mu.Lock()
+		removed := false
 		for hash, entry := range shard.cache {
 			age := now.Sub(entry.when)
 			if age > d.window {
 				delete(shard.cache, hash)
+				removed = true
 			}
+		}
+		if removed {
+			d.maybeCompactShardLocked(shard)
 		}
 		shard.mu.Unlock()
 	}

@@ -75,6 +75,8 @@ const (
 	envBlockProfileRate = "DXC_BLOCK_PROFILE_RATE"
 	// envMutexProfileFraction enables mutex profiling when set to an integer fraction (1/N).
 	envMutexProfileFraction = "DXC_MUTEX_PROFILE_FRACTION"
+	// envMapLogInterval enables periodic map size logging when set to a Go duration.
+	envMapLogInterval = "DXC_MAP_LOG_INTERVAL"
 )
 
 // Version will be set at build time
@@ -378,12 +380,23 @@ func main() {
 		go func() {
 			ticker := time.NewTicker(time.Minute)
 			defer ticker.Stop()
+			compactInterval := time.Hour
+			compactMinPeak := 1000
+			compactRatio := 0.5
+			var lastCompact time.Time
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					pathPredictor.PurgeStale(time.Now().UTC())
+					now := time.Now().UTC()
+					pathPredictor.PurgeStale(now)
+					if lastCompact.IsZero() || now.Sub(lastCompact) >= compactInterval {
+						if compacted := pathPredictor.Compact(compactMinPeak, compactRatio); compacted > 0 {
+							log.Printf("Path predictor compacted %d shards", compacted)
+						}
+						lastCompact = now
+					}
 				}
 			}
 		}()
@@ -470,6 +483,16 @@ func main() {
 	}
 	spot.ConfigureMorseWeights(cfg.CallCorrection.MorseWeights.Insert, cfg.CallCorrection.MorseWeights.Delete, cfg.CallCorrection.MorseWeights.Sub, cfg.CallCorrection.MorseWeights.Scale)
 	spot.ConfigureBaudotWeights(cfg.CallCorrection.BaudotWeights.Insert, cfg.CallCorrection.BaudotWeights.Delete, cfg.CallCorrection.BaudotWeights.Sub, cfg.CallCorrection.BaudotWeights.Scale)
+	pinPriors := true
+	if cfg.CallCorrection.CallQualityPinPriors != nil {
+		pinPriors = *cfg.CallCorrection.CallQualityPinPriors
+	}
+	spot.ConfigureCallQualityStore(
+		time.Duration(cfg.CallCorrection.CallQualityTTLSeconds)*time.Second,
+		cfg.CallCorrection.CallQualityMaxEntries,
+		time.Duration(cfg.CallCorrection.CallQualityCleanupIntervalSeconds)*time.Second,
+		pinPriors,
+	)
 	if priors := strings.TrimSpace(cfg.CallCorrection.QualityPriorsFile); priors != "" {
 		if n, err := spot.LoadCallQualityPriors(priors, cfg.CallCorrection.QualityBinHz); err != nil {
 			log.Printf("Warning: failed to load quality priors from %s: %v", priors, err)
@@ -1032,6 +1055,7 @@ func main() {
 	log.Println("---")
 	maybeStartContentionProfiling()
 	maybeStartHeapLogger()
+	maybeStartMapLogger(statsTracker, pathPredictor, deduplicator, secondaryFast, secondaryMed, secondarySlow)
 	maybeStartDiagServer()
 
 	// Wait for shutdown signal
@@ -1976,15 +2000,9 @@ func processOutputSpots(
 				}
 				tracker.IncrementMode(modeKey)
 
-				sourceName := strings.ToUpper(strings.TrimSpace(s.SourceNode))
-				if sourceName != "" {
-					tracker.IncrementSource(sourceName)
-					tracker.IncrementSourceMode(sourceName, modeKey)
-				}
-				if s.SourceType == spot.SourcePeer {
-					tracker.IncrementSource("P92")
-					tracker.IncrementSourceMode("P92", modeKey)
-				}
+				sourceLabel := sourceStatsLabel(s)
+				tracker.IncrementSource(sourceLabel)
+				tracker.IncrementSourceMode(sourceLabel, modeKey)
 			}
 
 			if gridUpdate != nil {
@@ -3059,6 +3077,49 @@ func applyKnownCallFloor(s *spot.Spot, knownCalls *atomic.Pointer[spot.KnownCall
 		return true
 	}
 	return false
+}
+
+func sourceStatsLabel(s *spot.Spot) string {
+	if s == nil {
+		return "OTHER"
+	}
+	switch s.SourceType {
+	case spot.SourceManual:
+		return "HUMAN"
+	case spot.SourceRBN:
+		return rbnStatsLabel(s.SourceNode)
+	case spot.SourceFT8, spot.SourceFT4:
+		return "RBN-FT"
+	case spot.SourcePSKReporter:
+		return "PSKREPORTER"
+	case spot.SourcePeer:
+		return "PEER"
+	case spot.SourceUpstream:
+		return "UPSTREAM"
+	}
+
+	node := strings.ToUpper(strings.TrimSpace(s.SourceNode))
+	switch node {
+	case "RBN-DIGITAL":
+		return "RBN-DIGITAL"
+	case "RBN":
+		return "RBN"
+	case "PSKREPORTER":
+		return "PSKREPORTER"
+	case "P92":
+		return "PEER"
+	case "UPSTREAM":
+		return "UPSTREAM"
+	}
+	return "OTHER"
+}
+
+func rbnStatsLabel(sourceNode string) string {
+	trimmed := strings.ToUpper(strings.TrimSpace(sourceNode))
+	if trimmed == "RBN-DIGITAL" {
+		return "RBN-DIGITAL"
+	}
+	return "RBN"
 }
 
 // spotsToEntries converts []*spot.Spot to bandmap.SpotEntry using Hz units for frequency.
@@ -5668,6 +5729,61 @@ func maybeStartHeapLogger() {
 				m.HeapObjects,
 				m.NumGC,
 				bytesToMB(m.NextGC))
+		}
+	}()
+}
+
+// maybeStartMapLogger starts periodic map size logging when DXC_MAP_LOG_INTERVAL is set.
+// Purpose: Provide opt-in visibility into map growth for GC diagnostics.
+// Key aspects: Logs bounded cardinalities; no impact when disabled.
+// Upstream: main startup.
+// Downstream: tracker cardinality, dedup stats, predictor bucket counts.
+func maybeStartMapLogger(tracker *stats.Tracker, predictor *pathreliability.Predictor, dedup *dedup.Deduplicator, secondaryFast, secondaryMed, secondarySlow *dedup.SecondaryDeduper) {
+	intervalStr := strings.TrimSpace(os.Getenv(envMapLogInterval))
+	if intervalStr == "" {
+		return
+	}
+	interval, err := time.ParseDuration(intervalStr)
+	if err != nil || interval <= 0 {
+		log.Printf("Map logger disabled (invalid %s=%q)", envMapLogInterval, intervalStr)
+		return
+	}
+	ticker := time.NewTicker(interval)
+	go func() {
+		log.Printf("Map logger enabled (every %s)", interval)
+		for range ticker.C {
+			cq := spot.GlobalCallQualityCounts()
+			sourceCount := 0
+			sourceModeCount := 0
+			if tracker != nil {
+				sourceCount = tracker.SourceCardinality()
+				sourceModeCount = tracker.SourceModeCardinality()
+			}
+
+			primarySize := 0
+			if dedup != nil {
+				_, _, primarySize = dedup.GetStats()
+			}
+			fastSize := 0
+			if secondaryFast != nil {
+				_, _, fastSize = secondaryFast.GetStats()
+			}
+			medSize := 0
+			if secondaryMed != nil {
+				_, _, medSize = secondaryMed.GetStats()
+			}
+			slowSize := 0
+			if secondarySlow != nil {
+				_, _, slowSize = secondarySlow.GetStats()
+			}
+
+			pathBuckets := 0
+			if predictor != nil {
+				pathBuckets = predictor.TotalBuckets()
+			}
+
+			log.Printf("Map sizes: callQuality pinned=%d dynamic=%d; stats sources=%d source-modes=%d; dedup primary=%d secondary fast=%d med=%d slow=%d; path buckets=%d",
+				cq.Pinned, cq.Dynamic, sourceCount, sourceModeCount, primarySize, fastSize, medSize, slowSize, pathBuckets)
 		}
 	}()
 }

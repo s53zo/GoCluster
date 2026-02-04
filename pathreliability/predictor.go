@@ -137,6 +137,22 @@ func (p *Predictor) PurgeStale(now time.Time) int {
 	return removed
 }
 
+// Compact rebuilds shard maps that have shrunk far below peak size.
+func (p *Predictor) Compact(minPeak int, shrinkRatio float64) int {
+	if p == nil || !p.cfg.Enabled || p.combined == nil {
+		return 0
+	}
+	return p.combined.Compact(minPeak, shrinkRatio)
+}
+
+// TotalBuckets returns the total buckets across all stores.
+func (p *Predictor) TotalBuckets() int {
+	if p == nil || !p.cfg.Enabled || p.combined == nil {
+		return 0
+	}
+	return p.combined.TotalBuckets()
+}
+
 // PredictorStats returns counts of active fine/coarse buckets (non-stale).
 type PredictorStats struct {
 	CombinedFine   int

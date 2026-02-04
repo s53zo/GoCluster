@@ -22,6 +22,7 @@ type bucket struct {
 type shard struct {
 	mu      sync.RWMutex
 	buckets map[uint64]*bucket
+	peak    int
 }
 
 // Store aggregates decaying FT8-equiv path stats.
@@ -84,6 +85,9 @@ func (s *Store) updateBucket(key uint64, power float64, weight float64, now time
 			sumPower:   power * weight,
 			weight:     weight,
 			lastUpdate: nowSec,
+		}
+		if len(sh.buckets) > sh.peak {
+			sh.peak = len(sh.buckets)
 		}
 		return
 	}
@@ -221,6 +225,62 @@ func (s *Store) PurgeStale(now time.Time) int {
 		sh.mu.Unlock()
 	}
 	return removed
+}
+
+// Compact rebuilds shard maps when they have shrunk far below their peak size.
+// It preserves all live entries and returns the number of shards compacted.
+func (s *Store) Compact(minPeak int, shrinkRatio float64) int {
+	if s == nil {
+		return 0
+	}
+	if minPeak <= 0 {
+		minPeak = 1000
+	}
+	if shrinkRatio <= 0 || shrinkRatio >= 1 {
+		shrinkRatio = 0.5
+	}
+	compacted := 0
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		current := len(sh.buckets)
+		if current > sh.peak {
+			sh.peak = current
+		}
+		threshold := int(float64(sh.peak) * shrinkRatio)
+		if sh.peak >= minPeak && current < threshold {
+			if current == 0 {
+				sh.buckets = make(map[uint64]*bucket)
+			} else {
+				next := make(map[uint64]*bucket, current)
+				for k, v := range sh.buckets {
+					if v != nil {
+						next[k] = v
+					}
+				}
+				sh.buckets = next
+			}
+			sh.peak = len(sh.buckets)
+			compacted++
+		}
+		sh.mu.Unlock()
+	}
+	return compacted
+}
+
+// TotalBuckets returns the total number of buckets across all shards.
+func (s *Store) TotalBuckets() int {
+	if s == nil {
+		return 0
+	}
+	total := 0
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		total += len(sh.buckets)
+		sh.mu.RUnlock()
+	}
+	return total
 }
 
 // Stats returns counts of active fine/coarse buckets (non-stale).

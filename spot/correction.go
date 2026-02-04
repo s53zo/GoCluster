@@ -406,10 +406,12 @@ func SuggestCallCorrection(subject *Spot, others []bandmap.SpotEntry, settings C
 		}
 	}
 	hasGoodAnchor := false
-	for _, c := range allCalls {
-		if callQuality.IsGood(c, freqHz, &cfg) {
-			hasGoodAnchor = true
-			break
+	if store := currentCallQuality(); store != nil {
+		for _, c := range allCalls {
+			if store.IsGood(c, freqHz, &cfg) {
+				hasGoodAnchor = true
+				break
+			}
 		}
 	}
 	if hasGoodAnchor {
@@ -558,6 +560,10 @@ func findAnchorForCall(bustedCall string, freqHz float64, mode string, candidate
 	if busted == "" || cfg == nil {
 		return "", false
 	}
+	store := currentCallQuality()
+	if store == nil {
+		return "", false
+	}
 	modeKey := strings.TrimSpace(mode)
 	best := ""
 	bestDist := math.MaxInt
@@ -566,7 +572,7 @@ func findAnchorForCall(bustedCall string, freqHz float64, mode string, candidate
 		if c == "" || c == busted {
 			continue
 		}
-		if !callQuality.IsGood(c, freqHz, cfg) {
+		if !store.IsGood(c, freqHz, cfg) {
 			continue
 		}
 		dist := callDistance(busted, c, modeKey, cfg.DistanceModelCW, cfg.DistanceModelRTTY)
@@ -593,7 +599,11 @@ func updateCallQualityForCluster(winnerCall string, freqHz float64, cfg *Correct
 	if cfg == nil || winnerCall == "" || len(clusterSpots) == 0 {
 		return
 	}
-	callQuality.Add(winnerCall, freqHz, cfg.QualityBinHz, cfg.QualityNewCallIncrement)
+	store := currentCallQuality()
+	if store == nil {
+		return
+	}
+	store.Add(winnerCall, freqHz, cfg.QualityBinHz, cfg.QualityNewCallIncrement)
 
 	distinct := make(map[string]struct{})
 	for _, s := range clusterSpots {
@@ -607,7 +617,7 @@ func updateCallQualityForCluster(winnerCall string, freqHz float64, cfg *Correct
 		if call == strutil.NormalizeUpper(winnerCall) {
 			continue
 		}
-		callQuality.Add(call, freqHz, cfg.QualityBinHz, -cfg.QualityBustedDecrement)
+		store.Add(call, freqHz, cfg.QualityBinHz, -cfg.QualityBustedDecrement)
 	}
 }
 

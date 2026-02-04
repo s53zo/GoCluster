@@ -53,7 +53,9 @@ func LoadCallQualityPriors(path string, binSizeHz int) (int, error) {
 				freqHz = v * 1000.0
 			}
 		}
-		callQuality.Add(call, freqHz, binSizeHz, score)
+		if store := currentCallQuality(); store != nil {
+			store.AddPinned(call, freqHz, binSizeHz, score)
+		}
 		applied++
 	}
 	if err := scanner.Err(); err != nil {

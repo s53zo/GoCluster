@@ -13,6 +13,14 @@ A modern Go-based DX cluster that aggregates amateur radio spots, enriches them 
    ```
 4. Connect: `telnet localhost 9300` (or whatever `telnet.port` is set to in `data/config/runtime.yaml`).
 
+## Diagnostics (optional)
+
+- `DXC_PPROF_ADDR` enables the `/debug/pprof/*` server (example: `localhost:6061`).
+- `DXC_HEAP_LOG_INTERVAL` logs heap stats every interval (e.g., `60s`).
+- `DXC_MAP_LOG_INTERVAL` logs key map sizes (call-quality, stats cardinality, dedup caches, path buckets) every interval.
+- `DXC_BLOCK_PROFILE_RATE` enables block profiling (Go duration or nanoseconds).
+- `DXC_MUTEX_PROFILE_FRACTION` enables mutex profiling (integer 1/N).
+
 ## Architecture and Spot Sources
 
 1. **Telnet Server** (`telnet/server.go`) handles client connections, commands, and spot broadcasting using worker goroutines.
@@ -52,6 +60,7 @@ High-level flow:
 - RTTY distance can be ITA2-aware with similar weights (configurable via `call_correction.baudot_weights`: `insert`, `delete`, `sub`, `scale`; defaults 1/1/2/2).
 - If you prefer plain rune-based Levenshtein, set `call_correction.distance_model_cw: plain` and/or `distance_model_rtty: plain`.
 - You can seed call-quality anchors from your own data with `call_correction.quality_priors_file` (format: `CALL SCORE [FREQ_KHZ]`; omit/<=0 freq to apply globally). Higher scores make a call more likely to act as an anchor in that bin.
+- Call-quality anchors are bounded by `call_correction.call_quality_ttl_seconds` and `call_quality_max_entries`; `call_quality_pin_priors` keeps priors non-expiring, and `call_quality_cleanup_interval_seconds` controls the cleanup cadence.
 - You can down-weight noisy reporters via `call_correction.spotter_reliability_file` (format: `SPOTTER WEIGHT 0-1`) and `call_correction.min_spotter_reliability` to ignore spotters below a floor. These weights apply only to call-correction consensus; other processing is unchanged.
 
 ## UI Modes (local console)
@@ -513,7 +522,7 @@ Operational guidance: enable `auto_delete_corrupt_db` only if the archive is tru
 `config.Load` accepts a directory (merging all YAML files); the server defaults to `data/config`. It normalizes missing fields and refuses to start when time strings are invalid. Key fallbacks:
 
 - Stats tickers default to `30s` when unset. Telnet queues fall back to `broadcast_queue_size=2048`, `worker_queue_size=128`, `client_buffer_size=128`, and friendly greeting/duplicate-login messages are injected if blank.
-- Call correction uses conservative baselines unless overridden: `min_consensus_reports=4`, `min_advantage=1`, `min_confidence_percent=70`, `recency_seconds=45`, `max_edit_distance=2`, `frequency_tolerance_hz=0.5`, `voice_frequency_tolerance_hz=2000`, `voice_candidate_window_khz=2`, `min_snr_voice=0`, `invalid_action=broadcast`. Empty distance models inherit from `distance_model` or default to `plain`; negative SNR floors/extras are clamped to zero.
+- Call correction uses conservative baselines unless overridden: `min_consensus_reports=4`, `min_advantage=1`, `min_confidence_percent=70`, `recency_seconds=45`, `max_edit_distance=2`, `frequency_tolerance_hz=0.5`, `voice_frequency_tolerance_hz=2000`, `voice_candidate_window_khz=2`, `min_snr_voice=0`, `invalid_action=broadcast`, `call_quality_ttl_seconds=86400`, `call_quality_max_entries=200000`, `call_quality_cleanup_interval_seconds=600`, `call_quality_pin_priors=true`. Empty distance models inherit from `distance_model` or default to `plain`; negative SNR floors/extras are clamped to zero.
 - Harmonic suppression clamps to sane minimums (`recency_seconds=120`, `max_harmonic_multiple=4`, `frequency_tolerance_hz=20`, `min_report_delta=6`, `min_report_delta_step>=0`).
 - Spot policy defaults prevent runaway averaging: `max_age_seconds=120`, `frequency_averaging_seconds=45`, `frequency_averaging_tolerance_hz=300`, `frequency_averaging_min_reports=4`.
 - Archive defaults keep writes lightweight: `queue_size=10000`, `batch_size=500`, `batch_interval_ms=200`, `cleanup_interval_seconds=3600`, `synchronous=off`, `auto_delete_corrupt_db=false` (`busy_timeout_ms`/`preflight_timeout_ms` are ignored for Pebble).

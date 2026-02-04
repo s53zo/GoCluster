@@ -104,6 +104,32 @@ func (t *Tracker) GetSourceModeCounts() map[string]uint64 {
 	return counts
 }
 
+// Purpose: Return the number of distinct source keys tracked.
+// Key aspects: Iterates sync.Map without allocating a map copy.
+// Upstream: diagnostics/logging.
+// Downstream: sync.Map Range.
+func (t *Tracker) SourceCardinality() int {
+	count := 0
+	t.sourceCounts.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	return count
+}
+
+// Purpose: Return the number of distinct source|mode keys tracked.
+// Key aspects: Iterates sync.Map without allocating a map copy.
+// Upstream: diagnostics/logging.
+// Downstream: sync.Map Range.
+func (t *Tracker) SourceModeCardinality() int {
+	count := 0
+	t.sourceModeCounts.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	return count
+}
+
 // Purpose: Return the total count across all sources.
 // Key aspects: Sums atomic counters from sourceCounts.
 // Upstream: Dashboard/metrics rendering.
@@ -294,4 +320,3 @@ func incrementCounter(m *sync.Map, key string) {
 	}
 	counter.Add(1)
 }
-
