@@ -22,7 +22,7 @@ const (
 
 const (
 	placeholderHeader = "[lightgray]Cluster[-]: --  [lightgray]Version[-]: --  [lightgray]Uptime[-]: --:--"
-	placeholderMem    = "[lightgray]Heap[-]: --  [lightgray]Sys[-]: --  [lightgray]GC p99[-]: --  [lightgray]Last GC[-]: --  [lightgray]Goroutines[-]: --"
+	placeholderMem    = "[lightgray]Heap[-]: --  [lightgray]Sys[-]: --  [lightgray]GC p99 (interval)[-]: --  [lightgray]Last GC[-]: --  [lightgray]Goroutines[-]: --"
 	placeholderIngest = "[lightgray]RBN[-]: -- | [lightgray]CW[-] -- | [lightgray]RTTY[-] -- | [lightgray]FT8[-] -- | [lightgray]FT4[-] --\n" +
 		"[lightgray]PSK[-]: -- | [lightgray]CW[-] -- | [lightgray]RTTY[-] -- | [lightgray]FT8[-] -- | [lightgray]FT4[-] -- | [lightgray]MSK[-] --\n" +
 		"[lightgray]P92[-]: --\n" +

@@ -1328,8 +1328,22 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 	if !uls.RefreshInProgress() {
 		fccSnap = loadFCCSnapshot(fccDBPath)
 	}
+	gcWindow := &gcPauseWindow{}
+	{
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		_, _, _ = gcWindow.snapshot(&mem)
+	}
 
 	for range ticker.C {
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		gcP99, gcCount, _ := gcWindow.snapshot(&mem)
+		gcP99Label := "n/a"
+		if gcCount > 0 {
+			gcP99Label = formatDurationMillis(gcP99)
+		}
+
 		// Refresh FCC snapshot each interval to reflect completed downloads/builds.
 		// Skip reads while a refresh/swap is active to avoid holding the DB open.
 		if !uls.RefreshInProgress() {
@@ -1504,6 +1518,8 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 				totalCorrections, totalUnlicensed, totalHarmonics, reputationTotal,
 				pathOnlyLine,
 				skewPath,
+				&mem,
+				gcP99Label,
 			)
 			ingestLines := []string{}
 			if len(overviewLines) > 0 {
@@ -4934,27 +4950,6 @@ func formatDateShortZ(t time.Time) string {
 	return t.UTC().Format("2006-01-02")
 }
 
-func gcPauseP99(mem *runtime.MemStats) time.Duration {
-	if mem == nil {
-		return 0
-	}
-	var pauses []uint64
-	for _, v := range mem.PauseNs {
-		if v > 0 {
-			pauses = append(pauses, v)
-		}
-	}
-	if len(pauses) == 0 {
-		return 0
-	}
-	sort.Slice(pauses, func(i, j int) bool { return pauses[i] < pauses[j] })
-	idx := int(float64(len(pauses)-1) * 0.99)
-	if idx < 0 {
-		idx = 0
-	}
-	return time.Duration(pauses[idx])
-}
-
 func formatPercent(numer, denom uint64) string {
 	if denom == 0 {
 		return "n/a"
@@ -5080,16 +5075,22 @@ func buildOverviewLines(
 	totalCorrections, totalUnlicensed, totalHarmonics, reputationTotal uint64,
 	pathOnlyLine string,
 	skewPath string,
+	mem *runtime.MemStats,
+	gcP99Label string,
 ) []string {
 	now := time.Now().UTC()
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
+	if mem == nil {
+		mem = &runtime.MemStats{}
+		runtime.ReadMemStats(mem)
+	}
 	heap := humanize.Bytes(mem.HeapAlloc)
 	sys := humanize.Bytes(mem.Sys)
-	gcP99 := gcPauseP99(&mem)
 	lastGC := time.Duration(0)
 	if mem.LastGC > 0 {
 		lastGC = now.Sub(time.Unix(0, int64(mem.LastGC)))
+	}
+	if strings.TrimSpace(gcP99Label) == "" {
+		gcP99Label = "n/a"
 	}
 	uptime := time.Duration(0)
 	if tracker != nil {
@@ -5196,7 +5197,7 @@ func buildOverviewLines(
 	lines := []string{
 		fmt.Sprintf("[yellow]Cluster[-]: %s  [yellow]Version[-]: %s  [yellow]Uptime[-]: %s", clusterCall, Version, formatUptimeShort(uptime)),
 		"MEMORY / GC",
-		fmt.Sprintf("[yellow]Heap[-]: %s  [yellow]Sys[-]: %s  [yellow]GC p99[-]: %s  [yellow]Last GC[-]: %s ago  [yellow]Goroutines[-]: %d", heap, sys, formatDurationMillis(gcP99), formatDurationShort(lastGC), runtime.NumGoroutine()),
+		fmt.Sprintf("[yellow]Heap[-]: %s  [yellow]Sys[-]: %s  [yellow]GC p99 (interval)[-]: %s  [yellow]Last GC[-]: %s ago  [yellow]Goroutines[-]: %d", heap, sys, gcP99Label, formatDurationShort(lastGC), runtime.NumGoroutine()),
 		"INGEST RATES (per min)",
 		formatIngestLine("[yellow]RBN[-]", rbnTotal, rbnCW, rbnRTTY, rbnFT8, rbnFT4, 0, false),
 		formatIngestLine("[yellow]PSK[-]", pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144, true),
