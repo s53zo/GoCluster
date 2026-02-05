@@ -828,6 +828,7 @@ func main() {
 		DedupeFastEnabled:       secondaryFastWindow > 0,
 		DedupeMedEnabled:        secondaryMedWindow > 0,
 		DedupeSlowEnabled:       secondarySlowWindow > 0,
+		NearbyLoginWarning:      cfg.Telnet.NearbyLoginWarning,
 		SolarWeather:            solarMgr,
 	}, processor)
 
@@ -1018,7 +1019,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, cfg.CTY.File, &knownCalls, knownCallsPath, telnetServer, surface, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor, pskrClient, pskrPathOnlyStats, cfg.Server.NodeID, cfg.Skew.File)
+	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, cfg.CTY.File, &knownCalls, knownCallsPath, telnetServer, surface, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor, rbnClient, rbnDigitalClient, pskrClient, pskrPathOnlyStats, peerManager, cfg.Server.NodeID, cfg.Skew.File)
 	if pathCfg.Enabled {
 		go startPathPredictionLogger(ctx, logMux, telnetServer, pathPredictor, pathReport)
 	}
@@ -1314,7 +1315,7 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, ctyPath string, knownPtr *atomic.Pointer[spot.KnownCallsigns], knownCallsPath string, telnetSrv *telnet.Server, dash ui.Surface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor, pskrClient *pskreporter.Client, pskrPathOnly *pathOnlyStats, clusterCall string, skewPath string) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, ctyPath string, knownPtr *atomic.Pointer[spot.KnownCallsigns], knownCallsPath string, telnetSrv *telnet.Server, dash ui.Surface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor, rbnClient *rbn.Client, rbnDigitalClient *rbn.Client, pskrClient *pskreporter.Client, pskrPathOnly *pathOnlyStats, peerManager *peer.Manager, clusterCall string, skewPath string) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -1353,13 +1354,8 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 		sourceTotals := tracker.GetSourceCounts()
 		sourceModeTotals := tracker.GetSourceModeCounts()
 
-		rbnTotal := diffCounter(sourceTotals, prevSourceCounts, "RBN")
-		rbnCW := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN", "CW")
-		rbnRTTY := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN", "RTTY")
-
-		rbnFTTotal := diffCounter(sourceTotals, prevSourceCounts, "RBN-DIGITAL")
-		rbnFT8 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN-DIGITAL", "FT8")
-		rbnFT4 := diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN-DIGITAL", "FT4")
+		rbnTotal, rbnCW, rbnRTTY, rbnFTTotal, rbnFT8, rbnFT4 :=
+			rbnIngestDeltas(sourceTotals, prevSourceCounts, sourceModeTotals, prevSourceModeCounts)
 
 		// PSKReporter includes a per-mode breakdown in the stats ticker.
 		pskTotal := diffCounter(sourceTotals, prevSourceCounts, "PSKREPORTER")
@@ -1464,14 +1460,15 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 		}
 
 		combinedRBN := rbnTotal + rbnFTTotal
+		now := time.Now().UTC()
+		pskSnap := pskreporter.HealthSnapshot{}
 		pathOnlyLine := "[yellow]Path[-]: n/a"
 		if pskrClient != nil {
-			snap := pskrClient.HealthSnapshot()
-			if snap.PathOnlyQueueCap > 0 {
+			pskSnap = pskrClient.HealthSnapshot()
+			if pskSnap.PathOnlyQueueCap > 0 {
 				current := snapshotPathOnly(pskrPathOnly)
 				delta := diffPathOnly(current, prevPathOnly)
 				prevPathOnly = current
-				_ = snap
 				pathOnlyLine = fmt.Sprintf("[yellow]Path[-]: %s (U) / %s (S) / %s (N) / %s (G) / %s (H) / %s (B) / %s (M)",
 					humanize.Comma(int64(delta.updates)),
 					humanize.Comma(int64(delta.stale)),
@@ -1484,12 +1481,18 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 			}
 		}
 
+		rbnLive := rbnFeedsLive(rbnClient, rbnDigitalClient)
+		pskLive := pskReporterLive(pskSnap, now)
+		p92Live := peerManager != nil && peerManager.ActiveSessionCount() > 0
+
 		lines := []string{
 			fmt.Sprintf("%s   %s", formatUptimeLine(tracker.GetUptime()), formatMemoryLine(buf, dedup, secondaryFast, secondaryMed, secondarySlow, metaCache, knownPtr)), // 1
-			formatGridLineOrPlaceholder(gridStats, gridDB, pathPredictor),                                                 // 2
-			formatDataLineOrPlaceholder(ctyLookup, ctyState, fccSnap),                                                     // 3
-			fmt.Sprintf("RBN: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4", combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4), // 4
-			fmt.Sprintf("PSKReporter: %s TOTAL / %s CW / %s RTTY / %s FT8 / %s FT4 / %s MSK144",
+			formatGridLineOrPlaceholder(gridStats, gridDB, pathPredictor), // 2
+			formatDataLineOrPlaceholder(ctyLookup, ctyState, fccSnap),     // 3
+			fmt.Sprintf("%s: %d TOTAL / %d CW / %d RTTY / %d FT8 / %d FT4",
+				withIngestStatusLabel("RBN", rbnLive), combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4), // 4
+			fmt.Sprintf("%s: %s TOTAL / %s CW / %s RTTY / %s FT8 / %s FT4 / %s MSK144",
+				withIngestStatusLabel("PSKReporter", pskLive),
 				humanize.Comma(int64(pskTotal)),
 				humanize.Comma(int64(pskCW)),
 				humanize.Comma(int64(pskRTTY)),
@@ -1497,7 +1500,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 				humanize.Comma(int64(pskFT4)),
 				humanize.Comma(int64(pskMSK144)),
 			), // 5
-			fmt.Sprintf("P92: %s TOTAL", humanize.Comma(int64(p92Total))), // 6
+			fmt.Sprintf("%s: %s TOTAL", withIngestStatusLabel("P92", p92Live), humanize.Comma(int64(p92Total))), // 6
 		}
 		lines = append(lines, pathOnlyLine)
 		lines = append(lines,
@@ -1512,6 +1515,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 		if dash != nil {
 			dash.SetStats(lines)
 			overviewLines := buildOverviewLines(tracker, dedup, secondaryFast, secondaryMed, secondarySlow, metaCache, knownPtr, ctyState, ctyPath, knownCallsPath, fccSnap, gridStats, gridDB, pathPredictor, telnetSrv, clusterCall,
+				rbnLive, pskLive, p92Live,
 				combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4,
 				pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144,
 				p92Total,
@@ -5069,6 +5073,7 @@ func buildOverviewLines(
 	pathPredictor *pathreliability.Predictor,
 	telnetSrv *telnet.Server,
 	clusterCall string,
+	rbnLive, pskLive, p92Live bool,
 	rbnTotal, rbnCW, rbnRTTY, rbnFT8, rbnFT4 uint64,
 	pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144 uint64,
 	p92Total uint64,
@@ -5199,9 +5204,9 @@ func buildOverviewLines(
 		"MEMORY / GC",
 		fmt.Sprintf("[yellow]Heap[-]: %s  [yellow]Sys[-]: %s  [yellow]GC p99 (interval)[-]: %s  [yellow]Last GC[-]: %s ago  [yellow]Goroutines[-]: %d", heap, sys, gcP99Label, formatDurationShort(lastGC), runtime.NumGoroutine()),
 		"INGEST RATES (per min)",
-		formatIngestLine("[yellow]RBN[-]", rbnTotal, rbnCW, rbnRTTY, rbnFT8, rbnFT4, 0, false),
-		formatIngestLine("[yellow]PSK[-]", pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144, true),
-		fmt.Sprintf("[yellow]P92[-]: %s", humanize.Comma(int64(p92Total))),
+		formatIngestLine(withIngestStatusLabel("[yellow]RBN[-]", rbnLive), rbnTotal, rbnCW, rbnRTTY, rbnFT8, rbnFT4, 0, false),
+		formatIngestLine(withIngestStatusLabel("[yellow]PSK[-]", pskLive), pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144, true),
+		fmt.Sprintf("%s: %s", withIngestStatusLabel("[yellow]P92[-]", p92Live), humanize.Comma(int64(p92Total))),
 		pathOnlyLine,
 		fmt.Sprintf("[yellow]Primary Dedupe[-]: %s | [yellow]Secondary[-]: %s", primaryDupPct, secondarySummary),
 		fmt.Sprintf("[yellow]Corrections[-]: %s | [yellow]Unlicensed[-]: %s | [yellow]Harmonics[-]: %s | [yellow]Reputation[-]: %s",
@@ -5330,6 +5335,17 @@ func formatIngestLine(label string, total, cw, rtty, ft8, ft4, msk uint64, inclu
 func formatIngestField(label string, value uint64, width int) string {
 	val := padRight(humanize.Comma(int64(value)), width)
 	return fmt.Sprintf("%s %s", label, val)
+}
+
+func withIngestStatusLabel(label string, live bool) string {
+	return fmt.Sprintf("%s %s", label, ingestStatusMarker(live))
+}
+
+func ingestStatusMarker(live bool) string {
+	if live {
+		return "[green]ON[-]"
+	}
+	return "[red]OFF[-]"
 }
 
 func formatPathLines(predictor *pathreliability.Predictor, now time.Time) []string {
@@ -5461,8 +5477,8 @@ func formatClientListLines(calls []string) []string {
 
 func clientListColumnsPerRow(colWidth int) int {
 	const (
-		maxCols         = 6
-		minCols         = 1
+		maxCols          = 6
+		minCols          = 1
 		borderAndPadding = 3
 	)
 	if colWidth <= 0 {
@@ -5616,6 +5632,46 @@ func allowedBand(allowed map[string]struct{}, band string) bool {
 func diffSourceMode(current, previous map[string]uint64, source, mode string) uint64 {
 	key := sourceModeKey(source, mode)
 	return diffCounter(current, previous, key)
+}
+
+// Purpose: Report whether both RBN feeds are connected.
+// Key aspects: Returns false if either client is nil or disconnected.
+// Upstream: stats ticker liveness.
+// Downstream: rbn.Client.HealthSnapshot.
+func rbnFeedsLive(rbnClient *rbn.Client, rbnDigital *rbn.Client) bool {
+	if rbnClient == nil || rbnDigital == nil {
+		return false
+	}
+	return rbnClient.HealthSnapshot().Connected && rbnDigital.HealthSnapshot().Connected
+}
+
+// Purpose: Report whether PSKReporter is connected and delivering messages recently.
+// Key aspects: Requires Connected plus recent payload activity within the idle threshold.
+// Upstream: stats ticker liveness.
+// Downstream: pskreporter.HealthSnapshot timestamps.
+func pskReporterLive(snap pskreporter.HealthSnapshot, now time.Time) bool {
+	if !snap.Connected || snap.LastPayloadAt.IsZero() {
+		return false
+	}
+	return now.Sub(snap.LastPayloadAt) <= ingestIdleThreshold
+}
+
+// Purpose: Compute per-interval RBN ingest deltas (CW/RTTY + FT8/FT4).
+// Key aspects: Reads FT counts from the "RBN-FT" source label.
+// Upstream: displayStatsWithFCC stats ticker.
+// Downstream: diffCounter and diffSourceMode.
+func rbnIngestDeltas(
+	sourceTotals, prevSourceCounts map[string]uint64,
+	sourceModeTotals, prevSourceModeCounts map[string]uint64,
+) (rbnTotal, rbnCW, rbnRTTY, rbnFTTotal, rbnFT8, rbnFT4 uint64) {
+	rbnTotal = diffCounter(sourceTotals, prevSourceCounts, "RBN")
+	rbnCW = diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN", "CW")
+	rbnRTTY = diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN", "RTTY")
+
+	rbnFTTotal = diffCounter(sourceTotals, prevSourceCounts, "RBN-FT")
+	rbnFT8 = diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN-FT", "FT8")
+	rbnFT4 = diffSourceMode(sourceModeTotals, prevSourceModeCounts, "RBN-FT", "FT4")
+	return
 }
 
 // Purpose: Build a stable key for source+mode counters.

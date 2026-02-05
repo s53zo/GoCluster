@@ -134,6 +134,7 @@ func TestUserRecordRoundTrip(t *testing.T) {
 
 	f := NewFilter()
 	f.SetMode("CW", true)
+	f.NearbyEnabled = true
 	record := &UserRecord{
 		Filter:       *f,
 		RecentIPs:    []string{"203.0.113.10", "198.51.100.42"},
@@ -163,6 +164,9 @@ func TestUserRecordRoundTrip(t *testing.T) {
 	}
 	if loaded.DedupePolicy != DedupePolicySlow {
 		t.Fatalf("expected dedupe policy SLOW, got %s", loaded.DedupePolicy)
+	}
+	if !loaded.NearbyEnabled {
+		t.Fatalf("expected NEARBY to remain enabled after reload")
 	}
 }
 

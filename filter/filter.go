@@ -421,8 +421,8 @@ type Filter struct {
 	BlockAllDEDXCC       bool            // If true, reject all DE ADIF codes
 
 	// NearbyEnabled toggles H3 nearby matching that bypasses location filters.
-	// This is per-session only and is not persisted.
-	NearbyEnabled bool `yaml:"-"`
+	// This state is persisted per user.
+	NearbyEnabled bool `yaml:"nearby_enabled,omitempty"`
 	// NearbySnapshot stores the prior location filter state to restore on disable.
 	NearbySnapshot *NearbyLocationSnapshot `yaml:"-"`
 	// NearbyUserFine stores the user's H3 res-2 cell for nearby comparisons.
@@ -1224,7 +1224,7 @@ func (f *Filter) EnableNearby(userFine, userCoarse pathreliability.CellID) error
 	if userFine == pathreliability.InvalidCell || userCoarse == pathreliability.InvalidCell {
 		return errors.New("invalid user cell")
 	}
-	if !f.NearbyEnabled {
+	if f.NearbySnapshot == nil {
 		f.NearbySnapshot = f.captureLocationSnapshot()
 	}
 	f.NearbyEnabled = true

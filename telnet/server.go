@@ -186,6 +186,7 @@ type Server struct {
 	dedupeFastEnabled    bool                              // Fast secondary dedupe policy enabled
 	dedupeMedEnabled     bool                              // Med secondary dedupe policy enabled
 	dedupeSlowEnabled    bool                              // Slow secondary dedupe policy enabled
+	nearbyLoginWarning   string                            // Warning appended when NEARBY is active
 	queueDropLog         ratelimit.Counter                 // Rate-limited log counter for broadcast queue drops
 	workerDropLog        ratelimit.Counter                 // Rate-limited log counter for worker queue drops
 	clientDropLog        ratelimit.Counter                 // Rate-limited log counter for per-client drops
@@ -946,6 +947,8 @@ const (
 	unknownPassTypeMsg      = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, PATH, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 	unknownRejectTypeMsg    = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, PATH, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 	invalidFilterCommandMsg = "Invalid filter command. Type HELP for usage.\n"
+	nearbyLoginWarningMsg   = "NEARBY filter is ON. Disable NEARBY if you want to use regular location filters"
+	nearbyLoginDisabledMsg  = "NEARBY filter disabled: grid not set or H3 tables unavailable.\n"
 )
 
 // ServerOptions configures the telnet server instance.
@@ -992,6 +995,7 @@ type ServerOptions struct {
 	DedupeFastEnabled       bool
 	DedupeMedEnabled        bool
 	DedupeSlowEnabled       bool
+	NearbyLoginWarning      string
 }
 
 // NewServer creates a new telnet server
@@ -999,58 +1003,59 @@ func NewServer(opts ServerOptions, processor *commands.Processor) *Server {
 	config := normalizeServerOptions(opts)
 	useZiutek := strings.EqualFold(config.Transport, "ziutek")
 	return &Server{
-		port:              config.Port,
-		welcomeMessage:    config.WelcomeMessage,
-		maxConnections:    config.MaxConnections,
-		duplicateLoginMsg: config.DuplicateLoginMsg,
-		greetingTemplate:  config.LoginGreeting,
-		loginPrompt:       config.LoginPrompt,
-		loginEmptyMessage: config.LoginEmptyMessage,
-		loginInvalidMsg:   config.LoginInvalidMessage,
-		inputTooLongMsg:   config.InputTooLongMessage,
-		inputInvalidMsg:   config.InputInvalidCharMessage,
-		dialectWelcomeMsg: config.DialectWelcomeMessage,
-		dialectSourceDef:  config.DialectSourceDefault,
-		dialectSourcePers: config.DialectSourcePersisted,
-		pathStatusMsg:     config.PathStatusMessage,
-		clusterCall:       config.ClusterCall,
-		clients:           make(map[string]*Client),
-		shutdown:          make(chan struct{}),
-		broadcast:         make(chan *broadcastPayload, config.BroadcastQueue),
-		broadcastWorkers:  config.BroadcastWorkers,
-		workerQueueSize:   config.WorkerQueue,
-		batchInterval:     config.BroadcastBatchInterval,
-		batchMax:          defaultBroadcastBatch,
-		keepaliveInterval: time.Duration(config.KeepaliveSeconds) * time.Second,
-		clientBufferSize:  config.ClientBuffer,
-		controlQueueSize:  config.ControlQueue,
-		skipHandshake:     config.SkipHandshake,
-		transport:         config.Transport,
-		useZiutek:         useZiutek,
-		echoMode:          config.EchoMode,
-		processor:         processor,
-		readIdleTimeout:   config.ReadIdleTimeout,
-		loginTimeout:      config.LoginTimeout,
-		loginLineLimit:    config.LoginLineLimit,
-		commandLineLimit:  config.CommandLineLimit,
-		filterEngine:      newFilterCommandEngineWithCTY(config.CTYLookup),
-		latency:           newLatencyMetrics(),
-		reputationGate:    opts.ReputationGate,
-		startTime:         time.Now().UTC(),
-		pathPredictor:     opts.PathPredictor,
-		pathDisplay:       opts.PathDisplayEnabled,
-		solarWeather:      opts.SolarWeather,
-		noiseOffsets:      opts.NoiseOffsets,
-		gridLookup:        opts.GridLookup,
-		dedupeFastEnabled: config.DedupeFastEnabled,
-		dedupeMedEnabled:  config.DedupeMedEnabled,
-		dedupeSlowEnabled: config.DedupeSlowEnabled,
-		dropExtremeRate:   config.DropExtremeRate,
-		dropExtremeWindow: config.DropExtremeWindow,
-		dropExtremeMinAtt: config.DropExtremeMinAttempts,
-		queueDropLog:      ratelimit.NewCounter(defaultDropLogInterval),
-		workerDropLog:     ratelimit.NewCounter(defaultDropLogInterval),
-		clientDropLog:     ratelimit.NewCounter(defaultDropLogInterval),
+		port:               config.Port,
+		welcomeMessage:     config.WelcomeMessage,
+		maxConnections:     config.MaxConnections,
+		duplicateLoginMsg:  config.DuplicateLoginMsg,
+		greetingTemplate:   config.LoginGreeting,
+		loginPrompt:        config.LoginPrompt,
+		loginEmptyMessage:  config.LoginEmptyMessage,
+		loginInvalidMsg:    config.LoginInvalidMessage,
+		inputTooLongMsg:    config.InputTooLongMessage,
+		inputInvalidMsg:    config.InputInvalidCharMessage,
+		dialectWelcomeMsg:  config.DialectWelcomeMessage,
+		dialectSourceDef:   config.DialectSourceDefault,
+		dialectSourcePers:  config.DialectSourcePersisted,
+		pathStatusMsg:      config.PathStatusMessage,
+		clusterCall:        config.ClusterCall,
+		clients:            make(map[string]*Client),
+		shutdown:           make(chan struct{}),
+		broadcast:          make(chan *broadcastPayload, config.BroadcastQueue),
+		broadcastWorkers:   config.BroadcastWorkers,
+		workerQueueSize:    config.WorkerQueue,
+		batchInterval:      config.BroadcastBatchInterval,
+		batchMax:           defaultBroadcastBatch,
+		keepaliveInterval:  time.Duration(config.KeepaliveSeconds) * time.Second,
+		clientBufferSize:   config.ClientBuffer,
+		controlQueueSize:   config.ControlQueue,
+		skipHandshake:      config.SkipHandshake,
+		transport:          config.Transport,
+		useZiutek:          useZiutek,
+		echoMode:           config.EchoMode,
+		processor:          processor,
+		readIdleTimeout:    config.ReadIdleTimeout,
+		loginTimeout:       config.LoginTimeout,
+		loginLineLimit:     config.LoginLineLimit,
+		commandLineLimit:   config.CommandLineLimit,
+		filterEngine:       newFilterCommandEngineWithCTY(config.CTYLookup),
+		latency:            newLatencyMetrics(),
+		reputationGate:     opts.ReputationGate,
+		startTime:          time.Now().UTC(),
+		pathPredictor:      opts.PathPredictor,
+		pathDisplay:        opts.PathDisplayEnabled,
+		solarWeather:       opts.SolarWeather,
+		noiseOffsets:       opts.NoiseOffsets,
+		gridLookup:         opts.GridLookup,
+		dedupeFastEnabled:  config.DedupeFastEnabled,
+		dedupeMedEnabled:   config.DedupeMedEnabled,
+		dedupeSlowEnabled:  config.DedupeSlowEnabled,
+		nearbyLoginWarning: normalizeWarningLine(config.NearbyLoginWarning),
+		dropExtremeRate:    config.DropExtremeRate,
+		dropExtremeWindow:  config.DropExtremeWindow,
+		dropExtremeMinAtt:  config.DropExtremeMinAttempts,
+		queueDropLog:       ratelimit.NewCounter(defaultDropLogInterval),
+		workerDropLog:      ratelimit.NewCounter(defaultDropLogInterval),
+		clientDropLog:      ratelimit.NewCounter(defaultDropLogInterval),
 	}
 }
 
@@ -1114,6 +1119,9 @@ func normalizeServerOptions(opts ServerOptions) ServerOptions {
 	}
 	if config.NoiseOffsets == nil {
 		config.NoiseOffsets = map[string]float64{}
+	}
+	if strings.TrimSpace(config.NearbyLoginWarning) == "" {
+		config.NearbyLoginWarning = nearbyLoginWarningMsg
 	}
 	return config
 }
@@ -1892,6 +1900,13 @@ func (s *Server) handleClient(conn net.Conn) {
 		client.noisePenalty = s.noisePenaltyForClass(client.noiseClass)
 	}
 
+	nearbyWarning, nearbyChanged := applyNearbyLoginState(client, s.nearbyLoginWarning)
+	if nearbyChanged {
+		if err := client.saveFilter(); err != nil {
+			log.Printf("Warning: failed to persist NEARBY state for %s: %v", client.callsign, err)
+		}
+	}
+
 	// Register client
 	s.registerClient(client)
 	registered = true
@@ -1900,6 +1915,16 @@ func (s *Server) handleClient(conn net.Conn) {
 	dialectSource := s.dialectSourceLabel(client.dialect, created, err, s.filterEngine.defaultDialect)
 	dialectDefault := strings.ToUpper(string(s.filterEngine.defaultDialect))
 	greeting := formatGreeting(s.greetingTemplate, s.postLoginTemplateData(loginTime, client, prevLogin, prevIP, dialectSource, dialectDefault))
+	if strings.TrimSpace(nearbyWarning) != "" {
+		if strings.TrimSpace(greeting) == "" {
+			greeting = nearbyWarning
+		} else {
+			if !strings.HasSuffix(greeting, "\n") {
+				greeting += "\n"
+			}
+			greeting += nearbyWarning
+		}
+	}
 	if strings.TrimSpace(greeting) != "" {
 		client.Send(greeting)
 	}
@@ -2627,6 +2652,53 @@ func (s *Server) postLoginTemplateData(now time.Time, client *Client, prevLogin 
 		grid:           grid,
 		noiseClass:     noise,
 	}
+}
+
+func applyNearbyLoginState(client *Client, warning string) (warningLine string, changed bool) {
+	if client == nil || client.filter == nil {
+		return "", false
+	}
+	if !client.filter.NearbyActive() {
+		return "", false
+	}
+	state := client.pathSnapshot()
+	grid := strings.TrimSpace(state.grid)
+	if grid == "" {
+		client.updateFilter(func(f *filter.Filter) { f.DisableNearby() })
+		return nearbyLoginDisabledMsg, true
+	}
+	userFine := state.gridCell
+	if userFine == pathreliability.InvalidCell {
+		userFine = pathreliability.EncodeCell(grid)
+	}
+	userCoarse := state.gridCoarseCell
+	if userCoarse == pathreliability.InvalidCell {
+		userCoarse = pathreliability.EncodeCoarseCell(grid)
+	}
+	if userFine == pathreliability.InvalidCell || userCoarse == pathreliability.InvalidCell {
+		client.updateFilter(func(f *filter.Filter) { f.DisableNearby() })
+		return nearbyLoginDisabledMsg, true
+	}
+	var enableErr error
+	client.updateFilter(func(f *filter.Filter) {
+		enableErr = f.EnableNearby(userFine, userCoarse)
+	})
+	if enableErr != nil {
+		client.updateFilter(func(f *filter.Filter) { f.DisableNearby() })
+		return nearbyLoginDisabledMsg, true
+	}
+	return normalizeWarningLine(warning), false
+}
+
+func normalizeWarningLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasSuffix(trimmed, "\n") {
+		return trimmed
+	}
+	return trimmed + "\n"
 }
 
 // writerLoop serializes all outbound traffic to the client and enforces

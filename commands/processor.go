@@ -302,6 +302,7 @@ func buildHelpCatalog(dialect string) helpCatalog {
 			"Requires SET GRID. Uses H3 L1 on 160/80/60m and L2 on all other bands.",
 			"Location filters are suspended while NEARBY is ON.",
 			"Setting location filters while NEARBY is ON is rejected with a warning.",
+			"NEARBY state persists across sessions and shows a login warning when active.",
 		},
 	)
 	add("PASS NEARBY", "PASS NEARBY - Toggle nearby filtering.", passNearbyLines)

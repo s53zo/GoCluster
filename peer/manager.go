@@ -596,6 +596,20 @@ func (m *Manager) liveNodeCount() int {
 	return 1 + len(m.sessions)
 }
 
+// ActiveSessionCount returns the number of active peer sessions.
+// Purpose: Provide liveness info for dashboards.
+// Key aspects: Safe with nil manager; uses read lock.
+// Upstream: main stats loop.
+// Downstream: none.
+func (m *Manager) ActiveSessionCount() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.sessions)
+}
+
 // liveUserCount returns the current telnet client count when provided, otherwise falls back to config.
 func (m *Manager) liveUserCount() int {
 	if m.userCountFn != nil {

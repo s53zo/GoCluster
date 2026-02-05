@@ -1421,6 +1421,44 @@ func TestNearbyBlocksLocationFilters(t *testing.T) {
 	}
 }
 
+func TestApplyNearbyLoginStateWarnsWhenActive(t *testing.T) {
+	requireH3Mappings(t)
+	client := newTestClient()
+	grid := "FN31"
+	client.grid = grid
+	client.gridCell = pathreliability.EncodeCell(grid)
+	client.gridCoarseCell = pathreliability.EncodeCoarseCell(grid)
+	client.filter.NearbyEnabled = true
+
+	expectedWarning := normalizeWarningLine(nearbyLoginWarningMsg)
+	warn, changed := applyNearbyLoginState(client, nearbyLoginWarningMsg)
+	if warn != expectedWarning {
+		t.Fatalf("unexpected warning: %q", warn)
+	}
+	if changed {
+		t.Fatalf("did not expect state change when NEARBY is active and grid is valid")
+	}
+	if !client.filter.NearbyActive() {
+		t.Fatalf("expected NEARBY to remain enabled")
+	}
+}
+
+func TestApplyNearbyLoginStateDisablesWhenGridMissing(t *testing.T) {
+	client := newTestClient()
+	client.filter.NearbyEnabled = true
+
+	warn, changed := applyNearbyLoginState(client, nearbyLoginWarningMsg)
+	if warn != nearbyLoginDisabledMsg {
+		t.Fatalf("unexpected warning: %q", warn)
+	}
+	if !changed {
+		t.Fatalf("expected state change when grid is missing")
+	}
+	if client.filter.NearbyActive() {
+		t.Fatalf("expected NEARBY to be disabled when grid is missing")
+	}
+}
+
 func TestBroadcastWWVRespectsFilter(t *testing.T) {
 	server := &Server{
 		clients: make(map[string]*Client),
