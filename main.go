@@ -5415,10 +5415,10 @@ func formatClientListLines(calls []string) []string {
 		return []string{""}
 	}
 	const (
-		colsPerRow = 5
-		colWidth   = 14
-		maxRows    = 10
+		colWidth = 14
+		maxRows  = 10
 	)
+	colsPerRow := clientListColumnsPerRow(colWidth)
 	lines := make([]string, 0, 1)
 	lines = append(lines, "")
 	rows := (len(calls) + colsPerRow - 1) / colsPerRow
@@ -5457,6 +5457,33 @@ func formatClientListLines(calls []string) []string {
 		lines = append(lines, fmt.Sprintf("... +%d more", overflow))
 	}
 	return lines
+}
+
+func clientListColumnsPerRow(colWidth int) int {
+	const (
+		maxCols         = 6
+		minCols         = 1
+		borderAndPadding = 3
+	)
+	if colWidth <= 0 {
+		return maxCols
+	}
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		return maxCols
+	}
+	usable := width - borderAndPadding
+	if usable < colWidth {
+		return minCols
+	}
+	cols := usable / colWidth
+	if cols < minCols {
+		cols = minCols
+	}
+	if cols > maxCols {
+		cols = maxCols
+	}
+	return cols
 }
 
 func formatSecondaryPercent(d *dedup.SecondaryDeduper) string {
