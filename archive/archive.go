@@ -24,7 +24,16 @@ const (
 	spotKeyLen = len(spotPrefix) + 8 + 4
 )
 
-var spotPrefixBytes = []byte(spotPrefix)
+var (
+	spotPrefixBytes = []byte(spotPrefix)
+	spotIterLower   = append([]byte(nil), spotPrefixBytes...)
+	spotIterUpper   = prefixUpperBound(spotIterLower)
+	// spotIterOptions is read-only and safe to reuse across iterators.
+	spotIterOptions = &pebble.IterOptions{
+		LowerBound: spotIterLower,
+		UpperBound: spotIterUpper,
+	}
+)
 
 const (
 	recordVersion         = 2
@@ -53,6 +62,11 @@ const (
 	recentScanMultiplier = 20
 	recentScanGrowth     = 4
 	recentScanMax        = 200000
+)
+
+const (
+	cleanupBatchDefault = 2000
+	cleanupBatchMax     = 10000
 )
 
 const (
@@ -364,26 +378,43 @@ func (w *Writer) cleanupOnce() {
 
 	batchSize := w.cfg.CleanupBatchSize
 	if batchSize <= 0 {
-		batchSize = 2000
+		batchSize = cleanupBatchDefault
+	}
+	if batchSize > cleanupBatchMax {
+		batchSize = cleanupBatchMax
 	}
 	yield := time.Duration(w.cfg.CleanupBatchYieldMS) * time.Millisecond
 	if w.cfg.CleanupBatchYieldMS < 0 {
 		yield = 0
 	}
 
-	iter, err := w.db.NewIter(iterOptionsForPrefix(spotPrefixBytes))
+	iter, err := w.db.NewIter(spotIterOptions)
 	if err != nil {
 		log.Printf("archive: cleanup iterator: %v", err)
 		return
 	}
 	defer iter.Close()
 
-	pebbleBatch := w.db.NewBatch()
-	defer pebbleBatch.Close()
+	var pebbleBatch *pebble.Batch
+	defer func() {
+		if pebbleBatch != nil {
+			pebbleBatch.Close()
+		}
+	}()
 
 	pending := 0
+	sameCutoff := cutoffFT == cutoffDefault
+	ensureBatch := func() *pebble.Batch {
+		if pebbleBatch == nil {
+			pebbleBatch = w.db.NewBatch()
+		}
+		return pebbleBatch
+	}
 	commitBatch := func() bool {
 		if pending == 0 {
+			return true
+		}
+		if pebbleBatch == nil {
 			return true
 		}
 		if err := pebbleBatch.Commit(w.writeOpts); err != nil {
@@ -406,27 +437,42 @@ func (w *Writer) cleanupOnce() {
 		if ts >= stopAfter {
 			break
 		}
-		rec, err := decodeRecord(iter.Value())
-		if err != nil {
-			log.Printf("archive: cleanup decode: %v", err)
-			if err := pebbleBatch.Delete(iter.Key(), nil); err != nil {
-				log.Printf("archive: cleanup delete corrupt: %v", err)
-				return
-			}
-			pending++
-			if pending >= batchSize && !commitBatch() {
-				return
-			}
-			continue
-		}
 		cutoff := cutoffDefault
-		if isFTMode(rec.mode) {
-			cutoff = cutoffFT
+		if sameCutoff {
+			if _, err := modeIsFTRecord(iter.Value()); err != nil {
+				log.Printf("archive: cleanup decode: %v", err)
+				if err := ensureBatch().Delete(iter.Key(), nil); err != nil {
+					log.Printf("archive: cleanup delete corrupt: %v", err)
+					return
+				}
+				pending++
+				if pending >= batchSize && !commitBatch() {
+					return
+				}
+				continue
+			}
+		} else {
+			isFT, err := modeIsFTRecord(iter.Value())
+			if err != nil {
+				log.Printf("archive: cleanup decode: %v", err)
+				if err := ensureBatch().Delete(iter.Key(), nil); err != nil {
+					log.Printf("archive: cleanup delete corrupt: %v", err)
+					return
+				}
+				pending++
+				if pending >= batchSize && !commitBatch() {
+					return
+				}
+				continue
+			}
+			if isFT {
+				cutoff = cutoffFT
+			}
 		}
 		if ts >= cutoff {
 			continue
 		}
-		if err := pebbleBatch.Delete(iter.Key(), nil); err != nil {
+		if err := ensureBatch().Delete(iter.Key(), nil); err != nil {
 			log.Printf("archive: cleanup delete: %v", err)
 			return
 		}
@@ -479,7 +525,7 @@ func (w *Writer) RecentFiltered(limit int, match func(*spot.Spot) bool) ([]*spot
 	if limit <= 0 {
 		return []*spot.Spot{}, nil
 	}
-	iter, err := w.db.NewIter(iterOptionsForPrefix(spotPrefixBytes))
+	iter, err := w.db.NewIter(spotIterOptions)
 	if err != nil {
 		return nil, fmt.Errorf("archive: recent iterator: %w", err)
 	}
@@ -739,6 +785,55 @@ func decodeRecord(raw []byte) (archiveRecord, error) {
 	}, nil
 }
 
+func modeIsFTRecord(raw []byte) (bool, error) {
+	if len(raw) < recordHeaderSize {
+		return false, errInvalidRecord
+	}
+	if raw[0] != recordVersion {
+		return false, errInvalidRecord
+	}
+	offset := recordFixedHeaderSize
+	lengths := [fieldCount]int{}
+	total := recordHeaderSize
+	for i := 0; i < fieldCount; i++ {
+		l := int(binary.BigEndian.Uint16(raw[offset:]))
+		lengths[i] = l
+		offset += 2
+		total += l
+	}
+	if total != len(raw) {
+		return false, errInvalidRecord
+	}
+	dataOffset := recordHeaderSize
+	for i := 0; i < fieldMode; i++ {
+		dataOffset += lengths[i]
+	}
+	modeLen := lengths[fieldMode]
+	if modeLen == 0 {
+		return false, nil
+	}
+	if dataOffset+modeLen > len(raw) {
+		return false, errInvalidRecord
+	}
+	mode := raw[dataOffset : dataOffset+modeLen]
+	if len(mode) != 3 {
+		return false, nil
+	}
+	b0 := mode[0]
+	if b0 >= 'a' && b0 <= 'z' {
+		b0 -= 32
+	}
+	b1 := mode[1]
+	if b1 >= 'a' && b1 <= 'z' {
+		b1 -= 32
+	}
+	b2 := mode[2]
+	if b2 >= 'a' && b2 <= 'z' {
+		b2 -= 32
+	}
+	return b0 == 'F' && b1 == 'T' && (b2 == '8' || b2 == '4'), nil
+}
+
 func decodeSpot(ts int64, raw []byte) (*spot.Spot, error) {
 	rec, err := decodeRecord(raw)
 	if err != nil {
@@ -787,11 +882,6 @@ func decodeSpot(ts int64, raw []byte) (*spot.Spot, error) {
 	return s, nil
 }
 
-func isFTMode(mode string) bool {
-	mode = strings.ToUpper(strings.TrimSpace(mode))
-	return mode == "FT8" || mode == "FT4"
-}
-
 func spotKeyBytes(ts int64, seq uint32) []byte {
 	buf := make([]byte, spotKeyLen)
 	copy(buf, spotPrefix)
@@ -835,14 +925,6 @@ func clampInt(value int) int {
 		return 0
 	}
 	return value
-}
-
-func iterOptionsForPrefix(prefix []byte) *pebble.IterOptions {
-	lower := append([]byte(nil), prefix...)
-	return &pebble.IterOptions{
-		LowerBound: lower,
-		UpperBound: prefixUpperBound(lower),
-	}
 }
 
 func prefixUpperBound(prefix []byte) []byte {

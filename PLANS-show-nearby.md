@@ -52,7 +52,8 @@ A) Baseline: capture allocs/heap pprof under normal load; record top allocators.
 B) PSKReporter: reduce JSON/string churn; reuse buffers; normalize once. Add a bounded payload buffer pool (size + count caps, non-blocking get/put) and pass pre-parsed mode info through conversion to avoid duplicate canonicalization.
 C) RBN parsing: reduce tokenization allocations; reuse slices. Details: drop per-token uppercase allocation, avoid split/join in RBN callsign normalization, and build comments in a single pass with a builder.
 D) Spot normalization: avoid repeated normalization and transient strings. Details: add ASCII-fast upper+trim helper, avoid double uppercasing, prefill ModeNorm/BandNorm in NewSpot* using canonical PSK lookup without re-normalizing.
-E) Archive + Pebble cleanup: reduce iterator/buffer churn; cap batches.
+E) Archive + Pebble cleanup: reduce iterator/buffer churn; cap batches. Details: avoid full record decode in cleanup by parsing the mode field directly from the record header, reuse precomputed iterator bounds for spot prefix scans, lazily allocate cleanup batches only when deletes occur, and clamp cleanup batch size to a safe maximum to keep delete commits bounded.
+Amendment (2026-02-05): Phase E will be implemented and evaluated together with the already-landed Phase D changes (combined D+E pprof comparison), per user request to proceed as a single combined phase.
 
 6) Contracts and compatibility
 - Protocol/format: No change.
@@ -76,6 +77,7 @@ E) Archive + Pebble cleanup: reduce iterator/buffer churn; cap batches.
 
 11) Performance/measurement plan
 - Report total alloc_space and top allocators before/after each phase.
+- Amendment: Phase D+E will be reported as a combined comparison (baseline vs post-E), since D is already landed and the user requested a combined checkpoint.
 
 12) Rollout/ops plan
 - Stage in dev; compare 24h logs before/after.
@@ -143,6 +145,26 @@ Final contract statement:
 
 Scope Ledger status updates:
 - S17 -> Implemented.
+
+---
+
+## Post-implementation notes (Plan v6 - Phase E)
+Implementation notes:
+- Cleanup now parses only the mode field from archive records (no full decode) to avoid per-record string allocations.
+- Reused precomputed iterator bounds for spot prefix scans and lazily allocated cleanup batches only when deletes occur.
+- Cleanup batch size is clamped to a safe maximum to bound delete commits.
+
+Deviations:
+- None.
+
+Verification commands actually run:
+- `go test ./...`
+
+Final contract statement:
+- No protocol/format, ordering, drop/disconnect, deadlines/timeouts, or observability changes.
+
+Scope Ledger status updates:
+- S18 -> Implemented.
 
 ---
 
@@ -475,8 +497,8 @@ Completed items remain inline - never removed, only status changes.
 | S15 | Reduce allocations in PSKReporter parsing/normalization. | Implemented | Phase B |
 | S16 | Reduce allocations in RBN parsing/tokenization. | Implemented | Phase C |
 | S17 | Reduce allocations in spot normalization path. | Implemented | Phase D |
-| S18 | Reduce Pebble/cache churn during archive cleanup. | Agreed/Pending | Phase E |
-| S19 | Provide pprof before/after comparisons per phase. | Agreed/Pending | Phase B comparison complete (12:29 vs 13:49); remaining phases pending |
+| S18 | Reduce Pebble/cache churn during archive cleanup. | Implemented | Phase E |
+| S19 | Provide pprof before/after comparisons per phase. | Agreed/Pending | Phase B comparison complete (12:29 vs 13:49); Phase D+E combined per user request (pending) |
 
 ---
 
@@ -548,6 +570,18 @@ In Progress
 - **Alternatives**: Keep EnsureNormalized as-is; use sync.Pool for spot allocations; rewrite normalization at call sites.
 - **Impact**: Reduces per-spot normalization allocations while preserving canonical fields.
 
+### D8 — 2026-02-05 Combine Phase D+E comparison
+- **Context**: User requested a single combined checkpoint for Phase D+E.
+- **Chosen**: Implement Phase E and report pprof comparisons as combined D+E (baseline vs post-E), accepting loss of per-phase attribution.
+- **Alternatives**: Keep per-phase D and E comparisons (slower, more attribution).
+- **Impact**: Faster progress, but reduced attribution clarity.
+
+### D9 — 2026-02-05 Archive cleanup lean mode parsing
+- **Context**: Cleanup decoded full records just to determine FT retention, causing alloc churn.
+- **Chosen**: Parse only the mode field from the record header/value, reuse spot prefix iterator bounds, and clamp cleanup batch size.
+- **Alternatives**: Keep full decode; add a separate validity-only parser; add new config knobs for cleanup caps.
+- **Impact**: Lower allocation churn during cleanup with bounded delete batches; no behavior change for valid records.
+
 ---
 
 ## Files Modified (Plan v6)
@@ -555,6 +589,8 @@ In Progress
 - pskreporter/client.go
 - pskreporter/client_test.go
 - rbn/client.go
+- archive/archive.go
+- archive/archive_cleanup_test.go
 - spot/mode_alloc.go
 - spot/normalize_ascii.go
 - spot/spot.go
@@ -598,6 +634,7 @@ In Progress
 ---
 
 ## Verification Status
+- [x] `go test ./...` (Plan v6 Phase E)
 - [x] `go test ./...` (Plan v6 Phase D)
 - [x] `go test ./...` (Plan v6 Phase C)
 - [x] `go test ./...` (Plan v6 Phase B)
@@ -619,4 +656,4 @@ In Progress
 ---
 
 ## Context for Resume
-Implemented: Phase B PSKReporter optimizations (bounded payload buffer pool + single-pass mode normalization), Phase C RBN tokenization allocation reductions (no per-token uppercase, faster callsign normalization, builder-based comment), and Phase D spot normalization fast paths (ASCII upper+trim helper, prefilled ModeNorm/BandNorm, avoid double uppercasing). Also: atomic callQuality swap + stop/start ordering; bounded call-quality store with pinned priors + TTL/cap + config knobs; categorical stats source labels; peak-based map compaction for path reliability + dedup caches; DXC_MAP_LOG_INTERVAL diagnostics; tests and docs updated. NEARBY 60m uses L1 (res-1); other NEARBY semantics unchanged.
+Implemented: Phase B PSKReporter optimizations (bounded payload buffer pool + single-pass mode normalization), Phase C RBN tokenization allocation reductions (no per-token uppercase, faster callsign normalization, builder-based comment), Phase D spot normalization fast paths (ASCII upper+trim helper, prefilled ModeNorm/BandNorm, avoid double uppercasing), and Phase E archive cleanup churn reduction (mode-only record parsing, reused iter bounds, lazy cleanup batch, capped cleanup batch size). Also: atomic callQuality swap + stop/start ordering; bounded call-quality store with pinned priors + TTL/cap + config knobs; categorical stats source labels; peak-based map compaction for path reliability + dedup caches; DXC_MAP_LOG_INTERVAL diagnostics; tests and docs updated. NEARBY 60m uses L1 (res-1); other NEARBY semantics unchanged.

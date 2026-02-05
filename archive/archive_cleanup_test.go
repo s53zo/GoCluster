@@ -76,3 +76,37 @@ func TestCleanupOnceDeletesInBatches(t *testing.T) {
 		t.Fatalf("expected retained DXFTNEW and DXCWNEW, got %+v", seen)
 	}
 }
+
+func TestModeIsFTRecord(t *testing.T) {
+	ft := spot.NewSpot("DXFT", "DEFT", 14074.0, "FT8")
+	ftRaw := encodeRecord(ft)
+	isFT, err := modeIsFTRecord(ftRaw)
+	if err != nil {
+		t.Fatalf("modeIsFTRecord(FT8) error: %v", err)
+	}
+	if !isFT {
+		t.Fatalf("expected FT8 to be detected as FT")
+	}
+
+	cw := spot.NewSpot("DXCW", "DECW", 14030.0, "CW")
+	cwRaw := encodeRecord(cw)
+	isFT, err = modeIsFTRecord(cwRaw)
+	if err != nil {
+		t.Fatalf("modeIsFTRecord(CW) error: %v", err)
+	}
+	if isFT {
+		t.Fatalf("expected CW to be non-FT")
+	}
+
+	invalid := cwRaw[:10]
+	if _, err := modeIsFTRecord(invalid); err == nil {
+		t.Fatalf("expected invalid record to error")
+	}
+
+	badVersion := make([]byte, len(cwRaw))
+	copy(badVersion, cwRaw)
+	badVersion[0] = recordVersion + 1
+	if _, err := modeIsFTRecord(badVersion); err == nil {
+		t.Fatalf("expected bad version to error")
+	}
+}
