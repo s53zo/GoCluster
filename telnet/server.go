@@ -948,7 +948,7 @@ const (
 	unknownRejectTypeMsg    = "Unknown filter type. Use: BAND, MODE, SOURCE, DXCALL, DECALL, CONFIDENCE, PATH, BEACON, WWV, WCY, ANNOUNCE, DXGRID2, DEGRID2, DXCONT, DECONT, DXZONE, DEZONE, DXDXCC, or DEDXCC\nType HELP for usage.\n"
 	invalidFilterCommandMsg = "Invalid filter command. Type HELP for usage.\n"
 	nearbyLoginWarningMsg   = "NEARBY filter is ON. Disable NEARBY if you want to use regular location filters"
-	nearbyLoginDisabledMsg  = "NEARBY filter disabled: grid not set or H3 tables unavailable.\n"
+	nearbyLoginInactiveMsg  = "NEARBY filter is ON but inactive: grid not set or H3 tables unavailable.\n"
 )
 
 // ServerOptions configures the telnet server instance.
@@ -2664,8 +2664,7 @@ func applyNearbyLoginState(client *Client, warning string) (warningLine string, 
 	state := client.pathSnapshot()
 	grid := strings.TrimSpace(state.grid)
 	if grid == "" {
-		client.updateFilter(func(f *filter.Filter) { f.DisableNearby() })
-		return nearbyLoginDisabledMsg, true
+		return nearbyLoginInactiveMsg, false
 	}
 	userFine := state.gridCell
 	if userFine == pathreliability.InvalidCell {
@@ -2676,16 +2675,14 @@ func applyNearbyLoginState(client *Client, warning string) (warningLine string, 
 		userCoarse = pathreliability.EncodeCoarseCell(grid)
 	}
 	if userFine == pathreliability.InvalidCell || userCoarse == pathreliability.InvalidCell {
-		client.updateFilter(func(f *filter.Filter) { f.DisableNearby() })
-		return nearbyLoginDisabledMsg, true
+		return nearbyLoginInactiveMsg, false
 	}
 	var enableErr error
 	client.updateFilter(func(f *filter.Filter) {
 		enableErr = f.EnableNearby(userFine, userCoarse)
 	})
 	if enableErr != nil {
-		client.updateFilter(func(f *filter.Filter) { f.DisableNearby() })
-		return nearbyLoginDisabledMsg, true
+		return nearbyLoginInactiveMsg, false
 	}
 	return normalizeWarningLine(warning), false
 }

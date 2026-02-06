@@ -1021,7 +1021,7 @@ func main() {
 	// Key aspects: Runs on ticker interval until shutdown.
 	// Upstream: main startup.
 	// Downstream: displayStatsWithFCC.
-	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, cfg.CTY.File, &knownCalls, knownCallsPath, telnetServer, surface, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor, rbnClient, rbnDigitalClient, pskrClient, pskrPathOnlyStats, peerManager, cfg.Server.NodeID, cfg.Skew.File)
+	go displayStatsWithFCC(statsInterval, statsTracker, ingestValidator, deduplicator, secondaryFast, secondaryMed, secondarySlow, &secondaryStageCount, spotBuffer, ctyLookup, metaCache, ctyState, &knownCalls, knownCallsPath, telnetServer, surface, gridUpdateState, gridStoreHandle, cfg.FCCULS.DBPath, pathPredictor, rbnClient, rbnDigitalClient, pskrClient, pskrPathOnlyStats, peerManager, cfg.Server.NodeID, cfg.Skew.File)
 	if pathCfg.Enabled {
 		go startPathPredictionLogger(ctx, logMux, telnetServer, pathPredictor, pathReport)
 	}
@@ -1325,7 +1325,7 @@ func formatReputationDropSummary(total uint64, reasons map[string]uint64) string
 // Key aspects: Uses a ticker, diff counters, and optional secondary dedupe stats.
 // Upstream: main stats goroutine.
 // Downstream: tracker accessors, loadFCCSnapshot, and UI/log output.
-func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, ctyPath string, knownPtr *atomic.Pointer[spot.KnownCallsigns], knownCallsPath string, telnetSrv *telnet.Server, dash ui.Surface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor, rbnClient *rbn.Client, rbnDigitalClient *rbn.Client, pskrClient *pskreporter.Client, pskrPathOnly *pathOnlyStats, peerManager *peer.Manager, clusterCall string, skewPath string) {
+func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestStats *ingestValidator, dedup *dedup.Deduplicator, secondaryFast *dedup.SecondaryDeduper, secondaryMed *dedup.SecondaryDeduper, secondarySlow *dedup.SecondaryDeduper, secondaryStage *atomic.Uint64, buf *buffer.RingBuffer, ctyLookup func() *cty.CTYDatabase, metaCache *callMetaCache, ctyState *ctyRefreshState, knownPtr *atomic.Pointer[spot.KnownCallsigns], knownCallsPath string, telnetSrv *telnet.Server, dash ui.Surface, gridStats *gridMetrics, gridDB *gridStoreHandle, fccDBPath string, pathPredictor *pathreliability.Predictor, rbnClient *rbn.Client, rbnDigitalClient *rbn.Client, pskrClient *pskreporter.Client, pskrPathOnly *pathOnlyStats, peerManager *peer.Manager, clusterCall string, skewPath string) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -1524,7 +1524,7 @@ func displayStatsWithFCC(interval time.Duration, tracker *stats.Tracker, ingestS
 
 		if dash != nil {
 			dash.SetStats(lines)
-			overviewLines := buildOverviewLines(tracker, dedup, secondaryFast, secondaryMed, secondarySlow, metaCache, knownPtr, ctyState, ctyPath, knownCallsPath, fccSnap, gridStats, gridDB, pathPredictor, telnetSrv, clusterCall,
+			overviewLines := buildOverviewLines(tracker, dedup, secondaryFast, secondaryMed, secondarySlow, metaCache, knownPtr, ctyState, knownCallsPath, fccSnap, gridStats, gridDB, pathPredictor, telnetSrv, clusterCall,
 				rbnLive, pskLive, p92Live,
 				combinedRBN, rbnCW, rbnRTTY, rbnFT8, rbnFT4,
 				pskTotal, pskCW, pskRTTY, pskFT8, pskFT4, pskMSK144,
@@ -1941,7 +1941,7 @@ func processOutputSpots(
 
 			var suppress bool
 			if telnet != nil && !s.IsBeacon {
-				suppress = maybeApplyCallCorrectionWithLogger(s, correctionIdx, correctionCfg, ctyDB, metaCache, knownCalls, tracker, dash, corrLogger, callCooldown, adaptiveMinReports, spotterReliability)
+				suppress = maybeApplyCallCorrectionWithLogger(s, correctionIdx, correctionCfg, ctyDB, metaCache, tracker, dash, corrLogger, callCooldown, adaptiveMinReports, spotterReliability)
 				if suppress {
 					return
 				}
@@ -2828,7 +2828,7 @@ func metadataFromPrefix(info *cty.PrefixInfo) spot.CallMetadata {
 // Key aspects: Evaluates corrections, updates stats, and can suppress spots.
 // Upstream: processOutputSpots call correction stage.
 // Downstream: spot.ApplyCallCorrection, traceLogger, tracker updates.
-func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, metaCache *callMetaCache, knownPtr *atomic.Pointer[spot.KnownCallsigns], tracker *stats.Tracker, dash ui.Surface, traceLogger spot.CorrectionTraceLogger, cooldown *spot.CallCooldown, adaptive *spot.AdaptiveMinReports, spotterReliability spot.SpotterReliability) bool {
+func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.CorrectionIndex, cfg config.CallCorrectionConfig, ctyDB *cty.CTYDatabase, metaCache *callMetaCache, tracker *stats.Tracker, dash ui.Surface, traceLogger spot.CorrectionTraceLogger, cooldown *spot.CallCooldown, adaptive *spot.AdaptiveMinReports, spotterReliability spot.SpotterReliability) bool {
 	if spotEntry == nil {
 		return false
 	}
@@ -5010,14 +5010,13 @@ func formatPercentBarWithLabel(pct float64, width int, label string) string {
 	if filled > width {
 		filled = width
 	}
-	empty := width - filled
 	if width == 0 {
 		return "[]"
 	}
-	return "[" + buildBarWithLabel(width, filled, empty, label) + "]"
+	return "[" + buildBarWithLabel(width, filled, label) + "]"
 }
 
-func buildBarWithLabel(width, filled, empty int, label string) string {
+func buildBarWithLabel(width, filled int, label string) string {
 	if width <= 0 {
 		return ""
 	}
@@ -5075,7 +5074,6 @@ func buildOverviewLines(
 	metaCache *callMetaCache,
 	knownPtr *atomic.Pointer[spot.KnownCallsigns],
 	ctyState *ctyRefreshState,
-	ctyPath string,
 	knownCallsPath string,
 	fccSnap *fccSnapshot,
 	gridStats *gridMetrics,

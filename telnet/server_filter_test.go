@@ -1443,19 +1443,19 @@ func TestApplyNearbyLoginStateWarnsWhenActive(t *testing.T) {
 	}
 }
 
-func TestApplyNearbyLoginStateDisablesWhenGridMissing(t *testing.T) {
+func TestApplyNearbyLoginStateInactiveWhenGridMissing(t *testing.T) {
 	client := newTestClient()
 	client.filter.NearbyEnabled = true
 
 	warn, changed := applyNearbyLoginState(client, nearbyLoginWarningMsg)
-	if warn != nearbyLoginDisabledMsg {
+	if warn != nearbyLoginInactiveMsg {
 		t.Fatalf("unexpected warning: %q", warn)
 	}
-	if !changed {
-		t.Fatalf("expected state change when grid is missing")
+	if changed {
+		t.Fatalf("did not expect state change when grid is missing")
 	}
-	if client.filter.NearbyActive() {
-		t.Fatalf("expected NEARBY to be disabled when grid is missing")
+	if !client.filter.NearbyActive() {
+		t.Fatalf("expected NEARBY to remain enabled when grid is missing")
 	}
 }
 

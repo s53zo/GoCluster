@@ -2,7 +2,7 @@
 
 ## Current State Snapshot
 - Active Plan: None (all implemented)
-- Scope Ledger: v6 — Pending: 0, Implemented: 7, Deferred: 0, Superseded: 0
+- Scope Ledger: v7 — Pending: 0, Implemented: 8, Deferred: 0, Superseded: 0
 - Next up: (none)
 - Last updated: 2026-02-06  (local)
 
@@ -10,60 +10,76 @@
 
 ## Current Plan (MOST RECENT)
 
-### Plan v6 — Fix NEARBY Persistence Regression
+### Plan v7 — NEARBY Persistence Until Explicit OFF
 - Date: 2026-02-06
 - Status: Implemented
-- Scope Ledger snapshot: v6
+- Scope Ledger snapshot: v7
 - Owner: Assistant (with user approval)
-- Approval: Approved v6
+- Approval: Approved v7
 
 Goals:
-- Ensure `NEARBY=ON` persists across login/logoff until the user disables it.
+- Ensure `NEARBY=ON` persists until user issues `PASS NEARBY OFF` (or other explicit reset commands).
 
 Non-Goals:
 - No change to NEARBY matching semantics or H3 resolution.
-- No change to login warning behavior.
+- No change to backpressure, queueing, or shutdown behavior.
 
 Requirements/Edge Cases:
-- Persisted `nearby_enabled` must survive load/normalize cycles.
-- Session-only data (`NearbySnapshot`, cached cells) must not be persisted.
-- If grid or H3 tables are missing at login, NEARBY may still be disabled as before.
-- Explicit user actions like `PASS NEARBY OFF` or `RESET` may disable NEARBY (unchanged).
+- Persisted `nearby_enabled` must not be toggled off during login bootstrap failures.
+- Session-only data (`NearbySnapshot`, cached cells) remains non-persistent.
+- If grid/H3 cannot bootstrap at login, keep NEARBY flag ON and emit warning; do not persist OFF.
+- Explicit user actions (`PASS NEARBY OFF`, `RESET FILTER`, `RESET DEFAULT`) still disable NEARBY.
+- Determinism: while ON but not bootstrapped, spot matching remains deterministic (nearby path yields no matches until cells become valid).
 
 Architecture (bounds/backpressure/shutdown):
-- Preserve persisted flag by removing the reset of `NearbyEnabled` from filter normalization.
-- Keep snapshot/cell cache cleared on load (session-only).
+- Modify login bootstrap path to avoid calling `DisableNearby()` for transient bootstrap failures.
+- Introduce warning path that reports NEARBY ON but inactive when bootstrap prerequisites are missing.
+- Keep existing in-memory bounds and no additional goroutines/channels.
 - No concurrency or buffering changes.
 
 Contracts:
 - No protocol/format changes. No drop/backpressure changes.
-- User-visible behavior: NEARBY remains enabled across sessions unless user disables it.
+- User-visible behavior change: login no longer auto-turns NEARBY OFF on missing grid/H3; NEARBY remains ON until explicit user disable.
+
+Dependency Impact (Full):
+- Upstream: login record load + optional grid lookup.
+- Shared component: telnet login bootstrap (`applyNearbyLoginState`) and filter state transitions.
+- Downstream: spot matching path under `NearbyEnabled`, greeting/warning text, persisted user record.
+- Contract statement: location-filter state persistence semantics changed (auto-disable removed from login bootstrap failures).
 
 Tests:
-- Ensure `TestUserRecordRoundTrip` keeps `NearbyEnabled=true` after reload.
-- Run: `go test ./filter -run Nearby`.
+- Add/adjust login tests:
+  - Missing grid while `NearbyEnabled=true` must keep NEARBY ON and return warning.
+  - Invalid/failed H3 bootstrap while `NearbyEnabled=true` must keep NEARBY ON and return warning.
+  - Valid bootstrap keeps existing warning and ON state.
+- Keep/confirm persistence round-trip test for `nearby_enabled`.
+- Verification:
+  - `go test ./telnet -run Nearby`
+  - `go test ./filter -run Nearby`
 
 Rollout/Ops:
-- No config changes.
+- No config schema changes.
+- Operator-visible behavior: warning may indicate ON-but-inactive state instead of forced disable.
 
 ---
 
-## Post-code (Plan v6)
+## Post-code (Plan v7)
 Deviations:
 - None.
 
 Verification commands actually run:
-- None.
+- `go test ./telnet -run Nearby`
+- `go test ./filter -run Nearby`
 
 Final contract statement:
-- `nearby_enabled` persists across sessions unless disabled by user action.
+- Login bootstrap no longer persists `NEARBY=OFF` on temporary grid/H3 bootstrap failures; `NEARBY` remains ON until explicit user disable, with an ON-but-inactive warning when prerequisites are missing.
 
 Scope Ledger status updates:
-- S7 → Implemented
+- S8 → Implemented
 
 ---
 
-## Scope Ledger v6 (LIVE)
+## Scope Ledger v7 (LIVE)
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
 | S1 | Windowed GC p99 in console/overview | Implemented | `GC p99 (interval)`; `n/a` if none |
@@ -73,6 +89,7 @@ Scope Ledger status updates:
 | S5 | Login warning when NEARBY enabled | Implemented | Disable if grid/H3 missing |
 | S6 | Configurable NEARBY login warning | Implemented | `telnet.nearby_login_warning` |
 | S7 | Fix NEARBY persistence regression on load | Implemented | Remove normalization reset |
+| S8 | Remove login auto-disable persistence path for NEARBY bootstrap failures | Implemented | Keep ON until explicit user OFF |
 
 ---
 
@@ -89,6 +106,7 @@ Scope Ledger status updates:
 - 2026-02-05 10:45 — Created Plan v5 and Scope Ledger v5 for configurable warning
 - 2026-02-05 10:50 — Implemented Plan v5; updated config/docs
 - 2026-02-06 — Implemented Plan v6; fix NEARBY persistence reset
+- 2026-02-06 — Implemented Plan v7; removed login auto-disable persistence path and validated NEARBY tests
 
 ---
 
@@ -132,12 +150,13 @@ Scope Ledger status updates:
 - Plan v4 — Persist NEARBY + Login Warning — 2026-02-05 — Scope Ledger v4 — Implemented (archived)
 - Plan v5 — Configurable NEARBY Login Warning — 2026-02-05 — Scope Ledger v5 — Implemented
 - Plan v6 — Fix NEARBY Persistence Regression — 2026-02-06 — Scope Ledger v6 — Implemented
+- Plan v7 — NEARBY Persistence Until Explicit OFF — 2026-02-06 — Scope Ledger v7 — Implemented
 
 ---
 
 ## Context for Resume
 **Done**:
-- S1–S7 — All items implemented
+- S1–S8 — All items implemented
 **In Progress**:
 - (none)
 **Next**:

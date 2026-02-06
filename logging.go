@@ -369,7 +369,9 @@ func (f *logFanout) Close() error {
 
 	var firstErr error
 	if console != nil {
-		_ = console.Close()
+		if err := console.Close(); err != nil {
+			firstErr = err
+		}
 	}
 	if file != nil {
 		if err := file.Close(); err != nil && firstErr == nil {
