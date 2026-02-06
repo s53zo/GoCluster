@@ -333,7 +333,7 @@ type UIV2Keybindings struct {
 	UseAlternatives bool `yaml:"use_alternatives"`
 }
 
-var defaultUIV2Pages = []string{"overview", "ingest", "pipeline"}
+var defaultUIV2Pages = []string{"overview", "ingest", "pipeline", "events"}
 
 func normalizeUIV2(cfg *UIConfig, raw map[string]any) error {
 	if cfg == nil {
@@ -378,6 +378,7 @@ func normalizeUIV2(cfg *UIConfig, raw map[string]any) error {
 		"overview": {},
 		"ingest":   {},
 		"pipeline": {},
+		"events":   {},
 	}
 	seen := make(map[string]struct{}, len(pages))
 	normalized := make([]string, 0, len(pages))
@@ -387,7 +388,7 @@ func normalizeUIV2(cfg *UIConfig, raw map[string]any) error {
 			continue
 		}
 		if _, ok := allowed[name]; !ok {
-			return fmt.Errorf("invalid ui.v2.pages entry %q: must be one of overview, ingest, pipeline", page)
+			return fmt.Errorf("invalid ui.v2.pages entry %q: must be one of overview, ingest, pipeline, events", page)
 		}
 		if _, ok := seen[name]; ok {
 			return fmt.Errorf("invalid ui.v2.pages: duplicate entry %q", page)

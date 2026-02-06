@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,65 @@ import (
 
 	"dxcluster/config"
 	"dxcluster/spot"
+	"dxcluster/ui"
 )
+
+type captureSurface struct {
+	unlicensed []string
+}
+
+func (c *captureSurface) WaitReady() {}
+func (c *captureSurface) Stop()      {}
+func (c *captureSurface) SetStats(lines []string) {
+}
+func (c *captureSurface) UpdateNetworkStatus(summaryLine string, clientLines []string) {
+}
+func (c *captureSurface) AppendDropped(line string) {
+}
+func (c *captureSurface) AppendCall(line string) {
+}
+func (c *captureSurface) AppendUnlicensed(line string) {
+	c.unlicensed = append(c.unlicensed, line)
+}
+func (c *captureSurface) AppendHarmonic(line string) {
+}
+func (c *captureSurface) AppendReputation(line string) {
+}
+func (c *captureSurface) AppendSystem(line string) {
+}
+func (c *captureSurface) SystemWriter() io.Writer { return nil }
+func (c *captureSurface) SetSnapshot(snapshot ui.Snapshot) {
+}
+
+func TestEventFormattersEmitPlainText(t *testing.T) {
+	tests := []string{
+		formatUnlicensedDropMessage("DX", "K1ABC", "RBN", "CW", 14020.1),
+		formatHarmonicSuppressedMessage("K1ABC", 14020.1, 7010.0, 3, 18),
+		formatCallCorrectedMessage("K1A8C", "K1ABC", 7012.3, 4, 92),
+	}
+	for _, line := range tests {
+		if strings.Contains(line, "[") || strings.Contains(line, "]") {
+			t.Fatalf("expected plain text message without color tags, got %q", line)
+		}
+	}
+}
+
+func TestMakeUnlicensedReporterEmitsPlainTextToSurface(t *testing.T) {
+	surface := &captureSurface{}
+	reporter := makeUnlicensedReporter(surface, nil, nil)
+	reporter("rbn", "dx", "k1abc", "cw", 7029.5)
+
+	if len(surface.unlicensed) != 1 {
+		t.Fatalf("expected one unlicensed message, got %d", len(surface.unlicensed))
+	}
+	got := surface.unlicensed[0]
+	if strings.Contains(got, "[") || strings.Contains(got, "]") {
+		t.Fatalf("expected plain text unlicensed message, got %q", got)
+	}
+	if !strings.Contains(got, "K1ABC") {
+		t.Fatalf("expected normalized callsign in message, got %q", got)
+	}
+}
 
 func TestCloneSpotForPeerPublishAddsModeWhenCommentEmpty(t *testing.T) {
 	src := spot.NewSpot("K1ABC", "W1XYZ", 7074.0, "")
