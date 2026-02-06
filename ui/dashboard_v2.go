@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -39,6 +40,7 @@ const (
 	placeholderUnlicensed = "Unlicensed drop: --"
 	placeholderCorrected  = "Corrected: --"
 	placeholderHarmonics  = "Harmonics: --"
+	placeholderEvents     = "No events yet."
 	streamPanelMaxLines   = 200
 )
 
@@ -84,15 +86,23 @@ type DashboardV2 struct {
 	pipelineQuality   *tview.TextView
 	pipelineCorrected *tview.TextView
 	pipelineHarmonics *tview.TextView
+	eventsRoot        *tview.Flex
+	eventsHdr         *tview.TextView
+	eventsMem         *tview.TextView
+	eventsIngest      *tview.TextView
+	eventsPipeline    *tview.TextView
+	eventsStream      *tview.TextView
 
 	validationPanel *streamPanel
 	unlicensedPanel *streamPanel
 	correctedPanel  *streamPanel
 	harmonicsPanel  *streamPanel
+	eventsPanel     *streamPanel
 
 	overviewGroup focusGroup
 	ingestGroup   focusGroup
 	pipelineGroup focusGroup
+	eventsGroup   focusGroup
 
 	pageOrder []string
 	pageIndex int
@@ -186,13 +196,34 @@ func NewDashboardV2(cfg config.UIConfig, enable bool) *DashboardV2 {
 		AddItem(newSpacer(), 1, 0, false).
 		AddItem(d.pipelineHarmonics, 28, 0, false)
 
+	d.eventsHdr = newBoxedTextView("Overview")
+	d.eventsMem = newBoxedTextView("Memory / GC")
+	d.eventsIngest = newBoxedTextView("Ingest Rates (per min)")
+	d.eventsPipeline = newBoxedTextView("Pipeline Quality")
+	d.eventsStream = newBoxedTextView("Events")
+	d.eventsStream.SetDynamicColors(false)
+	d.seedEventsPlaceholders()
+	d.eventsPanel = newStreamPanel(d.eventsStream, "Events", streamPanelMaxLines)
+	d.eventsRoot = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(d.eventsHdr, 3, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.eventsMem, 3, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.eventsIngest, 6, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.eventsPipeline, 4, 0, false).
+		AddItem(newSpacer(), 1, 0, false).
+		AddItem(d.eventsStream, 0, 1, false)
+
 	d.overviewGroup = newFocusGroup(newFocusBox(d.overviewNetwork, "Network", true))
 	d.ingestGroup = newFocusGroup(d.validationPanel, d.unlicensedPanel)
 	d.pipelineGroup = newFocusGroup(d.correctedPanel, d.harmonicsPanel)
+	d.eventsGroup = newFocusGroup(d.eventsPanel)
 
 	d.addPage("overview", d.overviewRoot, true, false)
 	d.addPage("ingest", d.ingestRoot, true, false)
 	d.addPage("pipeline", d.pipelineRoot, true, false)
+	d.addPage("events", d.eventsRoot, true, false)
 
 	help := buildHelpOverlay()
 	d.addPage("help", help, true, false)
@@ -241,6 +272,10 @@ func (d *DashboardV2) installKeybindings(cfg config.UIConfig) {
 			if d.pipelineGroup.handleScroll(d.app, event) {
 				return nil
 			}
+		} else if pageName == "events" {
+			if d.eventsGroup.handleScroll(d.app, event) {
+				return nil
+			}
 		}
 
 		switch event.Key() {
@@ -256,6 +291,9 @@ func (d *DashboardV2) installKeybindings(cfg config.UIConfig) {
 		case tcell.KeyF4:
 			d.showPage("pipeline")
 			return nil
+		case tcell.KeyF5:
+			d.showPage("events")
+			return nil
 		case tcell.KeyTab:
 			if pageName, _ := d.pages.GetFrontPage(); pageName == "ingest" {
 				d.ingestGroup.cycle(d.app, 1)
@@ -263,6 +301,8 @@ func (d *DashboardV2) installKeybindings(cfg config.UIConfig) {
 				d.overviewGroup.cycle(d.app, 1)
 			} else if pageName == "pipeline" {
 				d.pipelineGroup.cycle(d.app, 1)
+			} else if pageName == "events" {
+				d.eventsGroup.cycle(d.app, 1)
 			} else {
 				d.nextPage()
 			}
@@ -274,6 +314,8 @@ func (d *DashboardV2) installKeybindings(cfg config.UIConfig) {
 				d.overviewGroup.cycle(d.app, -1)
 			} else if pageName == "pipeline" {
 				d.pipelineGroup.cycle(d.app, -1)
+			} else if pageName == "events" {
+				d.eventsGroup.cycle(d.app, -1)
 			} else {
 				d.prevPage()
 			}
@@ -302,6 +344,9 @@ func (d *DashboardV2) installKeybindings(cfg config.UIConfig) {
 				return nil
 			case 'p':
 				d.showPage("pipeline")
+				return nil
+			case 'e':
+				d.showPage("events")
 				return nil
 			}
 		}
@@ -340,6 +385,8 @@ func (d *DashboardV2) showPage(name string) {
 		d.ingestGroup.set(d.app, 0)
 	case "pipeline":
 		d.pipelineGroup.set(d.app, 0)
+	case "events":
+		d.eventsGroup.set(d.app, 0)
 	}
 }
 
@@ -518,8 +565,9 @@ func (d *DashboardV2) renderSnapshot() {
 	d.updateOverviewBoxes(snap.OverviewLines)
 	d.updateIngestBoxes(snap.OverviewLines)
 	d.updatePipelineBoxes(snap.OverviewLines)
+	d.updateEventsOverviewBoxes(snap.OverviewLines)
 
-	// Only overview + ingest + pipeline pages are active.
+	// Overview, ingest, pipeline, and events pages are active.
 }
 
 func (d *DashboardV2) snapshotCopy() Snapshot {
@@ -575,22 +623,20 @@ func (d *DashboardV2) AppendReputation(line string) {
 	if d == nil {
 		return
 	}
-	// No-op while events/debug pages are disabled.
 }
 
 func (d *DashboardV2) AppendSystem(line string) {
 	if d == nil {
 		return
 	}
-	// No-op while events/debug pages are disabled.
+	d.appendStream(d.eventsPanel, "events", line)
 }
 
 func (d *DashboardV2) SystemWriter() io.Writer {
 	if d == nil {
 		return nil
 	}
-	// Event/debug pages are disabled; discard console logs to avoid UI disruption.
-	return io.Discard
+	return &dashboardV2LineWriter{append: d.AppendSystem}
 }
 
 func newBoxedTextView(title string) *tview.TextView {
@@ -622,7 +668,7 @@ func newSpacer() *tview.Box {
 
 func buildFooter() *tview.TextView {
 	return tview.NewTextView().SetDynamicColors(true).SetText(
-		accentText("F1") + "Help  " + accentText("F2") + "Overview  " + accentText("F3") + "Ingest  " + accentText("F4") + "Pipeline  [Q]Quit",
+		accentText("F1") + "Help  " + accentText("F2") + "Overview  " + accentText("F3") + "Ingest  " + accentText("F4") + "Pipeline  " + accentText("F5") + "Events  [Q]Quit",
 	)
 }
 
@@ -724,6 +770,19 @@ func (d *DashboardV2) updatePipelineBoxes(lines []string) {
 	setOverviewPipeline(d.pipelineQuality, lines)
 }
 
+func (d *DashboardV2) updateEventsOverviewBoxes(lines []string) {
+	if len(lines) == 0 {
+		d.seedEventsPlaceholders()
+		return
+	}
+	setOverviewHeader(d.eventsHdr, lines)
+	if len(lines) > 2 {
+		setBoxText(d.eventsMem, lines[2])
+	}
+	setOverviewIngest(d.eventsIngest, lines)
+	setOverviewPipeline(d.eventsPipeline, lines)
+}
+
 func (d *DashboardV2) seedOverviewPlaceholders() {
 	setBoxText(d.overviewHdr, placeholderHeader)
 	setBoxText(d.overviewMem, placeholderMem)
@@ -732,6 +791,17 @@ func (d *DashboardV2) seedOverviewPlaceholders() {
 	setBoxText(d.overviewCaches, placeholderCaches)
 	setBoxText(d.overviewPath, placeholderPath)
 	setBoxText(d.overviewNetwork, placeholderNetwork)
+}
+
+func (d *DashboardV2) seedEventsPlaceholders() {
+	if d == nil {
+		return
+	}
+	setBoxText(d.eventsHdr, placeholderHeader)
+	setBoxText(d.eventsMem, placeholderMem)
+	setBoxText(d.eventsIngest, placeholderIngest)
+	setBoxText(d.eventsPipeline, placeholderPipeline)
+	setBoxText(d.eventsStream, placeholderEvents)
 }
 
 func (d *DashboardV2) seedIngestPlaceholders() {
@@ -838,12 +908,12 @@ func buildHelpOverlay() tview.Primitive {
 KEYBOARD HELP
 
 NAVIGATION
-  %sF1%s  Help   %sF2%s Overview   %sF3%s Ingest   %sF4%s Pipeline
+  %sF1%s  Help   %sF2%s Overview   %sF3%s Ingest   %sF4%s Pipeline   %sF5%s Events
   Tab Next pane   Shift+Tab Previous pane   q / Ctrl+C Quit
 
 SCROLLING
   ↑/↓ or k/j Scroll   PageUp/Down Fast scroll   Home/End Top/Bottom
-`, accentTag, accentReset, accentTag, accentReset, accentTag, accentReset, accentTag, accentReset)))
+`, accentTag, accentReset, accentTag, accentReset, accentTag, accentReset, accentTag, accentReset, accentTag, accentReset)))
 	help.SetBorder(true).SetTitle("Help")
 	help.SetBorderColor(uiBorderColor)
 	help.SetTitleColor(uiTitleColor)
@@ -884,4 +954,34 @@ func accentText(text string) string {
 		return ""
 	}
 	return accentTag + text + accentReset
+}
+
+type dashboardV2LineWriter struct {
+	append func(string)
+	mu     sync.Mutex
+	buf    []byte
+}
+
+func (w *dashboardV2LineWriter) Write(p []byte) (int, error) {
+	if w == nil || w.append == nil {
+		return len(p), nil
+	}
+	w.mu.Lock()
+	w.buf = append(w.buf, p...)
+	data := w.buf
+	w.mu.Unlock()
+
+	for {
+		idx := bytes.IndexByte(data, '\n')
+		if idx < 0 {
+			break
+		}
+		line := strings.TrimRight(string(data[:idx]), "\r")
+		w.append(line)
+		data = data[idx+1:]
+	}
+	w.mu.Lock()
+	w.buf = data
+	w.mu.Unlock()
+	return len(p), nil
 }

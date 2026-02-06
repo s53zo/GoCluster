@@ -1143,10 +1143,9 @@ func makeUnlicensedReporter(dash ui.Surface, tracker *stats.Tracker, deduper *dr
 		mode = strings.ToUpper(strings.TrimSpace(mode))
 		call = strings.TrimSpace(strings.ToUpper(call))
 
-		message := fmt.Sprintf("Unlicensed US %s %s dropped from %s %s @ %.1f kHz", role, call, source, mode, freq)
+		message := formatUnlicensedDropMessage(role, call, source, mode, freq)
 		if dash != nil {
-			colored := fmt.Sprintf("Unlicensed US %s [red]%s[-] dropped from %s %s @ %.1f kHz", role, call, source, mode, freq)
-			if line, ok := deduper.Process(colored); ok {
+			if line, ok := deduper.Process(message); ok {
 				dash.AppendUnlicensed(line)
 			}
 			return
@@ -1155,6 +1154,10 @@ func makeUnlicensedReporter(dash ui.Surface, tracker *stats.Tracker, deduper *dr
 			log.Println(line)
 		}
 	}
+}
+
+func formatUnlicensedDropMessage(role, call, source, mode string, freq float64) string {
+	return fmt.Sprintf("Unlicensed US %s %s dropped from %s %s @ %.1f kHz", role, call, source, mode, freq)
 }
 
 // Purpose: Build a reporter callback for dropped events.
@@ -1236,6 +1239,15 @@ func formatReputationDropLine(ev reputation.DropEvent) string {
 	}
 	return fmt.Sprintf("Reputation drop: %s band=%s reason=%s ip=%s asn=%s country=%s flags=%s",
 		call, band, reason, prefix, emptyOr(asn, "unknown"), emptyOr(country, "unknown"), flags)
+}
+
+func formatHarmonicSuppressedMessage(dxCall string, from, to float64, corroborators, deltaDB int) string {
+	return fmt.Sprintf("Harmonic suppressed: %s %.1f -> %.1f kHz (%d / %d dB)", dxCall, from, to, corroborators, deltaDB)
+}
+
+func formatCallCorrectedMessage(fromCall, toCall string, freq float64, supporters, correctedConfidence int) string {
+	return fmt.Sprintf("Call corrected: %s -> %s at %.1f kHz (%d / %d%%)",
+		fromCall, toCall, freq, supporters, correctedConfidence)
 }
 
 func formatPenaltyFlags(flags reputation.PenaltyFlags) string {
@@ -1952,16 +1964,12 @@ func processOutputSpots(
 
 			if !s.IsBeacon && harmonicDetector != nil && harmonicCfg.Enabled {
 				if drop, fundamental, corroborators, deltaDB := harmonicDetector.ShouldDrop(s, time.Now().UTC()); drop {
-					harmonicMsg := fmt.Sprintf("Harmonic suppressed: %s %.1f -> %.1f kHz (%d / %d dB)", s.DXCall, s.Frequency, fundamental, corroborators, deltaDB)
-					harmonicMsgDash := harmonicMsg
-					if dash != nil {
-						harmonicMsgDash = fmt.Sprintf("Harmonic suppressed: %s [red]%.1f[-] -> [green]%.1f[-] kHz (%d / %d dB)", s.DXCall, s.Frequency, fundamental, corroborators, deltaDB)
-					}
+					harmonicMsg := formatHarmonicSuppressedMessage(s.DXCall, s.Frequency, fundamental, corroborators, deltaDB)
 					if tracker != nil {
 						tracker.IncrementHarmonicSuppressions()
 					}
 					if dash != nil {
-						dash.AppendHarmonic(harmonicMsgDash)
+						dash.AppendHarmonic(harmonicMsg)
 					} else {
 						log.Println(harmonicMsg)
 					}
@@ -2925,13 +2933,7 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 		return false
 	}
 
-	message := fmt.Sprintf("Call corrected: %s -> %s at %.1f kHz (%d / %d%%)",
-		spotEntry.DXCall, corrected, spotEntry.Frequency, supporters, correctedConfidence)
-	messageDash := message
-	if dash != nil {
-		messageDash = fmt.Sprintf("Call corrected: [red]%s[-] -> [green]%s[-] at %.1f kHz (%d / %d%%)",
-			spotEntry.DXCall, corrected, spotEntry.Frequency, supporters, correctedConfidence)
-	}
+	message := formatCallCorrectedMessage(spotEntry.DXCall, corrected, spotEntry.Frequency, supporters, correctedConfidence)
 
 	correctedNorm := spot.NormalizeCallsign(corrected)
 	if shouldRejectCTYCall(correctedNorm) {
@@ -2947,7 +2949,7 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 	if ctyDB != nil {
 		if info := effectivePrefixInfo(ctyDB, metaCache, correctedNorm); info != nil {
 			if dash != nil {
-				dash.AppendCall(messageDash)
+				dash.AppendCall(message)
 			} else {
 				log.Println(message)
 			}
@@ -2969,7 +2971,7 @@ func maybeApplyCallCorrectionWithLogger(spotEntry *spot.Spot, idx *spot.Correcti
 	}
 
 	if dash != nil {
-		dash.AppendCall(messageDash)
+		dash.AppendCall(message)
 	} else {
 		log.Println(message)
 	}
