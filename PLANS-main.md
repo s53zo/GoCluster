@@ -1,14 +1,65 @@
 # PLANS-main.md — Plan of Record (Compact)
 
 ## Current State Snapshot
-- Active Plan: None (all implemented)
-- Scope Ledger: v7 — Pending: 0, Implemented: 8, Deferred: 0, Superseded: 0
+- Active Plan: Plan v8 — Scaffold Acceptance Criteria Section in Template — Implemented
+- Scope Ledger: v8 — Pending: 0, Implemented: 9, Deferred: 0, Superseded: 0
 - Next up: (none)
-- Last updated: 2026-02-06  (local)
+- Last updated: 2026-02-06 14:51 (local)
 
 ---
 
 ## Current Plan (MOST RECENT)
+
+### Plan v8 — Scaffold Acceptance Criteria Section in Template
+- Date: 2026-02-06
+- Status: Implemented
+- Scope Ledger snapshot: v8
+- Owner: Assistant (with user approval)
+- Approval: Approved v8
+
+Pre-Implementation Gate (Mandatory):
+- Classification: Small
+- Justification: Documentation-only template update; no runtime, concurrency, protocol, performance, or operator-behavior changes.
+- Scope Ledger IDs approved: S9
+- Approval evidence (quote + timestamp): "Add to PLANS-TEMPLATE.md explicit Acceptance Criteria by Scope Item section (required by AGENTS.md but not scaffolded)" — 2026-02-06 14:50
+- Ready to implement: Yes
+
+Goals:
+- Add an explicit `Acceptance Criteria by Scope Item` section scaffold to `PLANS-TEMPLATE.md`.
+
+Non-Goals:
+- No runtime code, config behavior, or contract changes.
+
+Requirements/Edge Cases:
+- Section should be clearly labeled and positioned in the plan body where authors can map criteria to Scope Ledger IDs.
+- Keep template compact and consistent with current style.
+
+Architecture (bounds/backpressure/shutdown):
+- Not applicable (workflow template/documentation only).
+
+Contracts:
+- No contract changes.
+
+Tests:
+- None (docs-only change).
+
+Rollout/Ops:
+- None.
+
+## Post-code (Plan v8)
+Deviations:
+- None.
+
+Verification commands actually run:
+- None (docs-only change).
+
+Final contract statement:
+- Added explicit acceptance-criteria scaffold to `PLANS-TEMPLATE.md`; no runtime or protocol contract changes.
+
+Scope Ledger status updates:
+- S9 → Implemented
+
+---
 
 ### Plan v7 — NEARBY Persistence Until Explicit OFF
 - Date: 2026-02-06
@@ -79,7 +130,7 @@ Scope Ledger status updates:
 
 ---
 
-## Scope Ledger v7 (LIVE)
+## Scope Ledger v8 (LIVE)
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
 | S1 | Windowed GC p99 in console/overview | Implemented | `GC p99 (interval)`; `n/a` if none |
@@ -90,6 +141,7 @@ Scope Ledger status updates:
 | S6 | Configurable NEARBY login warning | Implemented | `telnet.nearby_login_warning` |
 | S7 | Fix NEARBY persistence regression on load | Implemented | Remove normalization reset |
 | S8 | Remove login auto-disable persistence path for NEARBY bootstrap failures | Implemented | Keep ON until explicit user OFF |
+| S9 | Add explicit "Acceptance Criteria by Scope Item" scaffold to `PLANS-TEMPLATE.md` | Implemented | Align template with AGENTS pre-edit requirement |
 
 ---
 
@@ -107,6 +159,8 @@ Scope Ledger status updates:
 - 2026-02-05 10:50 — Implemented Plan v5; updated config/docs
 - 2026-02-06 — Implemented Plan v6; fix NEARBY persistence reset
 - 2026-02-06 — Implemented Plan v7; removed login auto-disable persistence path and validated NEARBY tests
+- 2026-02-06 14:50 — Created Plan v8 (Small) to add acceptance-criteria scaffold to PLANS template
+- 2026-02-06 14:51 — Implemented Plan v8; added acceptance-criteria scaffold to `PLANS-TEMPLATE.md`
 
 ---
 
@@ -151,12 +205,13 @@ Scope Ledger status updates:
 - Plan v5 — Configurable NEARBY Login Warning — 2026-02-05 — Scope Ledger v5 — Implemented
 - Plan v6 — Fix NEARBY Persistence Regression — 2026-02-06 — Scope Ledger v6 — Implemented
 - Plan v7 — NEARBY Persistence Until Explicit OFF — 2026-02-06 — Scope Ledger v7 — Implemented
+- Plan v8 — Scaffold Acceptance Criteria Section in Template — 2026-02-06 — Scope Ledger v8 — Implemented
 
 ---
 
 ## Context for Resume
 **Done**:
-- S1–S8 — All items implemented
+- S1–S9 — All items implemented
 **In Progress**:
 - (none)
 **Next**:

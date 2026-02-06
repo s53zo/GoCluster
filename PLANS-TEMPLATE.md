@@ -41,6 +41,9 @@ Contracts:
 Tests:
 - …
 
+Acceptance Criteria by Scope Item:
+- S# — <specific, testable acceptance criterion>
+
 Rollout/Ops:
 - …
 
