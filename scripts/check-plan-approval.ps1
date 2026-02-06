@@ -44,21 +44,13 @@ function Get-ChangedFiles {
 function Is-CodeFile {
 	Param([string]$Path)
 	$p = $Path.Replace('\', '/')
-	if ($p -match '^PLANS-.*\.md$') { return $false }
-	if ($p -in @("AGENTS.md", "AUDIT-TEMPLATE.md", "PLANS-TEMPLATE.md", "README.md")) { return $false }
+	if ($p -in @("AGENTS.md", "AUDIT-TEMPLATE.md", "README.md")) { return $false }
 	if ($p -match '^docs/') { return $false }
 	if ($p -match '\.md$') { return $false }
 	if ($p -match '\.ya?ml$') { return $false }
 	return $true
 }
 
-$branch = (git rev-parse --abbrev-ref HEAD).Trim()
-if (-not $branch -or $branch -eq "HEAD") {
-	Write-Error "Unable to resolve branch name; cannot locate PLANS-{branch}.md"
-	exit 2
-}
-
-$planPath = "PLANS-$branch.md"
 $base = Resolve-BaseRef -Preferred $BaseRef
 $changed = Get-ChangedFiles -Base $base
 $codeChanged = @($changed | Where-Object { Is-CodeFile $_ })
@@ -68,18 +60,26 @@ if ($codeChanged.Count -eq 0) {
 	exit 0
 }
 
-if (-not (Test-Path $planPath)) {
-	Write-Error "FAIL: code-file changes detected but $planPath is missing."
+if (-not (Test-Path "AGENTS.md")) {
+	Write-Error "FAIL: code-file changes detected but AGENTS.md is missing."
 	exit 1
 }
 
-$planText = Get-Content -Path $planPath -Raw
-if ($planText -notmatch 'Approval:\s+Approved v\d+') {
-	Write-Error "FAIL: code-file changes detected but $planPath lacks 'Approval: Approved vN'."
-	Write-Host "Changed code files:"
-	foreach ($f in $codeChanged) { Write-Host " - $f" }
-	exit 1
+$agentsText = Get-Content -Path "AGENTS.md" -Raw
+$requiredPatterns = @(
+	'Scope Ledger',
+	'Approval handshake',
+	'Approved vN'
+)
+
+foreach ($pattern in $requiredPatterns) {
+	if ($agentsText -notmatch [regex]::Escape($pattern)) {
+		Write-Error "FAIL: code-file changes detected but AGENTS.md is missing required workflow phrase '$pattern'."
+		Write-Host "Changed code files:"
+		foreach ($f in $codeChanged) { Write-Host " - $f" }
+		exit 1
+	}
 }
 
-Write-Host "PASS: code-file changes detected and $planPath contains approval token."
+Write-Host "PASS: code-file changes detected and AGENTS.md contains scope-ledger approval workflow guardrails."
 exit 0
