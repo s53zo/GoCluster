@@ -75,6 +75,7 @@ Immutability and supersession:
 Traceability:
 - Non-trivial PR-style summary must include `Decision refs: ADR-XXXX` (or `Decision refs: none`).
 - Scope-to-Code Traceability must include ADR references for decision-impacting items.
+- For any non-trivial change or troubleshooting task, read `docs/decision-log.md` first, then open all ADRs referenced by the affected component(s). If none apply, state `No relevant ADR found`.
 
 ### CRITICAL CHECKLIST (read first; for every change)
 - Confirm current Scope Ledger vN and what is Agreed/Pending.
