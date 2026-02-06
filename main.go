@@ -521,8 +521,10 @@ func main() {
 
 	// Create stats tracker
 	statsTracker := stats.NewTracker()
-	dropReporter := makeDroppedReporter(surface)
-	unlicensedReporter := makeUnlicensedReporter(surface, statsTracker)
+	dropDedupeWindow := time.Duration(cfg.Logging.DropDedupeWindowSeconds) * time.Second
+	dropLogDeduper := newDropLogDeduper(dropDedupeWindow, defaultDropLogDedupeMaxKeys)
+	dropReporter := makeDroppedReporter(surface, dropLogDeduper)
+	unlicensedReporter := makeUnlicensedReporter(surface, statsTracker, dropLogDeduper)
 
 	var repGate *reputation.Gate
 	var repDropReporter func(reputation.DropEvent)
@@ -1127,7 +1129,7 @@ func main() {
 // Key aspects: Returns a closure that increments stats and formats output.
 // Upstream: main wiring for applyLicenseGate reporting.
 // Downstream: tracker.IncrementUnlicensedDrops and dash.AppendUnlicensed/log.Println.
-func makeUnlicensedReporter(dash ui.Surface, tracker *stats.Tracker) func(source, role, call, mode string, freq float64) {
+func makeUnlicensedReporter(dash ui.Surface, tracker *stats.Tracker, deduper *dropLogDeduper) func(source, role, call, mode string, freq float64) {
 	// Purpose: Emit an unlicensed drop event with consistent formatting.
 	// Key aspects: Normalizes fields and routes to UI or log.
 	// Upstream: applyLicenseGate.
@@ -1144,10 +1146,14 @@ func makeUnlicensedReporter(dash ui.Surface, tracker *stats.Tracker) func(source
 		message := fmt.Sprintf("Unlicensed US %s %s dropped from %s %s @ %.1f kHz", role, call, source, mode, freq)
 		if dash != nil {
 			colored := fmt.Sprintf("Unlicensed US %s [red]%s[-] dropped from %s %s @ %.1f kHz", role, call, source, mode, freq)
-			dash.AppendUnlicensed(colored)
+			if line, ok := deduper.Process(colored); ok {
+				dash.AppendUnlicensed(line)
+			}
 			return
 		}
-		log.Println(message)
+		if line, ok := deduper.Process(message); ok {
+			log.Println(line)
+		}
 	}
 }
 
@@ -1155,16 +1161,20 @@ func makeUnlicensedReporter(dash ui.Surface, tracker *stats.Tracker) func(source
 // Key aspects: Routes to dropped pane when UI is active, otherwise logs.
 // Upstream: CTY/PC61/reputation drop paths.
 // Downstream: dash.AppendDropped and log.Print.
-func makeDroppedReporter(dash ui.Surface) func(line string) {
+func makeDroppedReporter(dash ui.Surface, deduper *dropLogDeduper) func(line string) {
 	return func(line string) {
 		if line == "" {
 			return
 		}
-		if dash != nil {
-			dash.AppendDropped(line)
+		processed, ok := deduper.Process(line)
+		if !ok {
 			return
 		}
-		log.Print(line)
+		if dash != nil {
+			dash.AppendDropped(processed)
+			return
+		}
+		log.Print(processed)
 	}
 }
 

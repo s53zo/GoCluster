@@ -17,6 +17,12 @@
 - Owner: Assistant (with user approval)
 - Approval: Pending
 
+Pre-Implementation Gate (Mandatory):
+- Classification: Small | Non-trivial
+- Scope Ledger IDs approved: <e.g., S2,S3,S4>
+- Approval evidence (quote + timestamp): "<exact user approval text>" — YYYY-MM-DD HH:MM
+- Ready to implement: Yes | No
+
 Goals:
 - …
 

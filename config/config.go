@@ -288,9 +288,10 @@ type UIConfig struct {
 
 // LoggingConfig controls optional system log duplication to disk.
 type LoggingConfig struct {
-	Enabled       bool   `yaml:"enabled"`
-	Dir           string `yaml:"dir"`
-	RetentionDays int    `yaml:"retention_days"`
+	Enabled                 bool   `yaml:"enabled"`
+	DropDedupeWindowSeconds int    `yaml:"drop_dedupe_window_seconds"`
+	Dir                     string `yaml:"dir"`
+	RetentionDays           int    `yaml:"retention_days"`
 }
 
 // PropReportConfig controls automatic propagation report generation on log rotation.
@@ -968,6 +969,12 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Logging.Dir = strings.TrimSpace(cfg.Logging.Dir)
+	if !yamlKeyPresent(raw, "logging", "drop_dedupe_window_seconds") {
+		cfg.Logging.DropDedupeWindowSeconds = 120
+	}
+	if cfg.Logging.DropDedupeWindowSeconds < 0 {
+		return nil, fmt.Errorf("invalid logging.drop_dedupe_window_seconds %d (must be >= 0)", cfg.Logging.DropDedupeWindowSeconds)
+	}
 	if cfg.Logging.Enabled {
 		if cfg.Logging.Dir == "" {
 			cfg.Logging.Dir = "data/logs"
@@ -1959,9 +1966,9 @@ func (c *Config) Print() {
 		c.UI.PaneLines.Harmonics,
 		c.UI.PaneLines.System)
 	if c.Logging.Enabled {
-		fmt.Printf("Logging: enabled (dir=%s retention_days=%d)\n", c.Logging.Dir, c.Logging.RetentionDays)
+		fmt.Printf("Logging: enabled (dir=%s retention_days=%d drop_dedupe_window_seconds=%d)\n", c.Logging.Dir, c.Logging.RetentionDays, c.Logging.DropDedupeWindowSeconds)
 	} else {
-		fmt.Printf("Logging: disabled\n")
+		fmt.Printf("Logging: disabled (drop_dedupe_window_seconds=%d)\n", c.Logging.DropDedupeWindowSeconds)
 	}
 	if c.PropReport.Enabled {
 		fmt.Printf("Prop report: enabled (refresh=%s UTC)\n", c.PropReport.RefreshUTC)

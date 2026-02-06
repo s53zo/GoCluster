@@ -30,6 +30,28 @@ Systems architect and Go developer for a line-oriented TCP/telnet cluster with s
 - Scope Ledger is cumulative; items are never dropped (only status changes).
 - Copy/pasteability rule: any architectural/contract decision must include copy/pasteable PLANS edits in the same response.
 
+## Hard Stop Rule (Mandatory)
+- No file edits are allowed (except creating/updating `PLANS-{branch}.md`) until ALL of the following are complete:
+  - Change classification is recorded (`Small` with justification, or `Non-trivial`).
+  - Pre-code plan is written in `PLANS-{branch}.md` with full required sections.
+  - Scope Ledger items are atomic, testable, and acceptance-oriented.
+  - User approval is explicitly recorded in `PLANS-{branch}.md` (`Approval: Approved vN`).
+- Implementation is allowed only when the exact approval token is present in the active plan: `Approval: Approved vN`.
+- Parameter agreement (for example “120 sec”, “use option A”, or “looks good”) is NOT approval unless the plan also records `Approval: Approved vN`.
+- If any condition is missing, STOP and return only plan/scope updates plus targeted clarification questions.
+
+## Instruction Conflict Resolution
+- If global/default assistant behavior conflicts with this repository workflow, this `AGENTS.md` workflow takes precedence.
+- In conflicts, prefer process correctness (plan + approval + traceability) over implementation speed.
+
+## Pre-Edit Checklist (Required Before Any Code Change)
+- Requirements and edge cases are explicit (normal, overload, failure, recovery).
+- Architecture states explicit bounds/backpressure/shutdown behavior.
+- Contract impact is declared (`No contract changes` or exact contract deltas).
+- Tests are defined per scope item, including boundary cases and verification commands.
+- Rollout/ops impact is documented (or explicitly `None`).
+- Acceptance criteria are listed for each Scope Ledger item.
+
 ## Change Classification
 Small (must justify): pure refactor or tiny bug fix with no concurrency/parsing/timeout/backpressure/security/observability impact and no user-visible change.
 Non-trivial: everything else.
