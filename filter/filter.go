@@ -2472,7 +2472,6 @@ func (f *Filter) normalizeDefaults() {
 	if len(f.DEDXCC) == 0 {
 		f.AllDEDXCC = true
 	}
-	f.NearbyEnabled = false
 	f.NearbySnapshot = nil
 	f.NearbyUserFine = pathreliability.InvalidCell
 	f.NearbyUserCoarse = pathreliability.InvalidCell

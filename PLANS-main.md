@@ -2,46 +2,53 @@
 
 ## Current State Snapshot
 - Active Plan: None (all implemented)
-- Scope Ledger: v5 — Pending: 0, Implemented: 6, Deferred: 0, Superseded: 0
+- Scope Ledger: v6 — Pending: 0, Implemented: 7, Deferred: 0, Superseded: 0
 - Next up: (none)
-- Last updated: 2026-02-05 11:25 (local)
+- Last updated: 2026-02-06  (local)
 
 ---
 
 ## Current Plan (MOST RECENT)
 
-### Plan v5 — Configurable NEARBY Login Warning
-- Date: 2026-02-05
+### Plan v6 — Fix NEARBY Persistence Regression
+- Date: 2026-02-06
 - Status: Implemented
-- Scope Ledger snapshot: v5
+- Scope Ledger snapshot: v6
 - Owner: Assistant (with user approval)
-- Approval: Approved v5
+- Approval: Approved v6
 
 Goals:
-- Add `telnet.nearby_login_warning` to `data/config/runtime.yaml`.
-- Use it for the login warning line when NEARBY is active.
+- Ensure `NEARBY=ON` persists across login/logoff until the user disables it.
 
 Non-Goals:
-- No changes to NEARBY semantics or other login banner content.
+- No change to NEARBY matching semantics or H3 resolution.
+- No change to login warning behavior.
 
 Requirements/Edge Cases:
-- Empty/whitespace value ⇒ default warning; ensure warning ends with `\n`.
+- Persisted `nearby_enabled` must survive load/normalize cycles.
+- Session-only data (`NearbySnapshot`, cached cells) must not be persisted.
+- If grid or H3 tables are missing at login, NEARBY may still be disabled as before.
+- Explicit user actions like `PASS NEARBY OFF` or `RESET` may disable NEARBY (unchanged).
 
 Architecture (bounds/backpressure/shutdown):
-- Config field → server options → greeting warning path.
+- Preserve persisted flag by removing the reset of `NearbyEnabled` from filter normalization.
+- Keep snapshot/cell cache cleared on load (session-only).
+- No concurrency or buffering changes.
 
 Contracts:
-- Protocol/format: login warning text configurable. No other contract changes.
+- No protocol/format changes. No drop/backpressure changes.
+- User-visible behavior: NEARBY remains enabled across sessions unless user disables it.
 
 Tests:
-- Verify configured value and default fallback.
+- Ensure `TestUserRecordRoundTrip` keeps `NearbyEnabled=true` after reload.
+- Run: `go test ./filter -run Nearby`.
 
 Rollout/Ops:
-- Update `runtime.yaml` sample.
+- No config changes.
 
 ---
 
-## Post-code (Plan v5)
+## Post-code (Plan v6)
 Deviations:
 - None.
 
@@ -49,14 +56,14 @@ Verification commands actually run:
 - None.
 
 Final contract statement:
-- Login warning text is operator-configurable via `runtime.yaml`.
+- `nearby_enabled` persists across sessions unless disabled by user action.
 
 Scope Ledger status updates:
-- S6 → Implemented
+- S7 → Implemented
 
 ---
 
-## Scope Ledger v5 (LIVE)
+## Scope Ledger v6 (LIVE)
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
 | S1 | Windowed GC p99 in console/overview | Implemented | `GC p99 (interval)`; `n/a` if none |
@@ -65,6 +72,7 @@ Scope Ledger status updates:
 | S4 | Persist NEARBY ON/OFF across sessions | Implemented | |
 | S5 | Login warning when NEARBY enabled | Implemented | Disable if grid/H3 missing |
 | S6 | Configurable NEARBY login warning | Implemented | `telnet.nearby_login_warning` |
+| S7 | Fix NEARBY persistence regression on load | Implemented | Remove normalization reset |
 
 ---
 
@@ -80,6 +88,7 @@ Scope Ledger status updates:
 - 2026-02-05 10:35 — Ran `go test ./filter -run Nearby` and `go test ./telnet -run Nearby`
 - 2026-02-05 10:45 — Created Plan v5 and Scope Ledger v5 for configurable warning
 - 2026-02-05 10:50 — Implemented Plan v5; updated config/docs
+- 2026-02-06 — Implemented Plan v6; fix NEARBY persistence reset
 
 ---
 
@@ -122,12 +131,13 @@ Scope Ledger status updates:
 - Plan v3 — Ingest Liveness Indicators — 2026-02-05 — Scope Ledger v3 — Implemented (archived)
 - Plan v4 — Persist NEARBY + Login Warning — 2026-02-05 — Scope Ledger v4 — Implemented (archived)
 - Plan v5 — Configurable NEARBY Login Warning — 2026-02-05 — Scope Ledger v5 — Implemented
+- Plan v6 — Fix NEARBY Persistence Regression — 2026-02-06 — Scope Ledger v6 — Implemented
 
 ---
 
 ## Context for Resume
 **Done**:
-- S1–S6 — All items implemented
+- S1–S7 — All items implemented
 **In Progress**:
 - (none)
 **Next**:
