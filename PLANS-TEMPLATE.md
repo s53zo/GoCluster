@@ -1,108 +1,57 @@
-# PLANS-{branch}.md — Plan of Record
-
-## Operating rules
-- This file is the durable plan-of-record for this branch. It is the single source of truth for work state in long conversations.
-- Required for any Non-trivial change or contract-touching change (see AGENTS.md).
-- Each plan is versioned as Plan vN and must reference the Scope Ledger snapshot it implements (Scope Ledger vM).
-- Plans have two phases:
-  - Pre-code: goals/non-goals/assumptions/requirements/architecture/contracts/test plan/rollout.
-  - Post-code: deviations, verification commands actually run (if any), final contract statement, and Scope Ledger status updates.
-- Keep history append-only: use Plan Index and Decision Log.
-- The **Current State Snapshot** is mandatory and must be updated on every plan change, scope decision, or end-of-session update.
-- The **Turn Log** is mandatory and append-only; add one line per significant turn (decision, scope change, implementation step, verification run).
-- **Compaction rule (mandatory)**: When this file exceeds ~1,000 lines or every 25–50 turns (whichever comes first), move implemented plan entries, old Turn Log entries, and any superseded Scope Ledger rows to `PLANS-ARCHIVE-{branch}.md`. Keep only the current plan, live Scope Ledger, last 20 Turn Log entries, Decision Log, and Plan Index in this file. Update the Current State Snapshot and Plan Index to reference the archive.
-
----
+# PLANS-{branch}.md — Plan of Record (Compact)
 
 ## Current State Snapshot
-- **Active Plan**: Plan vN — <short title> — <status>
-- **Scope Ledger**: vM — Pending: <N>, Implemented: <N>, Deferred: <N>, Superseded: <N>
-- **Next up**: <1–3 bullets>
-- **Last updated**: YYYY-MM-DD HH:MM (local)
+- Active Plan: Plan vN — <title> — <status>
+- Scope Ledger: vM — Pending: <N>, Implemented: <N>, Deferred: <N>, Superseded: <N>
+- Next up: <1–3 bullets>
+- Last updated: YYYY-MM-DD HH:MM (local)
 
 ---
 
 ## Current Plan (ACTIVE)
 
-### Plan vN — <short title>
-- **Date**: YYYY-MM-DD
-- **Status**: Planned | In Progress | Implemented
-- **Scope Ledger snapshot**: vM
-- **Owner**: Assistant (with user approval)
-- **Approval**: Pending (user can reply "Approved vN")
+### Plan vN — <title>
+- Date: YYYY-MM-DD
+- Status: Planned | In Progress | Implemented
+- Scope Ledger snapshot: vM
+- Owner: Assistant (with user approval)
+- Approval: Pending
 
-1) Goals
-- Describe the intended outcomes.
+Goals:
+- …
 
-2) Non-goals
-- Explicitly list what is not in scope.
+Non-Goals:
+- …
 
-3) Assumptions
-- State key assumptions that the plan relies on.
+Requirements/Edge Cases:
+- …
 
-4) Requirements and edge cases
-Functional:
-- List required behaviors and interfaces.
+Architecture (bounds/backpressure/shutdown):
+- …
 
-Non-functional:
-- List performance, reliability, or resource constraints.
+Contracts:
+- No contract changes. (or list changes only)
 
-Edge cases:
-- List notable edge cases and handling.
+Tests:
+- …
 
-5) Architecture (plan before code)
-- Summarize concurrency model, ownership, bounds, backpressure, and failure modes.
-
-6) Contracts and compatibility
-- Protocol/format:
-- Ordering:
-- Drop/disconnect policy:
-- Deadlines/timeouts:
-- Observability:
-
-7) User-visible behavior
-- Describe user-visible behavior changes or state none.
-
-8) Config impact
-- List config changes or state none.
-
-9) Observability plan
-- List metrics/logs changes or state none.
-
-10) Test plan (before code)
-- List boundary and regression tests to add/update.
-
-11) Performance/measurement plan
-- List benchmarks or profiling steps if applicable.
-
-12) Rollout/ops plan
-- Describe rollout steps and risk mitigations.
-
-13) Open questions / needs-confirmation
-- List items requiring user confirmation.
+Rollout/Ops:
+- …
 
 ---
 
-## Post-implementation notes (Plan vN)
-Implementation notes:
-- Summarize what was implemented.
-
+## Post-code (Plan vN)
 Deviations:
-- State deviations from the plan or "None."
+- None.
 
 Verification commands actually run:
-- List commands actually executed, or "None."
+- None.
 
 Final contract statement:
-- State whether any contracts changed.
+- …
 
 Scope Ledger status updates:
-- Update item statuses for this plan.
-
----
-
-## Pending Work Summary
-- S# — <short description> — <blocking detail or next step>
+- …
 
 ---
 
@@ -111,48 +60,19 @@ Scope Ledger status updates:
 |----|------|--------|-------|
 | S1 | <scope item> | Agreed/Pending | |
 
-Status values: Agreed/Pending, Implemented, Deferred, Superseded (per AGENTS.md)  
-Completed items remain inline until compaction; superseded items move to archive during compaction.
-
 ---
 
-## Active Implementation
-### Current Phase
-Planned | In Progress | Complete
-
-### In Progress
-(none)
-
-### Completed This Session
-- [ ] <item>
-
-### Blocked / Questions
-- [ ] <item>
-
----
-
-## Turn Log (Append-Only)
-- REQUIRED: add one line per significant turn (decision, scope change, implementation step, verification run).
-- YYYY-MM-DD HH:MM — <short description of change or decision>
+## Turn Log (Append-Only, last 25 kept)
+- YYYY-MM-DD HH:MM — <short description>
 
 ---
 
 ## Decision Log (Append-Only)
 ### D1 — YYYY-MM-DD <title>
-- **Context**: <why>
-- **Chosen**: <decision>
-- **Alternatives**: <alternatives considered>
-- **Impact**: <impact on contracts/ops>
-
----
-
-## Files Modified
-- <file>
-
----
-
-## Verification Status
-- [ ] <status>
+- Context: …
+- Chosen: …
+- Alternatives: …
+- Impact: …
 
 ---
 
@@ -163,24 +83,18 @@ Planned | In Progress | Complete
 
 ## Context for Resume
 **Done**:
-- S# — <short description>
+- …
 **In Progress**:
-- S# — <short description> — <blocker if any>
+- …
 **Next**:
-- S# — <short description>
+- …
 **Key Decisions**:
-- D# — <short title>
+- …
 **Files Hot**:
-- <file paths likely to be touched next>
+- …
 
 ---
 
-## PLANS-ARCHIVE-{branch}.md Guidelines (Template)
-- Purpose: store implemented Plan vN entries, older Turn Log entries, and superseded Scope Ledger rows.
-- Structure:
-  - Archive Index (date + ranges of moved content)
-  - Archived Plans (full Plan vN blocks)
-  - Archived Scope Ledger rows (only rows moved during compaction)
-  - Archived Turn Log (older entries, optionally summarized every 20–50 turns)
-- Do not delete history; only move it from the main PLANS file to the archive.
-*** End Patch"}}
+## Compaction Rule
+- Keep only: Active Plan, live Scope Ledger, last 25 Turn Log entries, Decision Log, Plan Index, Current State Snapshot, Context for Resume.
+- Move older plans/logs/superseded scope rows to `PLANS-ARCHIVE-{branch}.md`.
