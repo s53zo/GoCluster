@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"dxcluster/config"
@@ -34,14 +35,17 @@ const (
 		"[lightgray]Meta cache[-]:  [[white:white]  [black:white] 5,479[-:-]  [-:-]] 99.5%\n" +
 		"[lightgray]Known calls[-]: [[white:white] [black:white]50,314[-:-] [-:-]░░░░░░░░] 49.4%\n\n" +
 		"[lightgray]CTY[-]: --  [lightgray]SCP[-]: --  [lightgray]FCC[-]: --  [lightgray]Skew[-]: --"
-	placeholderPath       = "[lightgray]Path pairs[-]: -- (L2) / -- (L1)\n[lightgray]160m[-]: -- / --   [lightgray]80m[-]: -- / --"
-	placeholderNetwork    = "[lightgray]Telnet[-]: -- clients   [lightgray]Drops[-]: Q-- C-- W--"
-	placeholderValidation = "CTY drop: --"
-	placeholderUnlicensed = "Unlicensed drop: --"
-	placeholderCorrected  = "Corrected: --"
-	placeholderHarmonics  = "Harmonics: --"
-	placeholderEvents     = "No events yet."
-	streamPanelMaxLines   = 200
+	placeholderPath             = "[lightgray]Path pairs[-]: -- (L2) / -- (L1)\n[lightgray]160m[-]: -- / --   [lightgray]80m[-]: -- / --"
+	placeholderNetwork          = "[lightgray]Telnet[-]: -- clients   [lightgray]Drops[-]: Q-- C-- W--"
+	placeholderValidation       = "CTY drop: --"
+	placeholderUnlicensed       = "Unlicensed drop: --"
+	placeholderCorrected        = "Corrected: --"
+	placeholderHarmonics        = "Harmonics: --"
+	placeholderEvents           = "No events yet."
+	streamPanelMaxLines         = 200
+	overviewCachesDefaultHeight = 7
+	overviewCachesMinHeight     = 3
+	overviewPathMinHeight       = 3
 )
 
 var (
@@ -53,9 +57,10 @@ var (
 
 // DashboardV2 implements the page-based tview UI.
 type DashboardV2 struct {
-	app       *tview.Application
-	pages     *tview.Pages
-	scheduler *frameScheduler
+	app        *tview.Application
+	pages      *tview.Pages
+	scheduler  *frameScheduler
+	activePage atomic.Value
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -63,10 +68,11 @@ type DashboardV2 struct {
 
 	ready chan struct{}
 
-	snapshotMu sync.RWMutex
-	snapshot   Snapshot
+	snapshot   atomic.Pointer[Snapshot]
 	statsMu    sync.Mutex
 	statsLines []string
+	networkMu  sync.RWMutex
+	network    []string
 
 	overviewRoot      *tview.Flex
 	overviewHdr       *tview.TextView
@@ -79,25 +85,19 @@ type DashboardV2 struct {
 	ingestRoot        *tview.Flex
 	ingestHdr         *tview.TextView
 	ingestIngest      *tview.TextView
-	ingestValidation  *tview.TextView
-	ingestUnlicensed  *tview.TextView
+	ingestValidation  *streamPanel
+	ingestUnlicensed  *streamPanel
 	pipelineRoot      *tview.Flex
 	pipelineHdr       *tview.TextView
 	pipelineQuality   *tview.TextView
-	pipelineCorrected *tview.TextView
-	pipelineHarmonics *tview.TextView
+	pipelineCorrected *streamPanel
+	pipelineHarmonics *streamPanel
 	eventsRoot        *tview.Flex
 	eventsHdr         *tview.TextView
 	eventsMem         *tview.TextView
 	eventsIngest      *tview.TextView
 	eventsPipeline    *tview.TextView
-	eventsStream      *tview.TextView
-
-	validationPanel *streamPanel
-	unlicensedPanel *streamPanel
-	correctedPanel  *streamPanel
-	harmonicsPanel  *streamPanel
-	eventsPanel     *streamPanel
+	eventsStream      *streamPanel
 
 	overviewGroup focusGroup
 	ingestGroup   focusGroup
@@ -110,6 +110,17 @@ type DashboardV2 struct {
 	metrics   *Metrics
 
 	pagePresent map[string]bool
+
+	snapshotFrameFn   func()
+	validationFrameFn func()
+	unlicensedFrameFn func()
+	correctedFrameFn  func()
+	harmonicsFrameFn  func()
+	eventsFrameFn     func()
+	networkFrameFn    func()
+
+	overviewCachesHeight int
+	overviewPathHeight   int
 }
 
 // NewDashboardV2 constructs the v2 dashboard if enabled.
@@ -130,14 +141,16 @@ func NewDashboardV2(cfg config.UIConfig, enable bool) *DashboardV2 {
 
 	metrics := NewMetrics()
 	d := &DashboardV2{
-		app:         app,
-		pages:       pages,
-		ctx:         ctx,
-		cancel:      cancel,
-		ready:       ready,
-		pageOrder:   cfg.V2.Pages,
-		metrics:     metrics,
-		pagePresent: make(map[string]bool),
+		app:                  app,
+		pages:                pages,
+		ctx:                  ctx,
+		cancel:               cancel,
+		ready:                ready,
+		pageOrder:            cfg.V2.Pages,
+		metrics:              metrics,
+		pagePresent:          make(map[string]bool),
+		overviewCachesHeight: overviewCachesDefaultHeight,
+		overviewPathHeight:   overviewPathMinHeight,
 	}
 
 	d.overviewHdr = newBoxedTextView("Overview")
@@ -159,51 +172,45 @@ func NewDashboardV2(cfg config.UIConfig, enable bool) *DashboardV2 {
 		AddItem(newSpacer(), 1, 0, false).
 		AddItem(d.overviewPipeline, 4, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
-		AddItem(d.overviewCaches, 10, 0, false).
+		AddItem(d.overviewCaches, overviewCachesDefaultHeight, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
-		AddItem(d.overviewPath, 3, 0, false).
+		AddItem(d.overviewPath, overviewPathMinHeight, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
 		AddItem(d.overviewNetwork, 0, 1, false)
 	d.ingestHdr = newBoxedTextView("Overview")
 	d.ingestIngest = newBoxedTextView("Ingest Rates (per min)")
-	d.ingestValidation = newBoxedTextView("Validation")
-	d.ingestUnlicensed = newBoxedTextView("Unlicensed")
+	d.ingestValidation = newStreamPanel("Validation", streamPanelMaxLines, true)
+	d.ingestUnlicensed = newStreamPanel("Unlicensed", streamPanelMaxLines, true)
 	d.seedIngestPlaceholders()
-	d.validationPanel = newStreamPanel(d.ingestValidation, "Validation", streamPanelMaxLines)
-	d.unlicensedPanel = newStreamPanel(d.ingestUnlicensed, "Unlicensed", streamPanelMaxLines)
 	d.ingestRoot = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(d.ingestHdr, 3, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
 		AddItem(d.ingestIngest, 6, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
-		AddItem(d.ingestValidation, 28, 0, false).
+		AddItem(d.ingestValidation.Primitive(), 28, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
-		AddItem(d.ingestUnlicensed, 28, 0, false)
+		AddItem(d.ingestUnlicensed.Primitive(), 28, 0, false)
 
 	d.pipelineHdr = newBoxedTextView("Overview")
 	d.pipelineQuality = newBoxedTextView("Pipeline Quality")
-	d.pipelineCorrected = newBoxedTextView("Corrected")
-	d.pipelineHarmonics = newBoxedTextView("Harmonics")
+	d.pipelineCorrected = newStreamPanel("Corrected", streamPanelMaxLines, true)
+	d.pipelineHarmonics = newStreamPanel("Harmonics", streamPanelMaxLines, true)
 	d.seedPipelinePlaceholders()
-	d.correctedPanel = newStreamPanel(d.pipelineCorrected, "Corrected", streamPanelMaxLines)
-	d.harmonicsPanel = newStreamPanel(d.pipelineHarmonics, "Harmonics", streamPanelMaxLines)
 	d.pipelineRoot = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(d.pipelineHdr, 3, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
 		AddItem(d.pipelineQuality, 4, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
-		AddItem(d.pipelineCorrected, 28, 0, false).
+		AddItem(d.pipelineCorrected.Primitive(), 28, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
-		AddItem(d.pipelineHarmonics, 28, 0, false)
+		AddItem(d.pipelineHarmonics.Primitive(), 28, 0, false)
 
 	d.eventsHdr = newBoxedTextView("Overview")
 	d.eventsMem = newBoxedTextView("Memory / GC")
 	d.eventsIngest = newBoxedTextView("Ingest Rates (per min)")
 	d.eventsPipeline = newBoxedTextView("Pipeline Quality")
-	d.eventsStream = newBoxedTextView("Events")
-	d.eventsStream.SetDynamicColors(false)
+	d.eventsStream = newStreamPanel("Events", streamPanelMaxLines, false)
 	d.seedEventsPlaceholders()
-	d.eventsPanel = newStreamPanel(d.eventsStream, "Events", streamPanelMaxLines)
 	d.eventsRoot = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(d.eventsHdr, 3, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
@@ -213,12 +220,12 @@ func NewDashboardV2(cfg config.UIConfig, enable bool) *DashboardV2 {
 		AddItem(newSpacer(), 1, 0, false).
 		AddItem(d.eventsPipeline, 4, 0, false).
 		AddItem(newSpacer(), 1, 0, false).
-		AddItem(d.eventsStream, 0, 1, false)
+		AddItem(d.eventsStream.Primitive(), 0, 1, false)
 
 	d.overviewGroup = newFocusGroup(newFocusBox(d.overviewNetwork, "Network", true))
-	d.ingestGroup = newFocusGroup(d.validationPanel, d.unlicensedPanel)
-	d.pipelineGroup = newFocusGroup(d.correctedPanel, d.harmonicsPanel)
-	d.eventsGroup = newFocusGroup(d.eventsPanel)
+	d.ingestGroup = newFocusGroup(d.ingestValidation, d.ingestUnlicensed)
+	d.pipelineGroup = newFocusGroup(d.pipelineCorrected, d.pipelineHarmonics)
+	d.eventsGroup = newFocusGroup(d.eventsStream)
 
 	d.addPage("overview", d.overviewRoot, true, false)
 	d.addPage("ingest", d.ingestRoot, true, false)
@@ -227,6 +234,14 @@ func NewDashboardV2(cfg config.UIConfig, enable bool) *DashboardV2 {
 
 	help := buildHelpOverlay()
 	d.addPage("help", help, true, false)
+
+	d.snapshotFrameFn = d.renderSnapshot
+	d.validationFrameFn = func() { d.ingestValidation.Render(d.app) }
+	d.unlicensedFrameFn = func() { d.ingestUnlicensed.Render(d.app) }
+	d.correctedFrameFn = func() { d.pipelineCorrected.Render(d.app) }
+	d.harmonicsFrameFn = func() { d.pipelineHarmonics.Render(d.app) }
+	d.eventsFrameFn = func() { d.eventsStream.Render(d.app) }
+	d.networkFrameFn = d.renderOverviewNetwork
 
 	d.scheduler = newFrameScheduler(app, cfg.V2.TargetFPS, 100*time.Millisecond, metrics.ObserveRender)
 	d.scheduler.Start()
@@ -375,6 +390,8 @@ func (d *DashboardV2) showPage(name string) {
 		}
 	}
 	d.pages.SwitchToPage(name)
+	d.activePage.Store(name)
+	d.refreshVisiblePage(name)
 	if d.metrics != nil {
 		d.metrics.PageSwitch()
 	}
@@ -499,31 +516,25 @@ func (d *DashboardV2) Stop() {
 }
 
 func (d *DashboardV2) SetStats(lines []string) {
-	if d == nil {
+	if d == nil || d.scheduler == nil {
 		return
 	}
 	d.statsMu.Lock()
 	d.statsLines = append(d.statsLines[:0], lines...)
 	d.statsMu.Unlock()
-	d.scheduler.Schedule("stats", func() {
-		d.renderSnapshot()
-	})
+	d.scheduler.Schedule("stats", d.snapshotFrameFn)
 }
 
 func (d *DashboardV2) SetSnapshot(snapshot Snapshot) {
-	if d == nil {
+	if d == nil || d.scheduler == nil {
 		return
 	}
-	d.snapshotMu.Lock()
-	d.snapshot = snapshot
-	d.snapshotMu.Unlock()
-	d.scheduler.Schedule("snapshot", func() {
-		d.renderSnapshot()
-	})
+	d.snapshot.Store(cloneSnapshot(snapshot))
+	d.scheduler.Schedule("snapshot", d.snapshotFrameFn)
 }
 
 func (d *DashboardV2) UpdateNetworkStatus(summaryLine string, clientLines []string) {
-	if d == nil {
+	if d == nil || d.scheduler == nil {
 		return
 	}
 	lines := make([]string, 0, 1+len(clientLines))
@@ -531,48 +542,25 @@ func (d *DashboardV2) UpdateNetworkStatus(summaryLine string, clientLines []stri
 		lines = append(lines, summaryLine)
 	}
 	lines = append(lines, clientLines...)
-	text := padLines(strings.Join(lines, "\n"))
-	d.scheduler.Schedule("network", func() {
-		if d.overviewNetwork != nil {
-			d.overviewNetwork.SetText(text)
-			if d.overviewRoot != nil {
-				const (
-					networkMaxRows = 10
-					baseLines      = 4
-					overflowLine   = 1
-				)
-				maxHeight := baseLines + networkMaxRows + overflowLine + 2
-				height := len(lines) + 2
-				if height > maxHeight {
-					height = maxHeight
-				}
-				if height < 3 {
-					height = 3
-				}
-				d.overviewRoot.ResizeItem(d.overviewNetwork, height, 0)
-			}
-		}
-	})
+	d.storeNetworkLines(lines)
+	if d.currentActivePage() == "overview" {
+		d.scheduler.Schedule("network", d.networkFrameFn)
+	}
 }
 
 func (d *DashboardV2) renderSnapshot() {
-	snap := d.snapshotCopy()
-	if len(snap.OverviewLines) == 0 {
-		d.statsMu.Lock()
-		snap.OverviewLines = append([]string{}, d.statsLines...)
-		d.statsMu.Unlock()
+	active := d.currentActivePage()
+	if active == "" {
+		d.refreshVisiblePage("overview")
+		d.refreshVisiblePage("ingest")
+		d.refreshVisiblePage("pipeline")
+		d.refreshVisiblePage("events")
+		return
 	}
-	d.updateOverviewBoxes(snap.OverviewLines)
-	d.updateIngestBoxes(snap.OverviewLines)
-	d.updatePipelineBoxes(snap.OverviewLines)
-	d.updateEventsOverviewBoxes(snap.OverviewLines)
-
-	// Overview, ingest, pipeline, and events pages are active.
+	d.refreshVisiblePage(active)
 }
 
-func (d *DashboardV2) snapshotCopy() Snapshot {
-	d.snapshotMu.RLock()
-	defer d.snapshotMu.RUnlock()
+func cloneSnapshot(src Snapshot) *Snapshot {
 	copyLines := func(lines []string) []string {
 		if len(lines) == 0 {
 			return nil
@@ -581,42 +569,43 @@ func (d *DashboardV2) snapshotCopy() Snapshot {
 		copy(out, lines)
 		return out
 	}
-	return Snapshot{
-		GeneratedAt:   d.snapshot.GeneratedAt,
-		OverviewLines: copyLines(d.snapshot.OverviewLines),
-		IngestLines:   copyLines(d.snapshot.IngestLines),
-		PipelineLines: copyLines(d.snapshot.PipelineLines),
-		NetworkLines:  copyLines(d.snapshot.NetworkLines),
+	return &Snapshot{
+		GeneratedAt:   src.GeneratedAt,
+		OverviewLines: copyLines(src.OverviewLines),
+		IngestLines:   copyLines(src.IngestLines),
+		PipelineLines: copyLines(src.PipelineLines),
+		NetworkLines:  copyLines(src.NetworkLines),
 	}
 }
 
 func (d *DashboardV2) AppendDropped(line string) {
 	if strings.HasPrefix(line, "CTY drop:") {
-		d.appendStream(d.validationPanel, "validation", line)
+		d.appendStream(d.ingestValidation, "ingest", "validation", d.validationFrameFn, line)
 	}
 }
 
 func (d *DashboardV2) AppendCall(line string) {
-	d.appendStream(d.correctedPanel, "corrected", line)
+	d.appendStream(d.pipelineCorrected, "pipeline", "corrected", d.correctedFrameFn, line)
 }
 
 func (d *DashboardV2) AppendUnlicensed(line string) {
-	d.appendStream(d.unlicensedPanel, "unlicensed", line)
+	d.appendStream(d.ingestUnlicensed, "ingest", "unlicensed", d.unlicensedFrameFn, line)
 }
 
 func (d *DashboardV2) AppendHarmonic(line string) {
-	d.appendStream(d.harmonicsPanel, "harmonics", line)
+	d.appendStream(d.pipelineHarmonics, "pipeline", "harmonics", d.harmonicsFrameFn, line)
 }
 
-func (d *DashboardV2) appendStream(panel *streamPanel, scheduleID string, line string) {
+func (d *DashboardV2) appendStream(panel *streamPanel, pageName, scheduleID string, frameFn func(), line string) {
 	if d == nil || panel == nil || d.scheduler == nil {
 		return
 	}
 	panel.Append(line)
+	if d.currentActivePage() != pageName {
+		return
+	}
 	// Coalesce updates per frame; the scheduler keeps only the latest per ID.
-	d.scheduler.Schedule(scheduleID, func() {
-		panel.Render(d.app)
-	})
+	d.scheduler.Schedule(scheduleID, frameFn)
 }
 
 func (d *DashboardV2) AppendReputation(line string) {
@@ -629,7 +618,7 @@ func (d *DashboardV2) AppendSystem(line string) {
 	if d == nil {
 		return
 	}
-	d.appendStream(d.eventsPanel, "events", line)
+	d.appendStream(d.eventsStream, "events", "events", d.eventsFrameFn, line)
 }
 
 func (d *DashboardV2) SystemWriter() io.Writer {
@@ -650,16 +639,23 @@ func applyFocusStyle(tv *tview.TextView, title string, focused bool) {
 	if tv == nil {
 		return
 	}
-	if title != "" {
-		tv.SetTitle(title).SetTitleAlign(tview.AlignLeft)
-	}
-	if focused {
-		tv.SetBorderColor(uiFocusBorderColor)
-		tv.SetTitleColor(uiFocusTitleColor)
+	applyFocusBoxStyle(tv.Box, title, focused)
+}
+
+func applyFocusBoxStyle(box *tview.Box, title string, focused bool) {
+	if box == nil {
 		return
 	}
-	tv.SetBorderColor(uiBorderColor)
-	tv.SetTitleColor(uiTitleColor)
+	if title != "" {
+		box.SetTitle(title).SetTitleAlign(tview.AlignLeft)
+	}
+	if focused {
+		box.SetBorderColor(uiFocusBorderColor)
+		box.SetTitleColor(uiFocusTitleColor)
+		return
+	}
+	box.SetBorderColor(uiBorderColor)
+	box.SetTitleColor(uiTitleColor)
 }
 
 func newSpacer() *tview.Box {
@@ -711,44 +707,33 @@ func (d *DashboardV2) updateOverviewBoxes(lines []string) {
 	if cacheIdx >= 0 && pathIdx > cacheIdx+1 {
 		cacheLines := lines[cacheIdx+1 : pathIdx]
 		setBoxText(d.overviewCaches, strings.Join(cacheLines, "\n"))
-		if d.overviewRoot != nil {
-			height := len(cacheLines) + 2
-			if height < 3 {
-				height = 3
-			}
-			d.overviewRoot.ResizeItem(d.overviewCaches, height, 0)
+		neededHeight := len(cacheLines) + 2
+		if neededHeight < overviewCachesMinHeight {
+			neededHeight = overviewCachesMinHeight
+		}
+		// Resize only on actual content-height changes.
+		if d.overviewRoot != nil && neededHeight != d.overviewCachesHeight {
+			d.overviewRoot.ResizeItem(d.overviewCaches, neededHeight, 0)
+			d.overviewCachesHeight = neededHeight
 		}
 	}
 	if pathIdx >= 0 && networkIdx > pathIdx+1 {
 		pathLines := lines[pathIdx+1 : networkIdx]
 		setBoxText(d.overviewPath, strings.Join(pathLines, "\n"))
-		if d.overviewRoot != nil {
-			height := len(pathLines) + 2
-			if height < 3 {
-				height = 3
-			}
-			d.overviewRoot.ResizeItem(d.overviewPath, height, 0)
+		neededHeight := len(pathLines) + 2
+		if neededHeight < overviewPathMinHeight {
+			neededHeight = overviewPathMinHeight
+		}
+		// Grow-only resize preserves full path bucket visibility while avoiding
+		// repetitive layout churn on every stats refresh.
+		if d.overviewRoot != nil && neededHeight > d.overviewPathHeight {
+			d.overviewRoot.ResizeItem(d.overviewPath, neededHeight, 0)
+			d.overviewPathHeight = neededHeight
 		}
 	}
 	if networkIdx >= 0 && len(lines) > networkIdx+1 {
 		networkLines := lines[networkIdx+1:]
 		setBoxText(d.overviewNetwork, strings.Join(networkLines, "\n"))
-		if d.overviewRoot != nil {
-			const (
-				networkMaxRows = 10
-				baseLines      = 4 // summary + 2 latency lines + blank
-				overflowLine   = 1
-			)
-			maxHeight := baseLines + networkMaxRows + overflowLine + 2
-			height := len(networkLines) + 2
-			if height > maxHeight {
-				height = maxHeight
-			}
-			if height < 3 {
-				height = 3
-			}
-			d.overviewRoot.ResizeItem(d.overviewNetwork, height, 0)
-		}
 	}
 }
 
@@ -801,7 +786,7 @@ func (d *DashboardV2) seedEventsPlaceholders() {
 	setBoxText(d.eventsMem, placeholderMem)
 	setBoxText(d.eventsIngest, placeholderIngest)
 	setBoxText(d.eventsPipeline, placeholderPipeline)
-	setBoxText(d.eventsStream, placeholderEvents)
+	d.eventsStream.SetText(placeholderEvents)
 }
 
 func (d *DashboardV2) seedIngestPlaceholders() {
@@ -810,12 +795,8 @@ func (d *DashboardV2) seedIngestPlaceholders() {
 	}
 	setBoxText(d.ingestHdr, placeholderHeader)
 	setBoxText(d.ingestIngest, placeholderIngest)
-	if d.ingestValidation != nil {
-		setBoxText(d.ingestValidation, placeholderValidation)
-	}
-	if d.ingestUnlicensed != nil {
-		setBoxText(d.ingestUnlicensed, placeholderUnlicensed)
-	}
+	d.ingestValidation.SetText(placeholderValidation)
+	d.ingestUnlicensed.SetText(placeholderUnlicensed)
 }
 
 func (d *DashboardV2) seedPipelinePlaceholders() {
@@ -824,12 +805,8 @@ func (d *DashboardV2) seedPipelinePlaceholders() {
 	}
 	setBoxText(d.pipelineHdr, placeholderHeader)
 	setBoxText(d.pipelineQuality, placeholderPipeline)
-	if d.pipelineCorrected != nil {
-		setBoxText(d.pipelineCorrected, placeholderCorrected)
-	}
-	if d.pipelineHarmonics != nil {
-		setBoxText(d.pipelineHarmonics, placeholderHarmonics)
-	}
+	d.pipelineCorrected.SetText(placeholderCorrected)
+	d.pipelineHarmonics.SetText(placeholderHarmonics)
 }
 
 func setBoxText(tv *tview.TextView, text string) {
@@ -855,6 +832,82 @@ func setOverviewPipeline(tv *tview.TextView, lines []string) {
 	if len(lines) > 9 {
 		setBoxText(tv, lines[8]+"\n"+lines[9])
 	}
+}
+
+func (d *DashboardV2) currentActivePage() string {
+	if d == nil {
+		return ""
+	}
+	if value := d.activePage.Load(); value != nil {
+		if page, ok := value.(string); ok {
+			return page
+		}
+	}
+	return ""
+}
+
+func (d *DashboardV2) refreshVisiblePage(page string) {
+	if d == nil {
+		return
+	}
+	lines := d.overviewSnapshotLines()
+	switch page {
+	case "overview":
+		d.updateOverviewBoxes(lines)
+		d.renderOverviewNetwork()
+	case "ingest":
+		d.updateIngestBoxes(lines)
+	case "pipeline":
+		d.updatePipelineBoxes(lines)
+	case "events":
+		d.updateEventsOverviewBoxes(lines)
+	}
+}
+
+func (d *DashboardV2) overviewSnapshotLines() []string {
+	if d == nil {
+		return nil
+	}
+	if snap := d.snapshot.Load(); snap != nil && len(snap.OverviewLines) > 0 {
+		return snap.OverviewLines
+	}
+	d.statsMu.Lock()
+	defer d.statsMu.Unlock()
+	return append([]string(nil), d.statsLines...)
+}
+
+func (d *DashboardV2) storeNetworkLines(lines []string) {
+	if d == nil {
+		return
+	}
+	d.networkMu.Lock()
+	d.network = append(d.network[:0], lines...)
+	d.networkMu.Unlock()
+}
+
+func (d *DashboardV2) networkLinesSnapshot() []string {
+	if d == nil {
+		return nil
+	}
+	d.networkMu.RLock()
+	defer d.networkMu.RUnlock()
+	if len(d.network) == 0 {
+		return nil
+	}
+	out := make([]string, len(d.network))
+	copy(out, d.network)
+	return out
+}
+
+func (d *DashboardV2) renderOverviewNetwork() {
+	if d == nil || d.overviewNetwork == nil {
+		return
+	}
+	lines := d.networkLinesSnapshot()
+	if len(lines) == 0 {
+		return
+	}
+	d.overviewNetwork.SetText(padLines(strings.Join(lines, "\n")))
 }
 
 func addOverviewTopSections(root *tview.Flex, ingest *tview.TextView) {
@@ -895,6 +948,17 @@ func scrollTextView(target *tview.TextView, event *tcell.EventKey) bool {
 		row = 0
 	case tcell.KeyEnd:
 		row = 1 << 30
+	case tcell.KeyRune:
+		switch event.Rune() {
+		case 'k':
+			if row > 0 {
+				row--
+			}
+		case 'j':
+			row++
+		default:
+			return false
+		}
 	default:
 		return false
 	}

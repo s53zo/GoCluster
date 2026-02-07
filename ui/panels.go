@@ -1,19 +1,17 @@
 package ui
 
 import (
-	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
-// focusable abstracts a focusable, optionally scrollable, text box.
+// focusable abstracts a focusable primitive with optional scroll handling.
 type focusable interface {
-	View() *tview.TextView
+	Primitive() tview.Primitive
 	SetFocused(focused bool)
-	Scrollable() bool
+	HandleScroll(event *tcell.EventKey) bool
 }
 
 // focusBox wraps a boxed TextView with focus styling metadata.
@@ -31,7 +29,7 @@ func newFocusBox(tv *tview.TextView, baseTitle string, scrollable bool) *focusBo
 	}
 }
 
-func (b *focusBox) View() *tview.TextView {
+func (b *focusBox) Primitive() tview.Primitive {
 	if b == nil {
 		return nil
 	}
@@ -45,14 +43,14 @@ func (b *focusBox) SetFocused(focused bool) {
 	applyFocusStyle(b.tv, b.baseTitle, focused)
 }
 
-func (b *focusBox) Scrollable() bool {
-	if b == nil {
+func (b *focusBox) HandleScroll(event *tcell.EventKey) bool {
+	if b == nil || !b.scrollable {
 		return false
 	}
-	return b.scrollable
+	return scrollTextView(b.tv, event)
 }
 
-// focusGroup manages focus cycling and scroll handling for a set of boxes.
+// focusGroup manages focus cycling and scroll handling for a set of panes.
 type focusGroup struct {
 	items []focusable
 	index int
@@ -61,7 +59,7 @@ type focusGroup struct {
 func newFocusGroup(items ...focusable) focusGroup {
 	filtered := make([]focusable, 0, len(items))
 	for _, item := range items {
-		if item == nil || item.View() == nil {
+		if item == nil || item.Primitive() == nil {
 			continue
 		}
 		filtered = append(filtered, item)
@@ -81,7 +79,7 @@ func (g *focusGroup) set(app *tview.Application, idx int) {
 		item.SetFocused(i == idx)
 	}
 	if app != nil {
-		app.SetFocus(g.items[idx].View())
+		app.SetFocus(g.items[idx].Primitive())
 	}
 }
 
@@ -104,103 +102,69 @@ func (g *focusGroup) handleScroll(app *tview.Application, event *tcell.EventKey)
 	}
 	focused := app.GetFocus()
 	for _, item := range g.items {
-		if item.Scrollable() && item.View() == focused {
-			return scrollTextView(item.View(), event)
+		if item.Primitive() == focused {
+			return item.HandleScroll(event)
 		}
 	}
 	return false
 }
 
-// streamPanel holds a bounded line history and renders it into a TextView.
-// Concurrency: Append may be called from multiple goroutines; Render is called
-// from the UI goroutine. Memory is bounded to max lines.
+// streamPanel is a focused, bounded event panel backed by virtualized rendering.
 type streamPanel struct {
-	*focusBox
-	mu    sync.Mutex
-	lines []string
-	snap  []string
-	head  int
-	count int
-	total uint64
-	max   int
-	dirty bool
+	view *virtualLogView
 }
 
-func newStreamPanel(tv *tview.TextView, baseTitle string, max int) *streamPanel {
-	if max <= 0 {
-		max = 1
+func newStreamPanel(baseTitle string, max int, dynamicColors bool) *streamPanel {
+	return &streamPanel{view: newVirtualLogView(baseTitle, max, dynamicColors)}
+}
+
+func (p *streamPanel) Primitive() tview.Primitive {
+	if p == nil {
+		return nil
 	}
-	if tv != nil {
-		tv.SetScrollable(true)
+	return p.view
+}
+
+func (p *streamPanel) SetFocused(focused bool) {
+	if p == nil || p.view == nil {
+		return
 	}
-	return &streamPanel{
-		focusBox: newFocusBox(tv, baseTitle, true),
-		lines:    make([]string, max),
-		max:      max,
+	p.view.SetFocused(focused)
+}
+
+func (p *streamPanel) HandleScroll(event *tcell.EventKey) bool {
+	if p == nil || p.view == nil {
+		return false
 	}
+	return p.view.HandleScroll(event)
 }
 
 func (p *streamPanel) Append(line string) {
-	if p == nil || p.max <= 0 {
+	if p == nil || p.view == nil {
 		return
 	}
-	p.mu.Lock()
-	if p.count < p.max {
-		pos := (p.head + p.count) % p.max
-		p.lines[pos] = line
-		p.count++
-	} else {
-		p.lines[p.head] = line
-		p.head = (p.head + 1) % p.max
-	}
-	p.total++
-	p.dirty = true
-	p.mu.Unlock()
+	p.view.Append(line)
 }
 
-func (p *streamPanel) Render(app *tview.Application) {
-	if p == nil || p.View() == nil {
+// Render keeps the existing scheduler callback contract. Draw work is done by
+// the primitive itself during the next QueueUpdateDraw frame.
+func (p *streamPanel) Render(_ *tview.Application) {
+}
+
+func (p *streamPanel) SetText(text string) {
+	if p == nil || p.view == nil {
 		return
 	}
-	p.mu.Lock()
-	if !p.dirty {
-		p.mu.Unlock()
+	if text == "" {
+		p.view.Reset(nil)
 		return
 	}
-	count := p.count
-	total := p.total
-	head := p.head
-	lines := p.lines
-	if cap(p.snap) < count {
-		p.snap = make([]string, count)
-	} else {
-		p.snap = p.snap[:count]
-	}
-	for i := 0; i < count; i++ {
-		idx := (head + i) % p.max
-		p.snap[i] = lines[idx]
-	}
-	snapshot := p.snap
-	p.dirty = false
-	p.mu.Unlock()
+	p.view.Reset(strings.Split(text, "\n"))
+}
 
-	var b strings.Builder
-	for i := 0; i < len(snapshot); i++ {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(snapshot[i])
+func (p *streamPanel) SnapshotText() string {
+	if p == nil || p.view == nil {
+		return ""
 	}
-	if overflow := int(total) - len(snapshot); overflow > 0 {
-		if len(snapshot) > 0 {
-			b.WriteByte('\n')
-		}
-		fmt.Fprintf(&b, "... +%d more", overflow)
-	}
-	text := padLines(b.String())
-
-	p.View().SetText(text)
-	if app == nil || app.GetFocus() != p.View() {
-		p.View().ScrollToEnd()
-	}
+	return p.view.SnapshotText()
 }

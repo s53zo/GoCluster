@@ -11,4 +11,4 @@ This index tracks all architecture and workflow decisions recorded as ADRs.
 | ADR | Title | Status | Date | Area | Supersedes | Superseded By | Links |
 |---|---|---|---|---|---|---|---|
 | ADR-0001 | <title> | Proposed | YYYY-MM-DD | <area> | - | - | `docs/decisions/ADR-0001-<slug>.md` |
-
+| ADR-0002 | UI v2 Render Pipeline Optimization | Accepted | 2026-02-07 | ui/tview-v2 | - | - | `docs/decisions/ADR-0002-ui-v2-render-pipeline.md` |
